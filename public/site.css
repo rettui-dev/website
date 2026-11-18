@@ -171,6 +171,6 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
   .bar { gap: 1px; }
 }
 
-.hub { margin: 28px 0 0; color: var(--dim); font-size: 13px; word-break: break-all; }
-.hub .copy { cursor: copy; }
-.hub .copied { color: var(--green); margin-left: 6px; }
+.hero .hub { margin: 32px auto 0; font-size: 13px; color: var(--dim); word-break: break-all; }
+.hero .hub .copy { cursor: copy; }
+.hero .hub .copied { color: var(--green); margin-left: 6px; }
