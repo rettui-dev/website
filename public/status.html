@@ -26,11 +26,12 @@
   </div>
 </header>
 <main class="wrap">
-  <div id="banner" class="banner unknown" role="status" aria-live="polite">
-    <h1 id="banner-title">Checking...</h1>
+  <div id="banner" class="banner unknown">
+    <h1 id="banner-title" role="status" aria-live="polite">Checking...</h1>
     <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
   </div>
-  <ul id="hosts" class="hosts" aria-label="Entry points"></ul>
+  <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
+  <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
   <p class="note">Each host is tried with a TCP connection from the server every 30 seconds. Uptime is over the last 24 hours of checks; the bar shows the last 90, oldest on the left. This page refreshes itself.</p>
 </main>
 <footer>
