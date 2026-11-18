@@ -123,7 +123,7 @@ a.panel:hover { border-color: var(--accent); }
 a.panel h3 { color: var(--accent); }
 
 footer { border-top: 1px solid var(--border); color: var(--dim); font-size: 12px; }
-footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 16px; flex-wrap: wrap; }
+footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: center; text-align: center; }
 
 /* Status page */
 .banner { border: 1px solid var(--border); border-left-width: 6px; border-radius: 6px; background: var(--panel); padding: 12px 14px; }
