@@ -1,0 +1,12 @@
+{
+  "name": "rettui-website",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The rettui website and Reticulum entry point status page",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test \"test/*.test.js\""
+  }
+}

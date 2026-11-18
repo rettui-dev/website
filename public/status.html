@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Status - rettui</title>
+<meta name="description" content="Reachability of the rettui Reticulum entry points">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/status.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status" aria-current="page">Status</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+  </div>
+</header>
+<main class="wrap">
+  <div id="banner" class="banner unknown" role="status" aria-live="polite">
+    <h1 id="banner-title">Checking...</h1>
+    <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
+  </div>
+  <ul id="hosts" class="hosts" aria-label="Entry points"></ul>
+  <p class="note">Each host is tried with a TCP connection from the server every 30 seconds. Uptime is over the last 24 hours of checks; the bar shows the last 90, oldest on the left. This page refreshes itself.</p>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>
