@@ -497,3 +497,10 @@ button.hash:hover { border-color: var(--accent); }
   button.hash { min-height: 40px; }
   nav.links { flex-wrap: wrap; }
 }
+
+/* A custom site name and logo on the status page (site: in the config file). */
+.brand .site-logo { display: block; height: 28px; width: auto; max-width: 160px; object-fit: contain; }
+.brand { text-decoration: none; }
+.brand .brand-name { font-weight: 600; font-size: 18px; color: var(--text); overflow-wrap: anywhere; }
+.brand .site-logo + .brand-name { margin-left: 10px; }
+.site-description { color: var(--dim); margin: 16px 0 12px; overflow-wrap: anywhere; }

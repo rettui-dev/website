@@ -23,7 +23,7 @@ const port = parsePort(process.env.PORT ?? '8080');
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 
-const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login, alerts: alertSettings } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
+const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login, alerts: alertSettings, siteMode, site } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
 for (const w of warnings ?? []) console.warn(w);
 
 // STATS_SAMPLE_INTERVAL_MS is for testing only: it makes the stats history fill
@@ -42,20 +42,24 @@ const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens
 await monitor.load();
 monitor.start();
 
-// The latest releases for the Downloads page: read from releases.json now, refreshed in the background.
-const releaseSettings = await loadReleaseSettings(process.env);
-const releases = new ReleaseCache({ ...releaseSettings, dataDir });
-await releases.load();
-releases.start();
+// The latest releases for the Downloads page: read from releases.json now, refreshed in the
+// background. A status-only site has no Downloads page, so nothing is read or fetched.
+let releases = null;
+if (siteMode === 'full') {
+  const releaseSettings = await loadReleaseSettings(process.env);
+  releases = new ReleaseCache({ ...releaseSettings, dataDir });
+  await releases.load();
+  releases.start();
+}
 
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, settings: login }), releases });
-server.listen(port, host, () => console.log(`listening on http://${host}:${port}, data in ${dataDir}`));
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, settings: login }), releases, mode: siteMode, site });
+server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     monitor.stop();
     alerts?.stop();
-    releases.stop();
+    releases?.stop();
     server.close(() => process.exit(0));
     server.closeAllConnections();
   });
