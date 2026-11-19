@@ -20,13 +20,15 @@ hosts, keeps their history and can fetch their node stats.
   "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
   stats URL, is a 404; a bad range is a 400. Only GET and HEAD are allowed.
 - `/healthz` answers `ok` (used by the Docker health check).
+- `/login` and `/logout` (POST only) exist only when the config file has users (see "Logins").
 
 ## Run locally
 
-Needs Node.js 22 or later.
+Needs Node.js 24.7 or later (the login uses its built-in Argon2id).
 
     npm start        # http://localhost:8080
     npm test
+    npm run hash-password -- --name alice   # a password_hash for the config file (see "Logins")
 
 ## Docker
 
@@ -51,7 +53,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
 | `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
-| `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). |
+| `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). Users who can log in can only be set there (see "Logins"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
 | `PUBLIC_DETAILS` | `true`                            | `false` removes the Details view (and `/api/stats`) for every node (see "What is public"). |
 | `PUBLIC_DISK_FIGURES` | `false`                      | `true` publishes exact free and total disk space (see "What is public"). |
@@ -86,8 +88,11 @@ before, and nothing needs to change for an existing deployment.
 The file is checked when the server starts, and any mistake stops it with a message that
 never repeats a URL:
 
-- Only `nodes`, `stats_token` and `stats_token_file` at the top level, and only `address`,
-  `name`, `stats_url`, `stats_token`, `stats_token_file`, `proxy_for` and `count_own` in a node; anything else is an error, as are repeated keys and wrong types.
+- Only `nodes`, `stats_token`, `stats_token_file`, `public_details`, `public_disk_figures`, `users`,
+  `login` and `require_login` at the top level, and only `address`, `name`, `stats_url`,
+  `stats_token`, `stats_token_file`, `proxy_for`, `count_own`, `public_details`,
+  `public_disk_figures` and `require_login` in a node; anything else is an error, as are repeated
+  keys and wrong types.
 - At most 64 nodes and a file of at most 64 KiB. The same host and port rules as
   `STATUS_TARGETS` apply, and the same URL rules as `STATS_URLS` (`https`, or `http` only
   for loopback and private addresses, no user name or password).
@@ -101,6 +106,9 @@ In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.
 The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
 ## What is public
+
+With users in the config file, some of what follows can also be kept for logged-in visitors;
+see "Logins".
 
 - **`public_details`** (default `true`): when `false` a node has no Details button, and
   `/api/stats` answers 404 for it, the same as for an unknown host. Its summary on the page stays.
@@ -124,6 +132,101 @@ The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
   this option says, and it is not purged. Setting `public_disk_figures: true` later therefore
   shows the free-space graph for the time already recorded, not only from then on. Keep the data
   directory private, and delete that file if you do not want that history.
+
+## Logins
+
+Some numbers can be kept for people with an account. With no `users` in the config file there
+is no login at all and the page and API are exactly as without this feature: nothing is locked,
+there is no login button, and `/login` does not exist. Users need the config file; with the
+environment variables there is no login.
+
+    users:
+      - name: alice                  # 1 to 32 letters, digits, . - _; matched without regard to case
+        password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
+    login:                           # optional, these are the defaults
+      idle_timeout_minutes: 60       # a session ends after this long without a request
+      max_age_hours: 12              # and this long after the login, whatever happens
+      max_sessions: 1000             # with more, the session used least recently ends
+      trusted_proxies: []            # see "Behind a reverse proxy"
+    require_login: [details, storage, peers, disk, versions]   # the default once there are users
+    nodes:
+      - address: rns.rettui.dev:4242
+        require_login: []            # a node can override the rule, like public_details
+
+**Making a hash.** `npm run hash-password -- --name alice` asks for the password twice without
+showing it and prints the hash and a line to paste under `users:`. It also reads a password piped
+to it (`printf '%s' "$PW" | node scripts/hash-password.js --name alice`; one final line break is
+dropped), but never takes one as an argument, where it would land in the shell history. In Docker:
+`docker compose run --rm -it website node scripts/hash-password.js --name alice`. The hash is
+Argon2id with a random 16-byte salt and the OWASP minimum costs (`m=19456,t=2,p=1`); `--memory`,
+`--passes` and `--parallelism` raise them. Only `argon2id` version 19 hashes are accepted, with
+at least those costs and at most `m=262144,t=16,p=16`; anything else stops the server at start
+(the message never repeats the hash). The config file holds hashes, not passwords, but keep it
+private anyway.
+
+**What is locked.** `require_login` lists sections, at the top for every node or on a node to
+override it. Without a rule, once there are users, all of them are locked. A rule that names a
+section while there are no users stops the server at start, and so does a `login` section.
+
+| Section    | What a visitor without a login does not get |
+| ---------- | ------------------------------------------- |
+| `details`  | the Full details view and its graphs (`/api/stats` answers 401), and the node's place in a proxy's combined view |
+| `storage`  | the message store of a propagation node: stored messages and size, message counters, unhandled messages, and their graphs |
+| `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists, and their graph |
+| `disk`     | the disk level and share, free space, and data size |
+| `versions` | the rettui version a node runs, and the versions seen |
+
+Up or down, the check bar and uptime, clients, peers heard, traffic, announces, interfaces and how
+long a node has been running stay public. The server takes the locked numbers out of
+`/api/status` and `/api/stats` before they are sent; the page only shows what it got, with a
+"Log in to see more" button where something is missing. A proxy's group line leaves out a sum
+(message store, peered nodes, disk) as soon as one of its nodes, or the proxy, has that section
+locked, since the sum would give the node's number away. A node whose details are locked is left
+out of the combined view, as with `public_details: false`. `public_details: false` and
+`public_disk_figures` still apply to logged-in users: a login shows what is locked, never what
+is private.
+
+With users, `/api/status` has `viewer` (`{name}`, `null` without a login) and each host has
+`locked`, the sections this visitor cannot see (empty once logged in); a detail answer with
+something left out has `locked` too. Both answers then carry `Cache-Control: private, no-store`
+and `Vary: Cookie`, so no shared cache keeps one visitor's answer for another.
+
+**How the login works.** The page posts the form to `/login`. It answers 200 with a session
+cookie, `__Host-rettui_session`: a random 256-bit id, `HttpOnly`, `Secure`, `SameSite=Strict`,
+`Path=/`. Every login gets a new id, and an id sent with the login is ended. `/logout` ends the
+session. Sessions are kept in memory only. An open status page refreshes itself every 15 seconds,
+so it keeps its session alive until `max_age_hours` is reached.
+
+- A wrong name and a wrong password get the same 401 and the same message. An unknown name is
+  checked against a stand-in hash with the same costs, so it takes as long.
+- Five failed logins for a name (any name, existing or not), or twenty from one address (an IPv6
+  address counts by its /64), start a wait that doubles with each further failure, up to 15
+  minutes; during it the answer is 429 with `Retry-After`, without trying the password. A
+  failure is forgotten an hour after the last one, and at most 10000 names and addresses are
+  remembered.
+- Each check takes about 19 MiB of memory (more with higher costs). At most 2 run at once and 8
+  wait; past that the answer is 503 with `Retry-After`, rather than running out of memory.
+- `/login` and `/logout` only take `application/x-www-form-urlencoded` (else 415), at most 4 KiB
+  (else 413), and only from the page itself: `Sec-Fetch-Site` must be `same-origin`, or, from a
+  browser too old to send it, `Origin` must name the host the request was sent to (else 403).
+  Passwords over 1024 bytes are refused.
+- Passwords and hashes are never logged.
+
+**Behind a reverse proxy.** The cookie is always `Secure`, so the login only works over HTTPS
+(browsers make an exception for `localhost`). Put the server behind a reverse proxy that
+terminates TLS; the server itself does not read `X-Forwarded-Proto`. The proxy must pass the
+`Host` header through (Caddy does; with nginx, `proxy_set_header Host $host;`) for browsers that
+do not send `Sec-Fetch-Site`. Without `trusted_proxies` every request seems to come from the
+proxy, so all visitors share one address for the failed-login wait. List the proxy's address in
+`login.trusted_proxies` (IP addresses only, at most 16) to have the client address taken from
+`X-Forwarded-For`, from the right, skipping trusted proxies. Never list an address that clients
+can connect from directly.
+
+**Limits.** Everything is in one process and in memory: sessions end when the server restarts
+(everyone has to log in again), and running several copies behind a load balancer does not
+share sessions or failed-login counts. The login is for keeping numbers from casual visitors,
+not for anything more sensitive: there is no password change, no second factor and no account
+lockout beyond the wait.
 
 ## Propagation node and disk numbers
 
