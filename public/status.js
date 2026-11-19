@@ -961,6 +961,54 @@
     return [net, cl, an];
   }
 
+  function perMinute(v) { return count(v) + '/min'; }
+
+  // The propagation node and disk graphs, when the node (or any node of the group)
+  // sent numbers for them. In a group the sums are used, and for the disk the node
+  // with the least free space.
+  function storageSections(d, ser, width) {
+    var out = [];
+    var combined = d.view === 'combined';
+    function chart(title, fmt, lines) {
+      var sec = section(title);
+      sec.appendChild(lineChart({ title: title, range: d.range, from: ser.from, to: ser.to, width: width, fmt: fmt, lines: lines }));
+      out.push(sec);
+    }
+    var p = ser.propagation;
+    if (p) {
+      chart('Stored messages', count, [{ label: 'Messages', cls: 'c1', points: p.storedMessages }]);
+      chart('Stored size', bytes, [{ label: 'Size', cls: 'c2', points: p.storedBytes }]);
+      chart('Peered nodes', count, [{ label: 'Alive', cls: 'c2', points: p.peersAlive }, { label: 'Total', cls: 'c4 d1', points: p.peersTotal }]);
+      chart('Peer message flow', perMinute, [{ label: 'To peers', cls: 'c1', points: p.sentPerMinute }, { label: 'From peers', cls: 'c3 d1', points: p.receivedPerMinute }]);
+    }
+    var k = ser.disk;
+    if (k) {
+      // Two graphs: the data is a small part of the disk, and on one scale it would not show.
+      chart('Disk: data size', bytes, [{ label: combined ? 'Data (all nodes)' : 'Data', cls: 'c1', points: k.dataBytes }]);
+      chart('Disk: free space', bytes, [{ label: combined ? 'Free (node with the least)' : 'Free', cls: 'c2', points: k.fsFreeBytes }]);
+    }
+    return out;
+  }
+
+  // The current numbers of one node's message store and disk, as facts.
+  function storageFacts(d) {
+    var data = d.stats && d.stats.data ? d.stats.data : null;
+    if (!data) return null;
+    var pairs = propagationPairs(data.propagation).concat(diskPairs(data.disk));
+    if (!pairs.length) return null;
+    var s = section('Message store and disk');
+    var dl = el('dl', 'facts');
+    pairs.forEach(function (p) {
+      dl.appendChild(el('dt', null, p[0]));
+      dl.appendChild(el('dd', null, p[1]));
+    });
+    s.appendChild(dl);
+    if (d.stats.peerSummary) {
+      s.appendChild(el('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
+    }
+    return s;
+  }
+
   // The members of a combined view: what each runs, and what is left out.
   function membersSection(d) {
     var s = section('Nodes');
@@ -979,7 +1027,7 @@
     if (note) s.appendChild(el('p', 'note', note));
     if (g && g.data) {
       var dl = el('dl', 'facts');
-      groupPairs(g).forEach(function (p) {
+      groupPairs(g).concat(groupStoragePairs(g)).forEach(function (p) {
         dl.appendChild(el('dt', null, p[0]));
         dl.appendChild(el('dd', null, p[1]));
       });
@@ -1033,9 +1081,11 @@
     var collecting = ser.sampleCount < 2;
     var combined = d.view === 'combined';
     var parts = [combined ? membersSection(d) : versionSection(d)];
+    var facts = combined ? null : storageFacts(d);
+    if (facts) parts.push(facts);
     if (collecting) parts.push(emptyState(d, ser));
     parts.push(combined ? combinedPeersSection(d, ser, width, collecting) : peersSection(d, ser, width, collecting));
-    if (!collecting) parts = parts.concat(usageSections(d, ser, width));
+    if (!collecting) parts = parts.concat(usageSections(d, ser, width), storageSections(d, ser, width));
     body.replaceChildren.apply(body, parts);
   }
 
