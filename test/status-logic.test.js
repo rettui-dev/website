@@ -10,7 +10,8 @@ const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'publ
 const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
-const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords } =
+const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
+  gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
 
 test('ago words', () => {
@@ -133,4 +134,71 @@ test('intervalWords says how often samples are taken', () => {
   assert.equal(intervalWords(45), '45 seconds');
   assert.equal(intervalWords(undefined), 'so often');
   assert.equal(intervalWords(0), 'so often');
+});
+
+test('nearestIndex picks the closest time and clamps at the ends', () => {
+  const t = [100, 200, 400, 1000];
+  assert.equal(nearestIndex(t, 100), 0);
+  assert.equal(nearestIndex(t, 149), 0);
+  assert.equal(nearestIndex(t, 150), 0);
+  assert.equal(nearestIndex(t, 151), 1);
+  assert.equal(nearestIndex(t, 290), 1);
+  assert.equal(nearestIndex(t, 310), 2);
+  assert.equal(nearestIndex(t, 800), 3);
+  assert.equal(nearestIndex(t, -50), 0);
+  assert.equal(nearestIndex(t, 99999), 3);
+  assert.equal(nearestIndex([5], 77), 0);
+  assert.equal(nearestIndex([], 5), -1);
+  assert.equal(nearestIndex(t, NaN), -1);
+  assert.equal(nearestIndex(t, undefined), -1);
+});
+
+test('timeAt maps a pixel to a time inside the window', () => {
+  assert.equal(timeAt(50, 50, 100, 1000, 2000), 1000);
+  assert.equal(timeAt(100, 50, 100, 1000, 2000), 1500);
+  assert.equal(timeAt(0, 50, 100, 1000, 2000), 1000);
+  assert.equal(timeAt(999, 50, 100, 1000, 2000), 2000);
+  assert.equal(timeAt(70, 50, 0, 1000, 2000), 1000);
+});
+
+test('tooltipRows has one row per line and says no data for gaps', () => {
+  const lines = [
+    { label: 'In', cls: 'c1', points: [[1, 1024], [2, null], [3, 2048]] },
+    { label: 'Out', cls: 'c3 d1', points: [[1, 5], [2, 6]] },
+  ];
+  const at = (i) => [...tooltipRows(lines, i, formatRate)].map((r) => ({ ...r }));
+  assert.deepEqual(at(0), [{ label: 'In', cls: 'c1', text: '1 KiB/s' }, { label: 'Out', cls: 'c3 d1', text: '5 B/s' }]);
+  assert.deepEqual(at(1).map((r) => r.text), ['no data', '6 B/s']);
+  assert.deepEqual(at(2).map((r) => r.text), ['2 KiB/s', 'no data']);
+  assert.deepEqual(at(-1).map((r) => r.text), ['no data', 'no data']);
+  assert.deepEqual(at(9).map((r) => r.text), ['no data', 'no data']);
+  assert.equal(tooltipRows([], 0, formatRate).length, 0);
+});
+
+test('tooltipTitle has weekday, date and 24 hour time; tooltipSpeech joins the rows', () => {
+  const title = tooltipTitle(new Date(2026, 10, 19, 6, 28).getTime());
+  assert.match(title, /Thu/);
+  assert.match(title, /2026/);
+  assert.match(title, /06:28/);
+  assert.equal(tooltipSpeech('T', [{ label: 'In', text: '1 KiB/s' }, { label: 'Out', text: 'no data' }]), 'T: In 1 KiB/s, Out no data');
+});
+
+test('tooltipPosition goes right of the anchor, flips near the right edge and stays inside', () => {
+  const pos = (...a) => ({ ...tooltipPosition(...a) });
+  assert.deepEqual(pos(100, 80, 120, 60, 400, 150), { x: 112, y: 50 });
+  assert.deepEqual(pos(350, 80, 120, 60, 400, 150), { x: 218, y: 50 });
+  assert.deepEqual(pos(10, 5, 120, 60, 400, 150), { x: 22, y: 0 });
+  assert.deepEqual(pos(10, 149, 120, 60, 400, 150), { x: 22, y: 90 });
+  // Too narrow to fit on either side: pinned to the left edge.
+  assert.deepEqual(pos(100, 80, 300, 60, 250, 150), { x: 0, y: 50 });
+  assert.deepEqual(pos(100, 80, 300, 200, 250, 150), { x: 0, y: 0 });
+});
+
+test('runs also splits where samples are missing, and gapLimit is three usual steps', () => {
+  const pts = [[0, 1], [10, 1], [20, 1], [30, 1], [100, 1], [110, 1]];
+  assert.equal(gapLimit(pts), 30);
+  assert.deepEqual([...runs(pts, gapLimit(pts))].map((r) => [...r].map((p) => p[0])), [[0, 10, 20, 30], [100, 110]]);
+  assert.equal(runs(pts).length, 1);
+  assert.equal(gapLimit([[0, 1], [5, 1]]), 0);
+  assert.equal(gapLimit([]), 0);
 });

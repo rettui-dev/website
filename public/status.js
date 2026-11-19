@@ -175,10 +175,16 @@
   }
 
   // Splits [[t, v|null]] into runs of consecutive values, so gaps are not joined.
-  function runs(points) {
+  // With maxGap (ms), a hole in time wider than that also ends a run: samples
+  // that were never taken are a gap too, not a straight line.
+  function runs(points, maxGap) {
     var out = [];
     var cur = [];
     points.forEach(function (p) {
+      if (cur.length && maxGap > 0 && p[0] - cur[cur.length - 1][0] > maxGap) {
+        out.push(cur);
+        cur = [];
+      }
       if (p[1] === null || typeof p[1] !== 'number' || !isFinite(p[1])) {
         if (cur.length) out.push(cur);
         cur = [];
@@ -188,6 +194,16 @@
     });
     if (cur.length) out.push(cur);
     return out;
+  }
+
+  // The widest step between neighbouring times that still counts as joined:
+  // three times the usual (median) step. 0 when there are too few points.
+  function gapLimit(points) {
+    if (points.length < 3) return 0;
+    var d = [];
+    for (var i = 1; i < points.length; i++) d.push(points[i][0] - points[i - 1][0]);
+    d.sort(function (a, b) { return a - b; });
+    return d[Math.floor(d.length / 2)] * 3;
   }
 
   // Last, smallest, largest and average of the values; null when there are none.
@@ -265,6 +281,62 @@
     }).join('; ') + '.';
   }
 
+
+  // ---- Details: hover, touch and keyboard inspection (pure parts) ----
+
+  // The index of the time nearest to t, clamped to the ends; -1 for no times.
+  // Times are ascending. On a tie the earlier one wins.
+  function nearestIndex(times, t) {
+    var n = times.length;
+    if (n === 0 || typeof t !== 'number' || t !== t) return -1;
+    if (t <= times[0]) return 0;
+    if (t >= times[n - 1]) return n - 1;
+    var lo = 0;
+    var hi = n - 1;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (times[mid] <= t) lo = mid; else hi = mid;
+    }
+    return t - times[lo] <= times[hi] - t ? lo : hi;
+  }
+
+  // The time under an x position on the plot (pixels), clamped to the window.
+  function timeAt(px, left, width, from, to) {
+    if (!(width > 0)) return from;
+    var f = Math.min(Math.max((px - left) / width, 0), 1);
+    return from + f * (to - from);
+  }
+
+  // "Thu, Nov 19, 2026, 06:28": the full local date and the 24 hour clock.
+  function tooltipTitle(t) {
+    return new Date(t).toLocaleString([], { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
+  // One row per line at point `index`: {label, cls, text}. A missing or null
+  // value reads "no data".
+  function tooltipRows(lines, index, fmt) {
+    return lines.map(function (l) {
+      var p = index >= 0 && index < l.points.length ? l.points[index] : null;
+      var ok = p && typeof p[1] === 'number' && isFinite(p[1]);
+      return { label: l.label, cls: l.cls, text: ok ? fmt(p[1]) : 'no data' };
+    });
+  }
+
+  // The words of a tooltip for a screen reader: "Thu, ...: In 3 KiB/s, Out no data".
+  function tooltipSpeech(title, rows) {
+    return title + ': ' + rows.map(function (r) { return r.label + ' ' + r.text; }).join(', ');
+  }
+
+  // Where the top left of a tooltip box goes: right of the anchor, flipped to the
+  // left when it would pass the right edge, and kept inside the area.
+  function tooltipPosition(ax, ay, boxW, boxH, areaW, areaH, gap) {
+    var g = gap === undefined ? 12 : gap;
+    var x = ax + g + boxW <= areaW ? ax + g : ax - g - boxW;
+    x = Math.max(0, Math.min(x, Math.max(areaW - boxW, 0)));
+    var y = Math.max(0, Math.min(ay - boxH / 2, Math.max(areaH - boxH, 0)));
+    return { x: x, y: y };
+  }
+
   // ---- Details: drawing ----
 
   function svg(tag, attrs, cls) {
@@ -329,7 +401,7 @@
       chart.appendChild(svgText(axisTime(t, o.range), { x: px, y: h - 6, 'text-anchor': p[1] }));
     });
     o.lines.forEach(function (l) {
-      runs(l.points).forEach(function (run) {
+      runs(l.points, gapLimit(l.points)).forEach(function (run) {
         if (run.length === 1) {
           chart.appendChild(svg('circle', { cx: x(run[0][0]), cy: y(run[0][1]), r: 2.5 }, 'dot ' + l.cls));
           return;
@@ -340,10 +412,125 @@
     });
     var caption = el('figcaption', 'chart-note', summary + '.');
     caption.setAttribute('aria-hidden', 'true');
+    var plot = el('div', 'plot');
+    var tip = el('div', 'tip');
+    tip.hidden = true;
+    tip.setAttribute('aria-hidden', 'true');
+    var live = el('div', 'sr-only');
+    live.setAttribute('aria-live', 'polite');
+    live.setAttribute('aria-atomic', 'true');
+    plot.appendChild(chart);
+    plot.appendChild(tip);
+    plot.appendChild(live);
     fig.appendChild(legend);
-    fig.appendChild(chart);
+    fig.appendChild(plot);
     fig.appendChild(caption);
+    attachInspector({ chart: chart, tip: tip, live: live, o: o, left: left, pw: pw, w: w, h: h, x: x, y: y });
     return fig;
+  }
+
+  // A vertical guide, highlighted points and a tooltip for the sample nearest
+  // to the pointer (mouse, pen or touch) or to the arrow keys.
+  var hideActive = null;
+
+  function attachInspector(c) {
+    var o = c.o;
+    var longest = o.lines.reduce(function (a, l) { return l.points.length > a.length ? l.points : a; }, []);
+    var times = longest.map(function (p) { return p[0]; });
+    if (times.length === 0) return;
+    var guide = svg('line', { y1: 8, y2: c.h - 22, visibility: 'hidden' }, 'guide');
+    var marks = o.lines.map(function (l) {
+      var m = svg('circle', { r: 4, visibility: 'hidden' }, 'hp ' + l.cls);
+      return m;
+    });
+    c.chart.appendChild(guide);
+    marks.forEach(function (m) { c.chart.appendChild(m); });
+    c.chart.setAttribute('tabindex', '0');
+    var current = -1;
+
+    function hide() {
+      current = -1;
+      c.tip.hidden = true;
+      guide.setAttribute('visibility', 'hidden');
+      marks.forEach(function (m) { m.setAttribute('visibility', 'hidden'); });
+      if (hideActive === hide) hideActive = null;
+    }
+
+    // py is the pointer's y in pixels on the picture; null puts the box at the first value.
+    function show(index, py, speak) {
+      if (index < 0) return hide();
+      if (hideActive && hideActive !== hide) hideActive();
+      hideActive = hide;
+      current = index;
+      var t = times[index];
+      var rect = c.chart.getBoundingClientRect();
+      var scale = c.w > 0 && rect.width > 0 ? rect.width / c.w : 1;
+      var gx = c.x(t);
+      guide.setAttribute('x1', gx);
+      guide.setAttribute('x2', gx);
+      guide.setAttribute('visibility', 'visible');
+      var firstY = null;
+      o.lines.forEach(function (l, i) {
+        var p = index < l.points.length ? l.points[index] : null;
+        if (p && typeof p[1] === 'number' && isFinite(p[1])) {
+          marks[i].setAttribute('cx', gx);
+          marks[i].setAttribute('cy', c.y(p[1]));
+          marks[i].setAttribute('visibility', 'visible');
+          if (firstY === null) firstY = c.y(p[1]);
+        } else {
+          marks[i].setAttribute('visibility', 'hidden');
+        }
+      });
+      var title = tooltipTitle(t);
+      var rows = tooltipRows(o.lines, index, o.fmt);
+      var head = el('div', 'tip-time', title);
+      var list = el('ul', 'tip-rows');
+      rows.forEach(function (r) {
+        var li = el('li');
+        li.appendChild(swatch(r.cls));
+        li.appendChild(el('span', 'tip-label', r.label));
+        li.appendChild(el('b', r.text === 'no data' ? 'muted' : null, r.text));
+        list.appendChild(li);
+      });
+      c.tip.replaceChildren(head, list);
+      c.tip.hidden = false;
+      var anchorY = (py === null ? (firstY === null ? c.h / 2 : firstY) : py) * scale;
+      var pos = tooltipPosition(gx * scale, anchorY, c.tip.offsetWidth, c.tip.offsetHeight, rect.width, rect.height);
+      c.tip.style.left = Math.round(pos.x) + 'px';
+      c.tip.style.top = Math.round(pos.y) + 'px';
+      if (speak) c.live.textContent = tooltipSpeech(title, rows);
+    }
+
+    function fromPointer(e) {
+      var rect = c.chart.getBoundingClientRect();
+      var scale = rect.width > 0 ? c.w / rect.width : 1;
+      var px = (e.clientX - rect.left) * scale;
+      var py = (e.clientY - rect.top) * scale;
+      show(nearestIndex(times, timeAt(px, c.left, c.pw, o.from, o.to)), py, false);
+    }
+
+    c.chart.addEventListener('pointerdown', fromPointer);
+    c.chart.addEventListener('pointermove', fromPointer);
+    // A finger that lifts leaves the tooltip up, so a tap can be read.
+    c.chart.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') hide(); });
+    c.chart.addEventListener('pointercancel', hide);
+    c.chart.addEventListener('blur', function () { hide(); c.live.textContent = ''; });
+    c.chart.addEventListener('keydown', function (e) {
+      var next = null;
+      if (e.key === 'ArrowLeft') next = current < 0 ? times.length - 1 : Math.max(current - 1, 0);
+      else if (e.key === 'ArrowRight') next = current < 0 ? times.length - 1 : Math.min(current + 1, times.length - 1);
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = times.length - 1;
+      else if (e.key === 'Escape' && current >= 0) {
+        // Close the tooltip only; a second Escape closes the dialog.
+        e.preventDefault();
+        e.stopPropagation();
+        hide();
+        return;
+      } else return;
+      e.preventDefault();
+      show(next, null, true);
+    });
   }
 
   // The stacked bar of the peer kinds, as an SVG.
@@ -555,6 +742,10 @@
   function setupDetail() {
     dlg = document.getElementById('detail');
     if (!dlg || typeof dlg.showModal !== 'function') return;
+    // A tap anywhere but on a chart puts the chart tooltip away.
+    dlg.addEventListener('pointerdown', function (e) {
+      if (hideActive && !(e.target && e.target.closest && e.target.closest('.plot'))) hideActive();
+    });
     document.getElementById('detail-close').addEventListener('click', function () { dlg.close(); });
     // A click on the backdrop (the dialog itself, outside its content) closes it.
     dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
@@ -665,7 +856,8 @@
   if (typeof document === 'undefined') {
     // Loaded by the tests: expose the pure parts only.
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
-      formatRate: formatRate, niceTicks: niceTicks, runs: runs, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
+      formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
+      nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
       peerShares: peerShares, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }

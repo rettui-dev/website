@@ -109,6 +109,7 @@ different versions a node has reported, with when each was first seen (at most 1
   `version` (`current`, `uptimeSeconds`, `history` of `{version, firstSeen}`) and `series`
   (`bytesIn`, `bytesOut`, `clients`, `peers.{total,lxmf,nomad,propagation}`, `announces`,
   `interfacesOnline`, each a list of `[time ms, value or null]`).
+- In the Details view, hovering a graph (or dragging a finger across it, or focusing it and using the Left, Right, Home and End keys) shows a guide line and a tooltip with the full date and time of the nearest sample and every value of that graph at that point; a gap reads "no data". Escape or leaving the graph hides it.
 - `STATS_SAMPLE_INTERVAL_MS` changes the sample interval (default 300000). It exists only
   so the graphs can be tried quickly during testing; do not set it in production.
 
