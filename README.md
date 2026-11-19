@@ -333,7 +333,7 @@ without checks) and `incidents` (the 5 newest). `/api/incidents` answers
 up and down already is: no `public_details` or `require_login` setting changes them, and they hold
 nothing from a node's stats.
 
-On the page, a cell is green from 99.9%, yellow and shorter from 95%, red and shorter below
+On the page, a cell is green only on a day with no failed check (100%), yellow and shorter from 95%, red and shorter below
 that, and short and dim with no data, so the bar does not rely on colour. Each cell's title
 gives its date and percent, and the bar has a text label with the same figures.
 
@@ -496,7 +496,7 @@ that removes or renames one would be `/api/public/v2/...`.
 
 Both work in `full` and `status` mode, with the usual security headers plus
 `Access-Control-Allow-Origin: *`, which no other route has. `Cache-Control: public, max-age=30`,
-and a strong `ETag`; `If-None-Match` gets a 304. The answer is built from memory at most every 10
+and a strong `ETag` (made without the `generated` time, so it stays the same while nothing changes); `If-None-Match` gets a 304. The answer is built from memory at most every 10
 seconds, whatever the number of requests, and the query string is ignored.
 
 **What it shows.** Exactly what a visitor who is not logged in sees on the status page. It is

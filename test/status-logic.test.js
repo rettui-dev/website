@@ -435,7 +435,7 @@ test('locked sections: which a row offers a login for, and the words for them', 
 
 test('day cells are told apart by level, with no data kept apart from zero', () => {
   assert.equal(dayLevel(100), 'ok');
-  assert.equal(dayLevel(99.9), 'ok');
+  assert.equal(dayLevel(99.9), 'warn');
   assert.equal(dayLevel(99.8), 'warn');
   assert.equal(dayLevel(95), 'warn');
   assert.equal(dayLevel(94.9), 'bad');
@@ -459,10 +459,10 @@ test('the uptime bar has a text alternative with the same facts', () => {
   days[87] = 80;
   days[86] = 99.9;
   const label = uptimeLabel({ days, uptime90: { percent30: 99.1, percent90: 98.7 } });
-  assert.equal(label, 'Uptime over the last 90 days: 98.7%, over the last 30 days: 99.1%. 2 days below 99.9%, 86 without data');
+  assert.equal(label, 'Uptime over the last 90 days: 98.7%, over the last 30 days: 99.1%. 3 days with downtime, 86 without data');
   assert.equal(uptimeLabel({ days: new Array(90).fill(null), uptime90: { percent30: null, percent90: null } }), 'Uptime over the last 90 days: no data yet');
   assert.equal(uptimeLabel({}), 'Uptime over the last 90 days: no data yet');
-  assert.match(uptimeLabel({ days: [100, 50], uptime90: { percent30: 75, percent90: 75 } }), /1 day below 99.9%, 0 without data/);
+  assert.match(uptimeLabel({ days: [100, 50], uptime90: { percent30: 75, percent90: 75 } }), /1 day with downtime, 0 without data/);
 });
 
 test('incident spans say ongoing or lasted', () => {

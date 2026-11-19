@@ -65,7 +65,8 @@
   // The height changes with the colour, so the bar does not rely on colour alone.
   function dayLevel(p) {
     if (p === null || p === undefined || typeof p !== 'number' || !isFinite(p)) return 'none';
-    if (p >= 99.9) return 'ok';
+    // The server rounds a day down, so only a day with no failed check reads 100.
+    if (p === 100) return 'ok';
     if (p >= 95) return 'warn';
     return 'bad';
   }
@@ -92,7 +93,7 @@
     var lower = days.filter(function (p) { var l = dayLevel(p); return l === 'warn' || l === 'bad'; }).length;
     if (withData === 0) return 'Uptime over the last 90 days: no data yet';
     return 'Uptime over the last 90 days: ' + percentWord(u.percent90) + ', over the last 30 days: ' + percentWord(u.percent30) + '. ' +
-      lower + (lower === 1 ? ' day' : ' days') + ' below 99.9%, ' + (days.length - withData) + ' without data';
+      lower + (lower === 1 ? ' day' : ' days') + ' with downtime, ' + (days.length - withData) + ' without data';
   }
 
   // One cell per day, oldest first and today last, with the numbers in words beside it.
