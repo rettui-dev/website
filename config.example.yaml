@@ -8,6 +8,10 @@
 #   ./secrets:/config/secrets:ro   (files secrets/front.token, secrets/back.token, ...)
 # Remove the # from the stats_token_file lines below once the files exist; a missing
 # file stops the server at start.
+# Optional privacy settings. A node can override either one.
+# public_details: false      # no Details view (and no /api/stats) for the nodes; default true
+# public_disk_figures: true  # also show exact free and total disk space; default false,
+#                            # when only a level (ok, high, full) and the used share rounded to 5 are shown
 nodes:
   # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
   # The page groups those nodes under it and adds a combined view.
@@ -22,6 +26,7 @@ nodes:
     # Whether the proxy's own numbers are added to the group's (default false).
     # Leave it false if the proxy's stats already include the nodes behind it.
     count_own: false
+    # public_details: false
 
   - address: front.rns.rettui.dev:4242
     name: Front

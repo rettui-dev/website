@@ -19,7 +19,7 @@ const port = parsePort(process.env.PORT ?? '8080');
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 
-const { targets, statsUrls, nodes, tokens, warnings } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
+const { targets, statsUrls, nodes, tokens, warnings, defaults } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
 for (const w of warnings ?? []) console.warn(w);
 
 // STATS_SAMPLE_INTERVAL_MS is for testing only: it makes the stats history fill
@@ -27,7 +27,7 @@ for (const w of warnings ?? []) console.warn(w);
 const sampleIntervalMs = process.env.STATS_SAMPLE_INTERVAL_MS ? Number(process.env.STATS_SAMPLE_INTERVAL_MS) : SAMPLE_INTERVAL_MS;
 if (!Number.isInteger(sampleIntervalMs) || sampleIntervalMs < 1000) throw new Error('STATS_SAMPLE_INTERVAL_MS must be a whole number of at least 1000');
 
-const monitor = new Monitor({ targets, dataDir, statsUrls, nodes, tokens, sampleIntervalMs });
+const monitor = new Monitor({ targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, sampleIntervalMs });
 await monitor.load();
 monitor.start();
 

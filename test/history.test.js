@@ -109,7 +109,7 @@ test('buildSeries with no samples is empty', () => {
   assert.deepEqual(s.peers.total, []);
 });
 
-function monitorWith(dataDir, { now, fetcher, interval = 5 * MIN, max } = {}) {
+function monitorWith(dataDir, { now, fetcher, interval = 5 * MIN, max, publicDiskFigures = true } = {}) {
   return new Monitor({
     targets: [{ host: 'a.test', port: 1 }],
     dataDir,
@@ -119,6 +119,7 @@ function monitorWith(dataDir, { now, fetcher, interval = 5 * MIN, max } = {}) {
     now,
     sampleIntervalMs: interval,
     maxSamples: max,
+    publicDiskFigures,
   });
 }
 

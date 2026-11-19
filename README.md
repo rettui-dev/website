@@ -51,6 +51,8 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
+| `PUBLIC_DETAILS` | `true`                            | `false` removes the Details view (and `/api/stats`) for every node (see "What is public"). |
+| `PUBLIC_DISK_FIGURES` | `false`                      | `true` publishes exact free and total disk space (see "What is public"). |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -96,6 +98,23 @@ never repeats a URL:
 In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
 The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
+## What is public
+
+- **`public_details`** (default `true`): when `false` a node has no Details button, and
+  `/api/stats` answers 404 for it, the same as for an unknown host. Its summary on the page stays.
+  A node whose details are private is also left out of its proxy's combined graphs. Set it at the
+  top of the config file for every node, or on a node to override. With the environment variables,
+  `PUBLIC_DETAILS=false` sets it for all nodes (not with `CONFIG_FILE`).
+- **`public_disk_figures`** (default `false`): the free and total space of a node's disk say a lot
+  about a machine. A node only sends them to a website that has a token, and even then the website
+  publishes only a level (`ok`, `high` from 75% used, `full` from 90%) and the used share rounded
+  to 5, never a byte figure of the file system. Set `public_disk_figures: true` (or
+  `PUBLIC_DISK_FIGURES=true`, or per node) to publish the exact free and total space, the exact
+  share, and the free-space graph. Without it there is no disk graph. The node's data size is
+  public on the node already and is shown either way. A node without a token has no disk level.
+  A group shows the fullest disk by level, and the exact least free space only for nodes that
+  publish it.
+
 ## Propagation node and disk numbers
 
 A node that runs an LXMF propagation node can add a `propagation` object to its stats, and any
@@ -109,7 +128,8 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
   messages received, served, sent to peers and received from peers, and unhandled messages.
   Counters count since the node started, except messages offered to peers, which may include
   earlier runs. Unhandled messages can lag behind the real number.
-- `disk`: the size of the node's data, and free and total space of the file system it is on.
+- `disk`: the size of the node's data (public on the node) and, only in the answer to a request
+  with a token, free and total space of the file system it is on (see "What is public").
 
 `/api/status` carries them in `stats.data.propagation` and `stats.data.disk`.
 
