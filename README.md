@@ -71,6 +71,10 @@ last good copy is shown, marked stale with its age.
   read. Otherwise the page says "no checksum published".
 - **Platforms** are worked out from file names (`lib/releases.js`, `classifyAsset`): Linux x86_64
   and aarch64, macOS (Apple silicon, Intel), Windows, Android, Docker, source, checksums, other.
+- **Layout:** one card for each platform, with its main file first (the plain rettui build, before
+  the desktop app and the packages), its SHA-256 and a Copy button; the other files of that
+  platform are in a folded "N more files for <platform>" list, which opens with the keyboard.
+  Every checksum is plain text on the page, so it can also be read or selected by hand.
 - **No release yet** (or a repository GitHub does not know) shows a plain message and a link to
   its releases page.
 
@@ -92,6 +96,19 @@ use `https://<site>/feed.xml`) and links to the Downloads page. Without it the f
 `tag:rettui.dev,2026:releases`, and only the GitHub links are in it, as a relative link would mean
 nothing in a reader. The home and Downloads pages advertise it with
 `<link rel="alternate" type="application/atom+xml">`. In status-only mode `/feed.xml` is 404.
+
+## Accessibility and themes
+
+Checked with axe-core (WCAG 2.2 AA and best practice) on the four pages, the status-only variant,
+the opened rows, the network map and the Details dialog, in both themes at 1200 and 375 pixels, with
+no violations. What the pages do: a "Skip to content" link first on every page, `lang="en"`, header,
+nav, main and footer landmarks, one `h1`, `aria-current="page"` in the menu, a focus ring on every
+control (the network map's nodes too), text at least 4.5:1 and control borders at least 3:1 in both
+themes, touch targets of 24 pixels or more (40 on phones), no sideways scrolling at 320 pixels or at
+200% zoom, and no animation when the system asks for less motion. With no saved choice the theme
+follows the system (`prefers-color-scheme`), also when it changes while the page is open; the theme
+button saves a choice. `test/a11y.test.js` checks the files for these and the theme colours for
+contrast; it is not a replacement for running axe in a browser.
 
 ## Link previews (Open Graph)
 
