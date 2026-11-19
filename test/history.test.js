@@ -247,10 +247,10 @@ test('a damaged stats-history.json is handled entry by entry', async () => {
   for (const bad of ['{not json', '', 'null', '[]', '{"hosts":null}', '{"hosts":[]}', '{"hosts":{"a.test:1":"x"}}', '{"hosts":{"a.test:1":{"samples":5,"versions":{}}}}', '{"hosts":{"__proto__":{}}}']) {
     await fs.writeFile(file, bad);
     const empty = await load();
-    assert.deepEqual(empty, { samples: [], versions: [] }, bad);
+    assert.deepEqual(empty, { samples: [], versions: [], extra: [] }, bad);
   }
   await fs.rm(file);
-  assert.deepEqual(await load(), { samples: [], versions: [] });
+  assert.deepEqual(await load(), { samples: [], versions: [], extra: [] });
 });
 
 test('an oversized stats-history.json is ignored', async () => {
@@ -329,7 +329,7 @@ test('/api/stats returns the detail for a configured host', async () => {
     assert.equal(body.stats.ok, true);
     assert.equal(body.version.current, '2.0.0');
     assert.equal(body.series.sampleCount, 4);
-    assert.deepEqual(Object.keys(body.series).sort(), ['announces', 'bytesIn', 'bytesOut', 'clients', 'from', 'interfacesOnline', 'peers', 'range', 'sampleCount', 'to']);
+    assert.deepEqual(Object.keys(body.series).sort(), ['announces', 'bytesIn', 'bytesOut', 'clients', 'disk', 'from', 'interfacesOnline', 'peers', 'propagation', 'range', 'sampleCount', 'to']);
     assert.deepEqual(Object.keys(body.series.peers).sort(), ['lxmf', 'nomad', 'propagation', 'total']);
     assert.equal(body.series.bytesIn.length, 3);
 
@@ -456,4 +456,150 @@ test('saving replaces a stale temporary file and never follows a planted link', 
   assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json', 'victim.txt']);
   assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'stats-history.json'), 'utf8')).version, 1);
   assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8')).version, 1);
+});
+
+// ---- propagation and disk samples ----
+
+import { buildExtraSeries, cleanExtras, combineSeries as combine, extraFrom, messageRates, validExtra } from '../lib/history.js';
+
+const prop = (o = {}) => ({
+  enabled: true, storedMessages: 100, storedBytes: 5000, storageLimitBytes: 10_000, peersConnected: 1, peersTotal: 6, peersAlive: 4, peersStatic: 1, peersAuto: 3,
+  peerLimit: 20, staticPeers: 1, autopeer: true, autopeerDepth: 4, messagesReceived: 1, messagesServed: 2, messagesSentToPeers: 600, messagesReceivedFromPeers: 300,
+  messagesOfferedToPeers: 9, unhandledMessages: 2, ...o,
+});
+const dsk = (o = {}) => ({ dataBytes: 7000, fsTotalBytes: 100_000, fsFreeBytes: 60_000, ...o });
+// [time, uptime, stored msgs, stored bytes, alive, total, fs free, data, sent, received]
+const ex = (t, o = {}) => [t, 1000, 10, 100, 4, 6, 500, 70, 0, 0].map((v, i) => (o[i] !== undefined ? o[i] : v));
+
+test('extraFrom takes the propagation and disk numbers, and nothing when there are none', () => {
+  assert.equal(extraFrom(7, stats()), null);
+  assert.deepEqual(extraFrom(7, stats({ propagation: prop(), disk: dsk() })), [7, 1000, 100, 5000, 4, 6, 60_000, 7000, 600, 300]);
+  assert.deepEqual(extraFrom(7, stats({ disk: dsk({ fsTotalBytes: null }) })), [7, 1000, null, null, null, null, 60_000, 7000, null, null]);
+  assert.deepEqual(extraFrom(7, stats({ propagation: prop({ storedBytes: null, messagesSentToPeers: null }) })), [7, 1000, 100, null, 4, 6, null, null, null, 300]);
+  assert.equal(validExtra(extraFrom(7, stats({ propagation: prop() }))), true);
+});
+
+test('validExtra rejects damaged entries', () => {
+  const ok = ex(5);
+  assert.equal(validExtra(ok), true);
+  assert.equal(validExtra(ex(5, { 2: null, 9: null })), true);
+  for (const bad of [null, 'x', [], ok.slice(1), [...ok, 1], ex(0), ex(MAX_TIME), ex(5, { 1: null }), ex(5, { 2: -1 }), ex(5, { 3: 1.5 }), ex(5, { 4: '4' }), ex(5, { 6: NaN }), ex(5, { 7: undefined === 1 ? 0 : Infinity })]) {
+    assert.equal(validExtra(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('cleanExtras drops bad, out of order, old and future entries', () => {
+  const list = [ex(NOW - 10 * MIN), 'junk', ex(NOW - 20 * MIN), ex(NOW - 5 * MIN), ex(NOW - 8 * 24 * 3600_000), ex(NOW + 3 * 3600_000)];
+  assert.deepEqual(cleanExtras(list, NOW).map((e) => e[0]), [NOW - 10 * MIN, NOW - 5 * MIN]);
+  assert.deepEqual(cleanExtras(list, NOW, 1).map((e) => e[0]), [NOW - 5 * MIN]);
+  assert.deepEqual(cleanExtras('x', NOW), []);
+});
+
+test('messageRates: per minute, restarts and gaps are gaps, never negative or NaN', () => {
+  const t = (n) => NOW + n * MIN;
+  const r = messageRates([
+    ex(t(0), { 1: 100, 8: 1000, 9: 500 }),
+    ex(t(5), { 1: 400, 8: 1600, 9: 800 }), // 600 sent in 5 min = 120/min, 300 received = 60/min
+    ex(t(10), { 1: 50, 8: 10, 9: 5 }), // uptime went down: restart
+    ex(t(15), { 1: 350, 8: 310, 9: 5 }), // 300 sent, none received
+    ex(t(20), { 1: 650, 8: 100, 9: 9 }), // counter went down without an uptime drop
+    ex(t(21), { 1: 710, 8: null, 9: 10 }), // sent unknown
+    ex(t(70), { 1: 770, 8: 5000, 9: 20 }), // a long gap
+  ]);
+  assert.deepEqual(r.map((x) => [x.sent, x.recv]), [[120, 60], [null, null], [60, 0], [null, 0.8], [null, 1], [null, null]]);
+  for (const x of r) for (const v of [x.sent, x.recv]) assert.ok(v === null || (Number.isFinite(v) && v >= 0));
+  assert.deepEqual(messageRates([]), []);
+  assert.deepEqual(messageRates([ex(1)]), []);
+  assert.deepEqual(messageRates([ex(1000), ex(1000)]).map((x) => x.sent), [null]);
+});
+
+test('buildExtraSeries has the series, or null when the node never sent them', () => {
+  const list = [0, 1, 2, 3].map((i) => ex(NOW - (3 - i) * 5 * MIN, { 1: 100 + i * 300, 2: 10 + i, 8: i * 300, 9: i * 150 }));
+  const s = buildExtraSeries(list, '6h', NOW);
+  assert.deepEqual(s.propagation.storedMessages.map((p) => p[1]), [10, 11, 12, 13]);
+  assert.deepEqual(s.propagation.sentPerMinute.map((p) => p[1]), [60, 60, 60]);
+  assert.deepEqual(s.propagation.receivedPerMinute.map((p) => p[1]), [30, 30, 30]);
+  assert.deepEqual(s.disk.fsFreeBytes.map((p) => p[1]), [500, 500, 500, 500]);
+  assert.deepEqual(buildExtraSeries([], '6h', NOW), { propagation: null, disk: null });
+  const diskOnly = list.map((e) => e.map((v, i) => (i >= 2 && i <= 5 || i >= 8 ? null : v)));
+  const d = buildExtraSeries(diskOnly, '6h', NOW);
+  assert.equal(d.propagation, null);
+  assert.ok(d.disk);
+  assert.equal(buildExtraSeries(list, '6h', NOW + 30 * 24 * 3600_000).propagation, null);
+  const long = Array.from({ length: 2016 }, (_, i) => ex(NOW - (2015 - i) * 5 * MIN, { 1: i * 300, 8: i * 10 }));
+  assert.equal(buildExtraSeries(long, '7d', NOW).propagation.storedMessages.length, 240);
+});
+
+test('the detail has propagation and disk series only for nodes that send them; the main samples keep their layout', async () => {
+  const dir = await tmp();
+  let clock = NOW;
+  let withProp = true;
+  const m = monitorWith(dir, { now: () => clock, fetcher: async () => ({ ok: true, data: stats(withProp ? { propagation: prop(), disk: dsk() } : {}) }) });
+  await m.checkAll();
+  clock += 5 * MIN;
+  await m.checkAll();
+  const d = m.detail('a.test:1', '6h');
+  assert.equal(d.series.propagation.storedMessages.length, 2);
+  assert.equal(d.series.disk.dataBytes.length, 2);
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'stats-history.json'), 'utf8')).hosts['a.test:1'];
+  // An older version reads samples of 11 numbers and ignores the extra list.
+  assert.ok(saved.samples.every((s) => s.length === 11));
+  assert.equal(saved.extra.length, 2);
+  assert.equal(saved.extra[0].length, 10);
+
+  withProp = false;
+  const old = monitorWith(await tmp(), { now: () => clock, fetcher: async () => ({ ok: true, data: stats() }) });
+  await old.checkAll();
+  const od = old.detail('a.test:1', '6h');
+  assert.equal(od.series.propagation, null);
+  assert.equal(od.series.disk, null);
+  assert.equal(old.statsHistory.get('a.test:1').extra.length, 0);
+});
+
+test('a stats-history.json from before the extra list loads, and tampered extras are dropped', async () => {
+  const dir = await tmp();
+  const file = path.join(dir, 'stats-history.json');
+  const good = sample(NOW - 10 * MIN, 1, 1, 1);
+  await fs.writeFile(file, JSON.stringify({ version: 1, hosts: { 'a.test:1': { samples: [good], versions: [['1.0', NOW - MIN]] } } }));
+  const load = async () => {
+    const m = monitorWith(dir, { now: () => NOW, fetcher: async () => ({ ok: false, error: 'x' }) });
+    await m.load();
+    return m.statsHistory.get('a.test:1');
+  };
+  const h = await load();
+  assert.deepEqual(h.samples, [good]);
+  assert.deepEqual(h.extra, []);
+  await fs.writeFile(file, JSON.stringify({ hosts: { 'a.test:1': { samples: [good], extra: [ex(NOW - 5 * MIN), 'x', [1, 2], ex(NOW - 5 * MIN, { 2: -3 }), ex(MAX_TIME + 1), ex(NOW + 9 * 3600_000)] } } }));
+  assert.deepEqual((await load()).extra, [ex(NOW - 5 * MIN)]);
+  for (const bad of ['5', '{}', 'null', '[1]', '"x"']) {
+    await fs.writeFile(file, `{"hosts":{"a.test:1":{"samples":[],"extra":${bad}}}}`);
+    assert.deepEqual((await load()).extra, [], bad);
+  }
+});
+
+test('combineSeries adds up propagation numbers, leaves out nodes without them, and keeps the least free disk', () => {
+  const a = [0, 1, 2].map((i) => ex(NOW - (2 - i) * 5 * MIN, { 1: i * 300, 2: 100 + i, 3: 1000, 4: 3, 5: 5, 6: 900, 7: 50, 8: i * 300, 9: i * 150 }));
+  const b = [0, 1, 2].map((i) => ex(NOW - (2 - i) * 5 * MIN + 2000, { 1: i * 300, 2: 10, 3: 500, 4: 1, 5: 2, 6: 300, 7: 20, 8: i * 600, 9: 0 }));
+  const noProp = [sample(NOW - 5 * MIN, 1, 1, 1)];
+  const s = combine([[], [], []], '6h', NOW + 10_000, 5 * MIN, 240, [a, b, []]);
+  assert.equal(s.propagation.members, 2);
+  assert.deepEqual(s.propagation.storedMessages.map((p) => p[1]), [110, 111, 112]);
+  assert.deepEqual(s.propagation.storedBytes.map((p) => p[1]), [1500, 1500, 1500]);
+  assert.deepEqual(s.propagation.peersAlive.map((p) => p[1]), [4, 4, 4]);
+  assert.deepEqual(s.propagation.sentPerMinute.map((p) => Math.round(p[1] ?? -1)), [-1, 180, 180].map((v, i) => (i === 0 ? -1 : v)));
+  assert.deepEqual(s.disk.dataBytes.map((p) => p[1]), [70, 70, 70]);
+  // Free space is not added: the least free node.
+  assert.deepEqual(s.disk.fsFreeBytes.map((p) => p[1]), [300, 300, 300]);
+  assert.ok(noProp.length);
+});
+
+test('combined propagation points are gaps unless every node with numbers is in them', () => {
+  const a = [0, 1, 2].map((i) => ex(NOW - (2 - i) * 5 * MIN, { 2: 100 }));
+  const b = [0, 2].map((i) => ex(NOW - (2 - i) * 5 * MIN + 1000, { 2: 10 }));
+  const s = combine([[], []], '6h', NOW + 10_000, 5 * MIN, 240, [a, b]);
+  assert.deepEqual(s.propagation.storedMessages.map((p) => p[1]), [110, null, 110]);
+  assert.equal(combine([[], []], '6h', NOW, 5 * MIN, 240, [[], []]).propagation, null);
+  assert.equal(combine([[], []], '6h', NOW, 5 * MIN, 240).propagation, null);
+  const one = combine([[]], '6h', NOW, 5 * MIN, 240, [[ex(NOW - MIN, { 2: 7 }), ex(NOW, { 2: 8 })]]);
+  assert.deepEqual(one.propagation.storedMessages.map((p) => p[1]), [7, 8]);
 });

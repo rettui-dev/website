@@ -154,7 +154,7 @@ test('/api/stats?view=combined returns the group, the members and summed series'
     assert.deepEqual(d.series.clients.map((p) => p[1]), [10, 10, 10, 10, 10, 10]);
     assert.equal(d.series.peers.total.at(-1)[1], 20);
     assert.equal(d.series.peersLow.total.at(-1)[1], 10);
-    assert.deepEqual(Object.keys(d.series).sort(), ['announces', 'bytesIn', 'bytesOut', 'clients', 'from', 'interfacesOnline', 'members', 'peers', 'peersLow', 'range', 'sampleCount', 'to']);
+    assert.deepEqual(Object.keys(d.series).sort(), ['announces', 'bytesIn', 'bytesOut', 'clients', 'disk', 'from', 'interfacesOnline', 'members', 'peers', 'peersLow', 'propagation', 'range', 'sampleCount', 'to']);
     // Cached like the single view.
     assert.equal((await s.get('/api/stats?host=p.test:1&range=6h&view=combined')).body, r.body);
     assert.equal((await s.get('/api/stats?host=p.test:1&range=6h&view=combined', 'HEAD')).body, '');

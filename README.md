@@ -124,6 +124,22 @@ how many), and `group.data.disk` has the summed data size and `lowestFree`: the 
 has the smallest free share. Free space is not added up, because each node has its own disk.
 Members that are down or stale are left out, as for the other numbers.
 
+**History.** The numbers are sampled with the other stats and kept in the same
+`stats-history.json`, in a separate `extra` list per node, so that the main `samples` keep the
+layout older versions read (an older version ignores `extra`, and a file without it loads as
+before). Each entry is checked when loaded and bad ones are dropped, like the others. The
+detail answer has `series.propagation` (`storedMessages`, `storedBytes`, `peersAlive`,
+`peersTotal`, `sentPerMinute`, `receivedPerMinute`) and `series.disk` (`dataBytes`,
+`fsFreeBytes`), each `null` when the node never sent them. The two message counters are
+cumulative, so they are turned into messages per minute the same way as the byte counters: a
+counter or uptime that goes down is a restart and a long gap is missing data, both left as gaps.
+In the combined view of a proxy the stored messages and bytes, peered nodes and message flow
+are summed, only nodes that have these numbers count, and a point is summed only when all of
+them are in it; for the disk the data size is summed and the free space is that of the node with
+the least. The Details view draws stored messages, stored size, peered nodes (alive and total),
+message flow to and from peers, and the disk (data size and free space, as two graphs because
+the data is usually a small part of the disk).
+
 **Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
 the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
 was heard or synced, counters). That list identifies other nodes, so the website keeps up to 256
