@@ -417,3 +417,37 @@ dialog.login::backdrop { background: rgba(0, 0, 0, 0.6); }
 .login-actions button { min-height: 40px; padding: 4px 16px; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button:disabled { opacity: 0.7; cursor: progress; }
+
+/* Network map */
+.netmap { margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 0 12px; }
+.netmap[hidden] { display: none; }
+.netmap > summary, .netmap-listbox > summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.netmap-count { color: var(--dim); font-weight: 400; font-size: 13px; }
+.netmap-chart { min-height: 40px; }
+.netmap-note { margin: 8px 0; }
+.netmap-listbox { margin: 0 0 8px; }
+.netmap-list { margin: 4px 0 8px; padding-left: 20px; color: var(--dim); font-size: 13px; line-height: 1.5; }
+.nm-svg { display: block; max-width: 100%; height: auto; font-family: var(--sans); font-size: 12px; }
+.nm-edge { stroke: var(--control); stroke-width: 2; }
+.nm-edge.upstream { stroke-dasharray: 6 5; }
+.nm-edge.down { stroke: var(--border); }
+.nm-box { fill: var(--raised); stroke: var(--dim); stroke-width: 2; }
+.nm-node.up .nm-box { stroke: var(--green); }
+.nm-node.down .nm-box { stroke: var(--red); }
+.nm-node.unknown .nm-box { stroke: var(--yellow); }
+.nm-node.external .nm-box { stroke: var(--dim); stroke-dasharray: 6 4; fill: var(--sunken); }
+.nm-node.proxy .nm-box { stroke-width: 3; }
+.nm-node { outline: none; }
+.nm-node:focus-visible .nm-box { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; }
+.nm-name { fill: var(--text); font-weight: 600; }
+.nm-state { fill: var(--text); }
+.nm-fact { fill: var(--dim); }
+.nm-node.up .nm-state { fill: var(--green); }
+.nm-node.down .nm-state { fill: var(--red); }
+.nm-node.unknown .nm-state { fill: var(--yellow); }
+.nm-node.external .nm-state { fill: var(--dim); }
+.stale .nm-svg { opacity: 0.6; }
+@media (prefers-reduced-motion: no-preference) {
+  .nm-node.up .nm-box { animation: nm-pulse 3s ease-in-out infinite; }
+  @keyframes nm-pulse { 50% { stroke-opacity: 0.55; } }
+}

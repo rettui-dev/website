@@ -2084,6 +2084,7 @@
     setText('banner-live', (TITLE[data.overall] || TITLE.unknown) + '. ' + upNow + ' of ' + data.hosts.length + ' up.');
     var list = document.getElementById('hosts');
     allHosts = data.hosts;
+    if (globalThis.netmapView) globalThis.netmapView.update(data.hosts);
     // Keep the keyboard focus on the same button if its row is rebuilt.
     var active = document.activeElement;
     var fHost = active && list.contains(active) ? active.getAttribute('data-host') : null;
