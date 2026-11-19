@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Busy, MAX_QUEUED_HASHES, Sessions, Throttle, clientIp, cookieValue, createLogin, hashGate, ipKey, isFormType, normalIp, sameOrigin } from '../lib/login.js';
+import { Busy, MAX_QUEUED_HASHES, Sessions, Throttle, clientIp, cookieValue, createLogin, hashGate, ipKey, isFormType, normalIp, sameOrigin, untrustedProxy } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -160,12 +160,55 @@ test('clientIp trusts X-Forwarded-For only from a trusted proxy', () => {
   assert.equal(normalIp('::FFFF:127.0.0.1'), '127.0.0.1');
 });
 
+test('normalIp gives one spelling of an address, so trusted_proxies match however they are written', () => {
+  const cases = [
+    ['0:0:0:0:0:0:0:1', '::1'],
+    ['::1', '::1'],
+    ['0000:0000:0000:0000:0000:0000:0000:0001', '::1'],
+    ['FD00::1', 'fd00::1'],
+    ['fd00:0:0:0:0:0:0:1', 'fd00::1'],
+    ['2001:DB8:0:0:1:0:0:1', '2001:db8::1:0:0:1'],
+    ['2001:db8:0:1:1:1:1:1', '2001:db8:0:1:1:1:1:1'],
+    ['1:2:3:4:5:6:7::', '1:2:3:4:5:6:7:0'],
+    ['::', '::'],
+    ['::ffff:7f00:1', '127.0.0.1'],
+    ['0:0:0:0:0:FFFF:192.0.2.1', '192.0.2.1'],
+    ['::1.2.3.4', '::102:304'],
+    ['fe80::0001%ETH0', 'fe80::1%eth0'],
+    ['192.0.2.1', '192.0.2.1'],
+    ['not an ip', 'not an ip'],
+    ['', ''],
+  ];
+  for (const [input, out] of cases) assert.equal(normalIp(input), out, input);
+  assert.equal(normalIp(undefined), '');
+  assert.equal(normalIp(5), '');
+  const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: { 'x-forwarded-for': xff } });
+  const trusted = new Set(['0:0:0:0:0:0:0:1', 'FD00::0:1'].map(normalIp));
+  assert.equal(clientIp(req('::1', '2001:db8::7'), trusted), '2001:db8::7');
+  assert.equal(clientIp(req('fd00::1', '2001:0db8:0:0:0:0:0:7, fd00:0::1'), trusted), '2001:db8::7');
+});
+
+test('untrustedProxy: X-Forwarded-For from a local address that is not trusted', () => {
+  const req = (peer, xff) => ({ socket: { remoteAddress: peer }, headers: xff === undefined ? {} : { 'x-forwarded-for': xff } });
+  const none = new Set();
+  for (const peer of ['127.0.0.1', '::1', '::ffff:10.1.2.3', '172.17.0.1', '192.168.1.1', 'fd00::5', 'fe80::1%eth0', '100.64.0.1']) {
+    assert.equal(untrustedProxy(req(peer, '203.0.113.9'), none), normalIp(peer), peer);
+  }
+  assert.equal(untrustedProxy(req('127.0.0.1'), none), null, 'no header');
+  assert.equal(untrustedProxy(req('203.0.113.9', '1.2.3.4'), none), null, 'a public peer is a client, not a proxy');
+  assert.equal(untrustedProxy(req('2001:db8::1', '1.2.3.4'), none), null);
+  assert.equal(untrustedProxy(req('127.0.0.1', '1.2.3.4'), new Set(['127.0.0.1'])), null, 'trusted');
+  assert.equal(untrustedProxy({ socket: {}, headers: { 'x-forwarded-for': '1.2.3.4' } }, none), null);
+});
+
 test('ipKey groups IPv6 by /64', () => {
   assert.equal(ipKey('192.0.2.1'), 'ip:192.0.2.1');
   assert.equal(ipKey('2001:db8:1:2:aaaa::1'), ipKey('2001:db8:1:2:bbbb:cccc:dddd:eeee'));
   assert.notEqual(ipKey('2001:db8:1:2::1'), ipKey('2001:db8:1:3::1'));
   assert.equal(ipKey('::1'), 'ip:0000:0000:0000:0000::/64');
   assert.equal(ipKey(''), 'ip:');
+  assert.equal(ipKey('2001:DB8:1:2::1'), ipKey('2001:0db8:0001:0002:0:0:0:5'));
+  assert.equal(ipKey('::ffff:1.2.3.4'), 'ip:0000:0000:0000:0000::/64');
 });
 
 test('sameOrigin: Sec-Fetch-Site first, else Origin against Host', () => {

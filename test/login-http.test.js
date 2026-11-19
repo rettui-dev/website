@@ -32,7 +32,7 @@ const statsData = () => ({
 // Numbers that only a logged-in visitor may see, as they appear in JSON.
 const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '9.8.7', '"disk":{', 'peerSummary', 'usedPercent', 'level'];
 
-async function setup({ top = '', nodeA = '', users = true, gate } = {}) {
+async function setup({ top = '', nodeA = '', users = true, gate, warn } = {}) {
   const hash = await hashPassword(PASSWORD, undefined, fakeHasher);
   const config = loadConfig(`${users ? `users:\n  - name: Alice\n    password_hash: '${hash}'\n` : ''}${top}
 nodes:
@@ -61,7 +61,7 @@ ${nodeA}
   }
   clock -= 5 * MIN;
   const login = createLogin({ users: config.users, settings: config.login, hasher: fakeHasher, ...(gate ? { gate } : {}) });
-  const server = createApp({ monitor, publicDir, login });
+  const server = createApp({ monitor, publicDir, login, ...(warn ? { warn } : {}) });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
   return { monitor, login, port, base: `http://127.0.0.1:${port}`, close: () => (server.closeAllConnections(), new Promise((r) => server.close(r))) };
@@ -376,4 +376,33 @@ test('a failing hasher is a 500 with no details', async () => {
     s.login.attempt = original;
     await s.close();
   }
+});
+
+test('X-Forwarded-For from a local proxy that is not trusted is warned about once', async () => {
+  const warnings = [];
+  const s = await setup({ warn: (m) => warnings.push(m) });
+  try {
+    await get(s, '/api/status');
+    assert.deepEqual(warnings, [], 'quiet without X-Forwarded-For');
+    for (let i = 0; i < 3; i++) await request(s.port, { path: '/api/status', headers: { 'X-Forwarded-For': '203.0.113.7' } });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /127\.0\.0\.1 .*not in login\.trusted_proxies/);
+    assert.equal(warnings[0].includes('203.0.113.7'), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('X-Forwarded-For from a trusted proxy, or without users, is not warned about', async () => {
+  const warnings = [];
+  const warn = (m) => warnings.push(m);
+  for (const opts of [{ top: 'login:\n  trusted_proxies: ["127.0.0.1"]\n' }, { users: false }]) {
+    const s = await setup({ ...opts, warn });
+    try {
+      await request(s.port, { path: '/api/status', headers: { 'X-Forwarded-For': '203.0.113.7' } });
+    } finally {
+      await s.close();
+    }
+  }
+  assert.deepEqual(warnings, []);
 });

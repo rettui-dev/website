@@ -79,6 +79,9 @@ test('users are validated and their hashes never repeated in an error', () => {
 test('login settings: defaults, ranges and trusted proxies', () => {
   const c = loadConfig(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 15\n  max_age_hours: 2\n  max_sessions: 50\n  trusted_proxies: [127.0.0.1, "::1"]`));
   assert.deepEqual(c.login, { idleTimeoutMinutes: 15, maxAgeHours: 2, maxSessions: 50, trustedProxies: ['127.0.0.1', '::1'] });
+  // Each address in one spelling, the one a peer address is compared in.
+  const long = loadConfig(yaml(`${USERS}\nlogin:\n  trusted_proxies: ["0:0:0:0:0:0:0:1", "FD00:0::1", "::ffff:10.0.0.1"]`));
+  assert.deepEqual(long.login.trustedProxies, ['::1', 'fd00::1', '10.0.0.1']);
   bad(yaml(`${USERS}\nlogin: yes`), /"login" must be a map/);
   bad(yaml(`${USERS}\nlogin:\n  secure: false`), /login has an unknown key "secure"/);
   bad(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 0`), /idle_timeout_minutes must be a whole number/);
