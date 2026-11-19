@@ -202,6 +202,24 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 /* Only decoration is dimmed when the page is stale; text stays readable. */
 .stale .bar { opacity: 0.5; }
 .bar-note { color: var(--dim); font-size: 13px; line-height: 1.45; margin-top: 4px; }
+
+/* 90 days of uptime, one cell a day. Less uptime is a shorter cell as well as another colour. */
+.uptime { margin-top: 8px; }
+.days { display: flex; gap: 1px; height: 22px; align-items: flex-end; background: var(--sunken); border-radius: 6px; padding: 3px; overflow: hidden; }
+.days span { flex: 1 1 0; min-width: 0; border-radius: 1px; background: var(--border); height: 100%; }
+.days span.none { height: 25%; opacity: 0.7; }
+.days span.ok { background: var(--green); }
+.days span.warn { background: var(--yellow); height: 70%; }
+.days span.bad { background: var(--red); height: 45%; }
+.stale .days { opacity: 0.5; }
+.incidents h2 { margin-top: 24px; }
+.incident-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.incident { background: var(--panel); border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; padding: 8px 12px; display: grid; gap: 2px; }
+.incident.ongoing { border-left-color: var(--red); }
+.incident.resolved { border-left-color: var(--green); }
+.incident-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.incident-line { color: var(--dim); font-size: 13px; line-height: 1.45; }
+.incident-list[hidden], #incidents-empty[hidden], #incidents-more[hidden] { display: none; }
 .note { color: var(--dim); font-size: 13px; line-height: 1.45; margin-top: 16px; }
 
 /* Propagation node and disk */

@@ -61,6 +61,127 @@
       ': ' + ups + ' up, ' + (history.length - ups) + ' down';
   }
 
+  // How a day of the 90 day bar looks: no data, or by the share of checks that were up.
+  // The height changes with the colour, so the bar does not rely on colour alone.
+  function dayLevel(p) {
+    if (p === null || p === undefined || typeof p !== 'number' || !isFinite(p)) return 'none';
+    if (p >= 99.9) return 'ok';
+    if (p >= 95) return 'warn';
+    return 'bad';
+  }
+
+  // The date (UTC, as the server counts days) of cell i of a bar of n days that ends today.
+  function dayDate(i, n, now) {
+    return new Date(now - (n - 1 - i) * 86400000).toISOString().slice(0, 10);
+  }
+
+  function dayTitle(i, n, p, now) {
+    var level = dayLevel(p);
+    return dayDate(i, n, now) + ': ' + (level === 'none' ? 'no data' : p + '% up');
+  }
+
+  function percentWord(p) {
+    return p === null || p === undefined ? 'no data' : p + '%';
+  }
+
+  // The words for the 90 day bar: the same facts as the colours, as text.
+  function uptimeLabel(h) {
+    var days = Array.isArray(h.days) ? h.days : [];
+    var u = h.uptime90 || {};
+    var withData = days.filter(function (p) { return dayLevel(p) !== 'none'; }).length;
+    var lower = days.filter(function (p) { var l = dayLevel(p); return l === 'warn' || l === 'bad'; }).length;
+    if (withData === 0) return 'Uptime over the last 90 days: no data yet';
+    return 'Uptime over the last 90 days: ' + percentWord(u.percent90) + ', over the last 30 days: ' + percentWord(u.percent30) + '. ' +
+      lower + (lower === 1 ? ' day' : ' days') + ' below 99.9%, ' + (days.length - withData) + ' without data';
+  }
+
+  // One cell per day, oldest first and today last, with the numbers in words beside it.
+  function uptimeBar(h, now) {
+    var days = Array.isArray(h.days) ? h.days : [];
+    var wrap = el('div', 'uptime');
+    var bar = el('div', 'days');
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', uptimeLabel(h));
+    days.forEach(function (p, i) {
+      var c = el('span', dayLevel(p));
+      c.title = dayTitle(i, days.length, p, now);
+      bar.appendChild(c);
+    });
+    wrap.appendChild(bar);
+    var u = h.uptime90 || {};
+    var note = u.percent90 === null || u.percent90 === undefined
+      ? 'No uptime history yet.'
+      : percentWord(u.percent30) + ' up over 30 days, ' + percentWord(u.percent90) + ' over 90 days.';
+    wrap.appendChild(elRuns('p', 'bar-note', note));
+    return wrap;
+  }
+
+  // "Down for 12m so far" or "Lasted 12m".
+  function incidentSpan(i) {
+    return i.ongoing ? 'Down for ' + duration(i.seconds) + ' so far' : 'Lasted ' + duration(i.seconds);
+  }
+
+  function incidentItem(i) {
+    var li = el('li', 'incident ' + (i.ongoing ? 'ongoing' : 'resolved'));
+    var head = el('span', 'incident-head');
+    head.appendChild(el('span', 'host-name', i.name || i.host));
+    if (i.name) head.appendChild(el('span', 'host-addr', i.host));
+    var state = el('span', 'pill ' + (i.ongoing ? 'down' : 'up'));
+    state.appendChild(el('span', null, i.ongoing ? GLYPH.down : GLYPH.up)).setAttribute('aria-hidden', 'true');
+    state.appendChild(document.createTextNode(i.ongoing ? 'Ongoing' : 'Resolved'));
+    head.appendChild(state);
+    li.appendChild(head);
+    var line = el('span', 'incident-line');
+    line.appendChild(document.createTextNode('Started '));
+    var t = el('time', null, new Date(i.start).toLocaleString());
+    t.setAttribute('datetime', i.start);
+    line.appendChild(t);
+    line.appendChild(document.createTextNode('. '));
+    addRuns(line, incidentSpan(i) + '.');
+    li.appendChild(line);
+    return li;
+  }
+
+  var MAX_INCIDENTS_SHOWN = 10;
+  var incidentSig = null;
+
+  function renderIncidents(data) {
+    var list = data && Array.isArray(data.incidents) ? data.incidents : null;
+    var ul = document.getElementById('incident-list');
+    var empty = document.getElementById('incidents-empty');
+    if (!ul || !empty) return;
+    if (list === null) {
+      if (incidentSig === null) empty.textContent = 'Incidents are not available right now.';
+      return;
+    }
+    var sig = JSON.stringify(list);
+    if (sig === incidentSig) return;
+    incidentSig = sig;
+    var shown = list.slice(0, MAX_INCIDENTS_SHOWN);
+    ul.replaceChildren.apply(ul, shown.map(incidentItem));
+    ul.hidden = shown.length === 0;
+    empty.hidden = shown.length > 0;
+    empty.textContent = 'No incidents in the last 90 days.';
+    var more = document.getElementById('incidents-more');
+    if (more) {
+      more.hidden = list.length <= shown.length;
+      more.textContent = 'Showing the latest ' + shown.length + ' of ' + list.length + ' incidents.';
+    }
+  }
+
+  function loadIncidents() {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+    return fetch('/api/incidents', { cache: 'no-store', signal: ctl.signal })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        return r.json();
+      })
+      .then(renderIncidents)
+      .catch(function () { renderIncidents(null); })
+      .then(function () { clearTimeout(timer); });
+  }
+
   // A time that the timer keeps current: "12s ago" counts up between fetches.
   function agoTime(iso) {
     var t = el('time');
@@ -534,6 +655,7 @@
     var w = warnings(h);
     if (w.length) li.appendChild(warnLines(w));
     if (!opts.itself) li.appendChild(checkBar(h));
+    if (!opts.itself && Array.isArray(h.days)) li.appendChild(uptimeBar(h, Date.now()));
     var x = expander(h, opts, opts.groupKeys);
     if (x) {
       var actions = el('div', 'row-actions');
@@ -2045,7 +2167,8 @@
       })
       .then(render)
       .catch(fail)
-      .then(function () { clearTimeout(timer); });
+      .then(function () { clearTimeout(timer); })
+      .then(loadIncidents);
   }
 
   if (typeof document === 'undefined') {
@@ -2055,7 +2178,8 @@
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
       peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
-      rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked };
+      rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked,
+      dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };
     return;
   }
   setupDetail();

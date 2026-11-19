@@ -15,6 +15,7 @@ const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, ru
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
+const { dayLevel, dayDate, dayTitle, uptimeLabel, incidentSpan } = sandbox.statusLogic;
 
 test('ago words', () => {
   assert.equal(ago(null), 'never');
@@ -430,4 +431,41 @@ test('locked sections: which a row offers a login for, and the words for them', 
   assert.equal(detailsLocked({ locked: ['details'] }), true);
   assert.equal(detailsLocked({ locked: ['disk'] }), false);
   assert.equal(detailsLocked({}), false);
+});
+
+test('day cells are told apart by level, with no data kept apart from zero', () => {
+  assert.equal(dayLevel(100), 'ok');
+  assert.equal(dayLevel(99.9), 'ok');
+  assert.equal(dayLevel(99.8), 'warn');
+  assert.equal(dayLevel(95), 'warn');
+  assert.equal(dayLevel(94.9), 'bad');
+  assert.equal(dayLevel(0), 'bad');
+  for (const v of [null, undefined, NaN, 'x', Infinity]) assert.equal(dayLevel(v), 'none');
+});
+
+test('day titles name the UTC date and the percent', () => {
+  const now = Date.UTC(2026, 10, 19, 23, 59);
+  assert.equal(dayDate(89, 90, now), '2026-11-19');
+  assert.equal(dayDate(88, 90, now), '2026-11-18');
+  assert.equal(dayDate(0, 90, now), '2026-08-22');
+  assert.equal(dayTitle(89, 90, 99.5, now), '2026-11-19: 99.5% up');
+  assert.equal(dayTitle(5, 90, null, now), '2026-08-27: no data');
+});
+
+test('the uptime bar has a text alternative with the same facts', () => {
+  const days = new Array(90).fill(null);
+  days[89] = 100;
+  days[88] = 97.2;
+  days[87] = 80;
+  days[86] = 99.9;
+  const label = uptimeLabel({ days, uptime90: { percent30: 99.1, percent90: 98.7 } });
+  assert.equal(label, 'Uptime over the last 90 days: 98.7%, over the last 30 days: 99.1%. 2 days below 99.9%, 86 without data');
+  assert.equal(uptimeLabel({ days: new Array(90).fill(null), uptime90: { percent30: null, percent90: null } }), 'Uptime over the last 90 days: no data yet');
+  assert.equal(uptimeLabel({}), 'Uptime over the last 90 days: no data yet');
+  assert.match(uptimeLabel({ days: [100, 50], uptime90: { percent30: 75, percent90: 75 } }), /1 day below 99.9%, 0 without data/);
+});
+
+test('incident spans say ongoing or lasted', () => {
+  assert.equal(incidentSpan({ ongoing: true, seconds: 750 }), 'Down for 12m 30s so far');
+  assert.equal(incidentSpan({ ongoing: false, seconds: 3700 }), 'Lasted 1h 1m');
 });

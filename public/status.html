@@ -40,7 +40,13 @@
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
-  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. Use More on a row for details, or Full details for graphs.</p>
+  <section id="incidents" class="incidents" aria-labelledby="incidents-title">
+    <h2 id="incidents-title">Recent incidents</h2>
+    <p id="incidents-empty" class="note">Loading incidents...</p>
+    <ul id="incident-list" class="incident-list" hidden></ul>
+    <p id="incidents-more" class="note" hidden></p>
+  </section>
+  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. A node counts as down after two failed checks in a row. The 90 day bar has one cell per day (UTC). Use More on a row for details, or Full details for graphs.</p>
   <dialog id="detail" class="detail" aria-labelledby="detail-title">
     <div class="detail-top">
       <div class="detail-head">
