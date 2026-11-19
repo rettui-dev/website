@@ -396,3 +396,177 @@ test('STATS_TOKEN applies to every stats URL in env mode and is checked; it cann
   await fs.writeFile(path.join(dir, 'c.yaml'), fileCfg(''));
   await assert.rejects(loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml'), STATS_TOKEN: SECRET }), (e) => /not both/.test(e.message) && !e.message.includes(SECRET));
 });
+
+// ---- review follow-ups: shared tokens, token files, limits, eager unions ----
+
+import { limiter, MAX_TOKEN_FETCHES } from '../lib/monitor.js';
+import { parseTokenFiles, tokenWarnings } from '../lib/config.js';
+import { execFileSync } from 'node:child_process';
+
+const tok = (c) => c.repeat(20);
+
+test('tokenWarnings: one token for different hostnames is a warning that does not name the token', () => {
+  const urls = new Map([['a.test:1', 'https://a.test/s'], ['b.test:1', 'https://b.test/s'], ['b.test:2', 'https://b.test/other'], ['c.test:1', 'https://c.test/s']]);
+  const same = tokenWarnings(urls, new Map([['a.test:1', tok('x')], ['b.test:1', tok('x')], ['c.test:1', tok('x')]]));
+  assert.equal(same.length, 1);
+  assert.match(same[0], /3 different hostnames/);
+  assert.equal(same[0].includes(tok('x')), false);
+  assert.deepEqual(tokenWarnings(urls, new Map([['a.test:1', tok('x')], ['b.test:1', tok('y')]])), []);
+  // Two stats URLs on one hostname share a token without a warning.
+  assert.deepEqual(tokenWarnings(urls, new Map([['b.test:1', tok('x')], ['b.test:2', tok('x')]])), []);
+  assert.deepEqual(tokenWarnings(urls, new Map()), []);
+});
+
+test('parseTokenFiles is strict', () => {
+  const urls = new Map([['a.test:1', 'https://a.test/s'], ['b.test:1', 'https://b.test/s']]);
+  assert.deepEqual([...parseTokenFiles(' A.test:1=/run/a.token , b.test:1=rel/b.token,', urls)], [['a.test:1', '/run/a.token'], ['b.test:1', 'rel/b.token']]);
+  assert.equal(parseTokenFiles('', urls).size, 0);
+  assert.equal(parseTokenFiles(undefined, urls).size, 0);
+  for (const bad of ['a.test:1', 'a.test:1=', '=x', 'a.test:1=x,a.test:1=y', 'c.test:1=x', 'nohost=x']) {
+    assert.throws(() => parseTokenFiles(bad, urls), /STATS_TOKEN_FILES/, bad);
+  }
+});
+
+async function tokenDir() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  await fs.writeFile(path.join(dir, 'a.token'), `${tok('a')}\n`, { mode: 0o600 });
+  await fs.writeFile(path.join(dir, 'b.token'), tok('b'), { mode: 0o600 });
+  return dir;
+}
+
+const urlsEnv = { STATUS_TARGETS: 'a.test:1,b.test:1,c.test:1', STATS_URLS: 'a.test:1=https://a.test/s,b.test:1=https://b.test/s,c.test:1=https://c.test/s' };
+
+test('STATS_TOKEN_FILES gives each node its own token and overrides the default', async () => {
+  const dir = await tokenDir();
+  const n = await loadNodes({ ...urlsEnv, STATS_TOKEN_FILES: `a.test:1=${dir}/a.token,b.test:1=${dir}/b.token` });
+  assert.deepEqual([...n.tokens], [['a.test:1', tok('a')], ['b.test:1', tok('b')]]);
+  assert.deepEqual(n.warnings, []);
+  const mixed = await loadNodes({ ...urlsEnv, STATS_TOKEN: SECRET, STATS_TOKEN_FILES: `a.test:1=${dir}/a.token` });
+  assert.equal(mixed.tokens.get('a.test:1'), tok('a'));
+  assert.equal(mixed.tokens.get('b.test:1'), SECRET);
+  assert.equal(mixed.warnings.length, 1);
+  assert.match(mixed.warnings[0], /2 different hostnames/);
+  await assert.rejects(loadNodes({ ...urlsEnv, STATS_TOKEN_FILES: `a.test:1=${dir}/missing` }), /STATS_TOKEN_FILES cannot be read \(ENOENT\)/);
+  await assert.rejects(loadNodes({ ...urlsEnv, STATS_TOKEN_FILES: 'z.test:1=x' }), /not a node with a stats URL/);
+  await fs.writeFile(path.join(dir, 'c.yaml'), 'nodes:\n  - address: a.test:1\n');
+  await assert.rejects(loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml'), STATS_TOKEN_FILES: `a.test:1=${dir}/a.token` }), /not both/);
+});
+
+test('a config file with one default token warns about it; one token per node does not', async () => {
+  const dir = await tokenDir();
+  const nodes = '\nnodes:\n  - address: a.test:1\n    stats_url: https://a.test/s\n    NODEA\n  - address: b.test:1\n    stats_url: https://b.test/s\n    NODEB\n';
+  await fs.writeFile(path.join(dir, 'one.yaml'), `stats_token_file: a.token${nodes.replace('NODEA', '').replace('NODEB', '')}`);
+  const one = await loadConfigFile(path.join(dir, 'one.yaml'));
+  assert.equal(one.warnings.length, 1);
+  assert.match(one.warnings[0], /2 different hostnames/);
+  await fs.writeFile(path.join(dir, 'two.yaml'), nodes.replace('NODEA', 'stats_token_file: a.token').replace('NODEB', 'stats_token_file: b.token'));
+  assert.deepEqual((await loadConfigFile(path.join(dir, 'two.yaml'))).warnings, []);
+});
+
+test('token files: other users can read it is a warning, and the read is bounded', async () => {
+  const dir = await tokenDir();
+  await fs.writeFile(path.join(dir, 'a.yaml'), 'nodes:\n  - address: a.test:1\n    stats_url: https://a.test/s\n    stats_token_file: open.token\n');
+  await fs.writeFile(path.join(dir, 'open.token'), tok('o'), { mode: 0o644 });
+  await fs.chmod(path.join(dir, 'open.token'), 0o644);
+  const c = await loadConfigFile(path.join(dir, 'a.yaml'));
+  assert.equal(c.tokens.get('a.test:1'), tok('o'));
+  if (process.platform !== 'win32') {
+    assert.equal(c.warnings.length, 1);
+    assert.match(c.warnings[0], /can be read by other users \(mode 644\)/);
+    assert.equal(c.warnings[0].includes(tok('o')), false);
+  }
+  await fs.writeFile(path.join(dir, 'open.token'), 'x'.repeat(5000));
+  await assert.rejects(loadConfigFile(path.join(dir, 'a.yaml')), /not a small file/);
+  await fs.writeFile(path.join(dir, 'open.token'), 'x'.repeat(1025));
+  await assert.rejects(loadConfigFile(path.join(dir, 'a.yaml')), /not a small file/);
+  await fs.rm(path.join(dir, 'open.token'));
+  await fs.mkdir(path.join(dir, 'open.token'));
+  await assert.rejects(loadConfigFile(path.join(dir, 'a.yaml')), /not a small file/);
+});
+
+test('a named pipe as a token file is refused, not waited on', { skip: process.platform === 'win32' }, async () => {
+  const dir = await tokenDir();
+  execFileSync('mkfifo', [path.join(dir, 'pipe.token')]);
+  await fs.writeFile(path.join(dir, 'p.yaml'), 'nodes:\n  - address: a.test:1\n    stats_url: https://a.test/s\n    stats_token_file: pipe.token\n');
+  await assert.rejects(loadConfigFile(path.join(dir, 'p.yaml')), /not a small file/);
+});
+
+test('limiter runs at most the given number of jobs at once, in order', async () => {
+  let running = 0;
+  let peak = 0;
+  const order = [];
+  const run = limiter(3);
+  await Promise.all(
+    Array.from({ length: 10 }, (_, i) =>
+      run(async () => {
+        order.push(i);
+        running++;
+        peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 5));
+        running--;
+        return i;
+      }),
+    ),
+  );
+  assert.equal(peak, 3);
+  assert.deepEqual(order, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  // A failing job does not stop the others.
+  const run2 = limiter(1);
+  const results = await Promise.allSettled([run2(async () => { throw new Error('x'); }), run2(async () => 'ok')]);
+  assert.deepEqual(results.map((r) => r.status), ['rejected', 'fulfilled']);
+});
+
+test('at most 4 token fetches run at once; fetches without a token are not held back', async () => {
+  const lines = Array.from({ length: 10 }, (_, i) => `  - address: n${i}.test:1\n    stats_url: https://n${i}.test/s`).join('\n');
+  const config = loadConfig(`nodes:\n${lines}\n  - address: plain.test:1\n    stats_url: https://plain.test/s\n`);
+  let running = 0;
+  let peak = 0;
+  let plainSeen = 0;
+  const tokens = new Map(config.targets.filter((t) => t.host !== 'plain.test').map((t) => [`${t.host}:${t.port}`, SECRET]));
+  const monitor = new Monitor({
+    targets: config.targets, statsUrls: config.statsUrls, tokens, dataDir: await fs.mkdtemp(path.join(os.tmpdir(), 'website-')),
+    probeFn: async () => ({ up: true, ms: 1 }),
+    statsFn: async (url, opts) => {
+      if (!opts) {
+        plainSeen = Math.max(plainSeen, running);
+        return ok();
+      }
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 10));
+      running--;
+      return ok();
+    },
+  });
+  await monitor.checkAll();
+  assert.equal(MAX_TOKEN_FETCHES, 4);
+  assert.equal(peak, 4);
+  // The plain fetch started right away, while token fetches were still running.
+  assert.ok(plainSeen >= 1);
+  assert.equal(monitor.stats.size, 11);
+});
+
+test('the union is worked out after the fetches, and a request only reads it', async () => {
+  const lists = { a: [peer(1), peer(2)], b: [peer(2), peer(3)] };
+  const s = await setup({ tokens: new Map([['a.test:1', SECRET], ['b.test:1', SECRET]]), statsFn: (host) => ok(lists[host === 'a.test' ? 'a' : 'b']) });
+  try {
+    assert.equal(s.monitor.unionCache.size, 0);
+    await s.monitor.fetchStatsAll();
+    // Already there, before any request or snapshot.
+    assert.deepEqual(s.monitor.unionCache.get('p.test:1').value, { total: 3, lxmf: 3, nomad: 0, propagation: 0 });
+    const cached = s.monitor.unionCache.get('p.test:1');
+    await s.monitor.checkAll();
+    assert.notEqual(s.monitor.unionCache.get('p.test:1').id, cached.id);
+    const before = s.monitor.unionCache.get('p.test:1');
+    for (let i = 0; i < 3; i++) await (await fetch(`${s.base}/api/status`)).text();
+    await (await fetch(`${s.base}/api/stats?host=p.test:1&view=combined`)).text();
+    assert.equal(s.monitor.unionCache.get('p.test:1'), before);
+    assert.equal(s.monitor.snapshot().hosts[0].group.data.peersHeard.exact, true);
+    // A change in who reports, seen by a request before the next refresh, shows the range, not a stale union.
+    s.monitor.peerLists.delete('a.test:1');
+    assert.equal(s.monitor.groupFor('p.test:1').data.peersHeard.exact, false);
+    assert.equal(s.monitor.unionCache.get('p.test:1'), before);
+  } finally {
+    await s.close();
+  }
+});
