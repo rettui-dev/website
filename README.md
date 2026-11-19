@@ -95,6 +95,31 @@ never repeats a URL:
 In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
 The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
+## Proxies and groups
+
+A node with `proxy_for` is a proxy (a "front door") for the nodes it lists. Every node is
+still probed and, with a `stats_url`, still has its own stats. `/api/status` adds to each
+host: `name` (or `null`), `role` (`"proxy"` or `"node"`), `proxy` (`{for: [addresses]}` or
+`null`), `proxiedBy` (the proxy's address or `null`) and, on a proxy, `group`.
+
+`group` is the combined latest stats of the proxy's members:
+`{nodes, reporting, partial, missing, countOwn, data}`.
+
+- **Which nodes count:** only members that are not down and have fresh stats (not stale)
+  report. `reporting` is how many of the `nodes` did, `partial` is true when some did not,
+  and `missing` names them. `data` is `null` when none reports.
+- **Sums:** clients, received and sent bytes, announces per minute and the interface totals
+  are added up. Clients stay `null` only when no reporting member knows them.
+- **Peers heard cannot be de-duplicated.** Nodes publish counts only, so a peer heard by two
+  nodes cannot be recognised and removed. `data.peersHeard` is `{sum, max}` (each with
+  `total`, `lxmf`, `nomad`, `propagation`): the largest single node is a lower bound and the
+  sum is an upper bound, and the page shows "N to M (overlap can't be removed)". An exact
+  union would need nodes to publish something that can be merged (for example a sketch of
+  the peers they have heard); that is a possible future change and is not built.
+- **`count_own`** (default `false`): by default the group is only the nodes in `proxy_for`.
+  Set `count_own: true` to add the proxy's own stats too. Leave it off when the proxy's
+  stats already include the nodes behind it, or they would be counted twice.
+
 ## How checking works
 
 Every 30 seconds the server opens a TCP connection to each host (5 second timeout) and
