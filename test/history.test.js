@@ -201,7 +201,7 @@ test('stats history persists in its own file and history.json is unchanged', asy
   await m.checkAll();
   clock += 5 * MIN;
   await m.checkAll();
-  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json']);
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json', 'uptime.json']);
   assert.equal(((await fs.stat(path.join(dir, 'stats-history.json'))).mode & 0o777).toString(8), '600');
   const saved = JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8'));
   assert.deepEqual(Object.keys(saved).sort(), ['hosts', 'version']);
@@ -454,7 +454,7 @@ test('saving replaces a stale temporary file and never follows a planted link', 
   }
   await m.checkAll();
   assert.equal(await fs.readFile(target, 'utf8'), 'keep');
-  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json', 'victim.txt']);
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json', 'uptime.json', 'victim.txt']);
   assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'stats-history.json'), 'utf8')).version, 1);
   assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8')).version, 1);
 });

@@ -169,7 +169,7 @@ test('save leaves no temporary file behind and creates the data dir', async () =
   const dir = path.join(await tmp(), 'nested', 'data');
   const m = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: dir, probeFn: fake([{ up: true, ms: 1 }]) });
   await m.checkAll();
-  assert.deepEqual(await fs.readdir(dir), ['history.json']);
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'uptime.json']);
 });
 
 test('save failure is logged, not thrown', async () => {
