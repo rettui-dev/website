@@ -1,16 +1,20 @@
 # Example config for the status page. Set CONFIG_FILE to its path.
 # It replaces the STATUS_TARGETS and STATS_URLS environment variables; setting
 # both is an error. See "Config file" in README.md.
-# Optional: a token that makes the nodes send their peer lists, so a group's peers
-# heard is counted exactly (see "Exact peer counts" in README.md). Keep it in a
-# file, not here; a relative path is relative to this file.
-# stats_token_file: stats-token.txt
+# Optional: tokens that make the nodes send their peer lists, so a group's peers
+# heard is counted exactly (see "Exact peer counts" in README.md). Give each node
+# its own token, kept in its own file and not in this one. A relative path is
+# relative to this file; with Docker mount the folder next to the config:
+#   ./secrets:/config/secrets:ro   (files secrets/front.token, secrets/back.token, ...)
+# Remove the # from the stats_token_file lines below once the files exist; a missing
+# file stops the server at start.
 nodes:
   # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
   # The page groups those nodes under it and adds a combined view.
   - address: rns.rettui.dev:4242
     name: Front door
     stats_url: https://rns.rettui.dev/stats.json
+    # stats_token_file: secrets/door.token
     proxy_for:
       - front.rns.rettui.dev:4242
       - back.rns.rettui.dev:4242
@@ -22,9 +26,12 @@ nodes:
   - address: front.rns.rettui.dev:4242
     name: Front
     stats_url: https://front.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/front.token
   - address: back.rns.rettui.dev:4242
     name: Back
     stats_url: https://back.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/back.token
   - address: side.rns.rettui.dev:4242
     name: Side
     stats_url: https://side.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/side.token

@@ -8,3 +8,7 @@ README.md
 compose.yaml
 Dockerfile
 *.log
+config.yaml
+*.token
+stats-token*.txt
+secrets/

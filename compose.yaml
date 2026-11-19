@@ -12,9 +12,14 @@ services:
       # Or describe the nodes in a YAML file instead (see config.example.yaml). It
       # replaces STATUS_TARGETS and STATS_URLS; setting both is an error.
       # CONFIG_FILE: /config/config.yaml
+      # Without a config file, per-node token files: host:port=path (see "Exact peer counts").
+      # STATS_TOKEN_FILES: "front.rns.rettui.dev:4242=/config/secrets/front.token"
     volumes:
       - status-data:/data
       # - ./config.yaml:/config/config.yaml:ro
+      # One token file per node, each readable by the server only (chmod 600). In
+      # config.yaml write stats_token_file: secrets/front.token (relative to the config).
+      # - ./secrets:/config/secrets:ro
     read_only: true
     tmpfs:
       - /tmp

@@ -2,3 +2,7 @@ node_modules/
 data/
 *.log
 .DS_Store
+config.yaml
+*.token
+stats-token*.txt
+secrets/

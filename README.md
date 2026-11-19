@@ -50,7 +50,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). |
-| `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file. |
+| `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -127,19 +127,30 @@ A node can hand its list of peers to a website that asks with a secret token. Wi
 of all the nodes behind a proxy the website can count each peer once, so the group's peers
 heard is an exact number instead of a range.
 
-1. **On each node** (rettui), set the same secret with `RETTUI_STATS_TOKEN` or
-   `--stats-token-file`. It must be 16 to 256 printable ASCII characters without spaces. A
+1. **On each node** (rettui), set its own secret with `RETTUI_STATS_TOKEN` or
+   `--stats-token-file`. Use a different token for each node: whoever runs a node sees the
+   token the website sends to it, and with one shared token that would be good for every
+   other node too. It must be 16 to 256 printable ASCII characters without spaces. A
    request to the stats URL that carries `Authorization: Bearer <token>` then gets two extra
    fields, `"authorised": true` and `"peers"` (up to 20000 entries of `address`, `type` and
    `name`, sorted by address, with `"peers_truncated": true` when cut). Without a valid token
    the answer is the same as before.
 2. **On the website**, give the website the token for each stats URL:
-   - in the config file, `stats_token: <token>` on a node, or at the top level as the default
-     for every node with a `stats_url`; or `stats_token_file: <path>` instead, so the secret
-     is not in the YAML. A relative path is relative to the config file. The file holds only
-     the token (a final newline is fine) and is read once at start;
-   - with the environment variables, `STATS_TOKEN` or `STATS_TOKEN_FILE`, which apply to every
-     stats URL. They cannot be combined with `CONFIG_FILE`.
+   - in the config file, `stats_token_file: <path>` on each node (recommended, so the secret
+     is not in the YAML), or `stats_token: <token>`. A relative path is relative to the config
+     file. The file holds only the token (a final newline is fine, at most 1 KiB) and is read
+     once at start. A top-level `stats_token` or `stats_token_file` is a default for every
+     node with a `stats_url`; it suits one operator running all the nodes, and the server
+     logs a warning at start when one token would go to different hostnames;
+   - with the environment variables, `STATS_TOKEN_FILES=host:port=path,host:port=path` for
+     per-node tokens (strict like `STATS_URLS`: only nodes with a stats URL, none twice, no
+     comma in a path), and `STATS_TOKEN` or `STATS_TOKEN_FILE` as a default for the others.
+     None of them can be combined with `CONFIG_FILE`.
+   Files should be readable by the server only (`chmod 600`); the server warns at start when
+   another user can read one. In Docker, mount the folder with the files read-only next to the
+   config (`./secrets:/config/secrets:ro` in `compose.yaml`). `config.yaml`, `*.token`,
+   `stats-token*.txt` and `secrets/` are in `.gitignore` and `.dockerignore`, so they are not
+   committed or copied into the image.
    A bad token stops the server at start with a message that never repeats it. Prefer the
    file forms; in Docker mount the file read-only, like the config.
 3. **The result.** When every member of a proxy group that reports stats also sent a complete
@@ -161,7 +172,9 @@ Privacy and limits:
   per peer, so under 350 KiB per node), are replaced on every fetch, and are never written to
   `history.json` or `stats-history.json` or shown in `/api/status` or `/api/stats`: only the
   counts are.
-- With a token the website accepts an answer of up to 4 MiB from that node (64 KiB without).
+- With a token the website accepts an answer of up to 4 MiB from that node (64 KiB without),
+  and at most 4 such fetches run at the same time. The group's union is worked out once per
+  cycle, after the fetches, not when a page asks.
 - The history graphs are not de-duplicated: they stay the sum and the largest single node,
   because past peer lists are not kept. The group's exact total is therefore shown as a
   number now, not as a line over time.
