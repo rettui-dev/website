@@ -109,6 +109,23 @@ test('snapshot reports status, uptime and overall state', async () => {
   assert.equal(s.hosts[1].uptimePercent, 0);
 });
 
+test('overall is up only when every entry point, proxied ones too, has been checked and is up', async () => {
+  const dir = await tmp();
+  const targets = [{ host: 'p.test', port: 1 }, { host: 'a.test', port: 2 }, { host: 'b.test', port: 3 }];
+  const nodes = new Map([['p.test:1', { name: null, proxyFor: ['a.test:2', 'b.test:3'], proxiedBy: null, countOwn: false }]]);
+  let down = '';
+  const m = new Monitor({ targets, nodes, dataDir: dir, probeFn: async (host) => (host === down ? { up: false, ms: 1, error: 'x' } : { up: true, ms: 1 }) });
+  await m.checkAll();
+  assert.equal(m.snapshot().overall, 'up');
+  down = 'b.test';
+  await m.checkAll();
+  assert.equal(m.snapshot().overall, 'degraded');
+  // Some not checked yet is not "all reachable".
+  const early = new Monitor({ targets, dataDir: await tmp(), probeFn: async () => ({ up: true, ms: 1 }) });
+  early.history.get('p.test:1').push([Date.now(), 1, 1]);
+  assert.equal(early.snapshot().overall, 'unknown');
+});
+
 test('a throwing probe is recorded as down, not a crash', async () => {
   const dir = await tmp();
   const m = new Monitor({

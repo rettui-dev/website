@@ -14,6 +14,11 @@ services:
       # CONFIG_FILE: /config/config.yaml
       # Without a config file, per-node token files: host:port=path (see "Exact peer counts").
       # STATS_TOKEN_FILES: "front.rns.rettui.dev:4242=/config/secrets/front.token"
+      # What the page publishes (see "What is public" in the README). Only true or false;
+      # an empty value is an error. Not with CONFIG_FILE: set public_details and
+      # public_disk_figures in the file instead.
+      # PUBLIC_DETAILS: "false"       # no Details view and no /api/stats for any node
+      # PUBLIC_DISK_FIGURES: "true"   # exact free and total disk space (default: a level only)
     volumes:
       - status-data:/data
       # - ./config.yaml:/config/config.yaml:ro

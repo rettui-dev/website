@@ -104,7 +104,11 @@ The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
 - **`public_details`** (default `true`): when `false` a node has no Details button, and
   `/api/stats` answers 404 for it, the same as for an unknown host. Its summary on the page stays.
-  A node whose details are private is also left out of its proxy's combined graphs. Set it at the
+  A node whose details are private is also left out of its proxy's combined view: its graphs,
+  its place in the node list, and the totals, node counts and "not reporting" names of that
+  view (the exact peer count is then a range, as it was worked out with all nodes). The group
+  line on the status list itself still counts every node, because the node rows are there too.
+  Set it at the
   top of the config file for every node, or on a node to override. With the environment variables,
   `PUBLIC_DETAILS=false` sets it for all nodes (not with `CONFIG_FILE`).
 - **`public_disk_figures`** (default `false`): the free and total space of a node's disk say a lot
@@ -116,6 +120,10 @@ The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
   public on the node already and is shown either way. A node without a token has no disk level.
   A group shows the fullest disk by level, and the exact least free space only for nodes that
   publish it.
+  The history file (`stats-history.json`) keeps the exact free space of the disk at rest, whatever
+  this option says, and it is not purged. Setting `public_disk_figures: true` later therefore
+  shows the free-space graph for the time already recorded, not only from then on. Keep the data
+  directory private, and delete that file if you do not want that history.
 
 ## Propagation node and disk numbers
 

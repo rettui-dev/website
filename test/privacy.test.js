@@ -88,7 +88,9 @@ test('PUBLIC_DETAILS and PUBLIC_DISK_FIGURES in the environment: global only, st
   const n = await loadNodes({});
   assert.deepEqual(n.defaults, { publicDetails: true, publicDiskFigures: false });
   assert.deepEqual((await loadNodes({ PUBLIC_DETAILS: 'false', PUBLIC_DISK_FIGURES: 'true' })).defaults, { publicDetails: false, publicDiskFigures: true });
-  assert.deepEqual((await loadNodes({ PUBLIC_DETAILS: '', PUBLIC_DISK_FIGURES: '' })).defaults, { publicDetails: true, publicDiskFigures: false });
+  // An empty value is a mistake, never "public".
+  await assert.rejects(loadNodes({ PUBLIC_DETAILS: '' }), /PUBLIC_DETAILS is empty/);
+  await assert.rejects(loadNodes({ PUBLIC_DISK_FIGURES: '' }), /PUBLIC_DISK_FIGURES is empty/);
   await assert.rejects(loadNodes({ PUBLIC_DETAILS: 'no' }), /PUBLIC_DETAILS must be true or false/);
   await assert.rejects(loadNodes({ PUBLIC_DISK_FIGURES: 'TRUE' }), /PUBLIC_DISK_FIGURES must be true or false/);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
@@ -218,4 +220,30 @@ test('with the environment variables the global defaults apply to every node', a
   assert.equal(h.hasDetail, false);
   assert.deepEqual(h.stats.data.disk, { dataBytes: 123_456, level: 'high', usedPercent: 80 });
   assert.equal(m.detail('a.test:1', '6h') !== null, true);
+});
+
+test('the disk level is worked out from the published, rounded share', () => {
+  // 88% is published as 90, so it must also read "full".
+  assert.deepEqual([publicData(stats(disk(88)), false).disk.usedPercent, publicData(stats(disk(88)), false).disk.level], [90, 'full']);
+  assert.deepEqual([publicData(stats(disk(73)), false).disk.usedPercent, publicData(stats(disk(73)), false).disk.level], [75, 'high']);
+  assert.deepEqual([publicData(stats(disk(72)), false).disk.usedPercent, publicData(stats(disk(72)), false).disk.level], [70, 'ok']);
+  // With figures the exact (whole) share is the one that counts.
+  assert.deepEqual([publicData(stats(disk(89.4)), true).disk.usedPercent, publicData(stats(disk(89.4)), true).disk.level], [89, 'high']);
+});
+
+test('the combined view leaves a private node out of its group totals, not only out of the graphs', async () => {
+  const s = await setup({ nodeFlags: '    public_details: false' });
+  try {
+    const all = JSON.parse(await (await fetch(s.base + '/api/status')).text()).hosts[0].group;
+    const combined = JSON.parse(await (await fetch(s.base + '/api/stats?host=p.test:1&range=6h&view=combined')).text());
+    assert.equal(all.nodes, 2);
+    assert.equal(combined.group.nodes, 1);
+    assert.equal(combined.group.reporting, 1);
+    assert.deepEqual(combined.group.missing, []);
+    assert.equal(combined.group.data.propagation.nodes, 1);
+    assert.equal(combined.group.data.peersHeard.exact, false);
+    assert.equal(JSON.stringify(combined).includes('a.test'), false);
+  } finally {
+    await s.close();
+  }
 });
