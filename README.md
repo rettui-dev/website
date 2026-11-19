@@ -32,6 +32,7 @@ hosts, keeps their history and can fetch their node stats.
 - `/downloads` lists the latest rettui and rngit-rs releases by platform, with SHA-256 checksums
   (see "Downloads page").
 - `/api/releases` is the same list as JSON (GET and HEAD only, `no-store`).
+- `/feed.xml` is an Atom feed of the latest release notes (see "Release feed").
 - `/api/public/stats` and `/api/public/incidents` are the public, versioned JSON API for
   dashboards (see "Public stats API").
 - `/healthz` answers `ok` (used by the Docker health check).
@@ -73,6 +74,25 @@ last good copy is shown, marked stale with its age.
 - **No release yet** (or a repository GitHub does not know) shows a plain message and a link to
   its releases page.
 
+## Release feed
+
+`GET /feed.xml` (GET and HEAD only, anything else is 405) is an Atom 1.0 feed
+(`application/atom+xml; charset=utf-8`) with the latest release of each repository in
+`RELEASE_REPOS`, newest first. It is built from the same cache as the Downloads page, so a request
+never starts one to GitHub, and an empty cache gives an empty but valid feed. Each entry has the
+release page as its `id` and as its `rel="alternate"` link, `updated` from the publish date, a
+title such as `rettui rettui v2.1.0`, and the release notes as `type="text"` content, cut to 4000
+characters. Everything is escaped, and characters XML does not allow are dropped. The notes are
+kept in `releases.json` (cleaned and capped at 4000 characters; an older file without them fills
+in at the next refresh) but are not part of `/api/releases`. The answer has an `ETag` and
+`Cache-Control: public, max-age=300`.
+
+With `SITE_URL` (or `site.url` in the config file) the feed also names itself (`id` and `rel="self"`
+use `https://<site>/feed.xml`) and links to the Downloads page. Without it the feed id is
+`tag:rettui.dev,2026:releases`, and only the GitHub links are in it, as a relative link would mean
+nothing in a reader. The home and Downloads pages advertise it with
+`<link rel="alternate" type="application/atom+xml">`. In status-only mode `/feed.xml` is 404.
+
 ## Run locally
 
 Needs Node.js 24.7 or later (the login uses its built-in Argon2id).
@@ -111,6 +131,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `RELEASE_REPOS`  | `rettui-dev/rettui,rettui-dev/rngit-rs` | Comma separated `owner/name` list of the repositories the Downloads page shows (at most 8). Anything else is an error at start. |
 | `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both). |
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
+| `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -148,6 +169,7 @@ site:
   logo: site/logo.png          # png, jpg, webp or svg, up to 512 KiB, relative to this file
   description: Public entry points of the Acme backbone.   # up to 200 characters
   footer: Run by volunteers.   # up to 200 characters, plain text
+  url: https://status.acme.example   # the https address of this site, no path (see below)
   links:                       # up to 6; http or https, no user name or password
     - { label: Join us, url: "https://acme.example/join" }
 ```
@@ -165,6 +187,9 @@ site:
   the title and footer, your links are added to the menu, and `description` and `footer` are
   added. The home, Join and Downloads pages are the rettui project's and stay as they are. With no
   `site:` the pages are byte for byte what they were.
+- `url` (or `SITE_URL` without a config file) is the https address of this server, with no path,
+  user name, password, query or fragment. It does not change what a visitor sees: it is used for
+  the links that must be absolute (the feed's own links now, the Open Graph tags below).
 - The theme toggle, fonts and the strict CSP are unchanged: no inline script or style.
 
 How it works: `status.html` stays a plain file. When the site is customised (status mode, or a

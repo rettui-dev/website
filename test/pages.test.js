@@ -168,7 +168,7 @@ test('no page has inline script or style, and every file it loads exists', async
     assert.doesNotMatch(html, /\son[a-z]+\s*=/i, `${name}: event handler attribute`);
     assert.doesNotMatch(html, /javascript:/i, `${name}: javascript: link`);
     for (const [, url] of html.matchAll(/(?:src|href)="(\/[^"#?]*)"/g)) {
-      if (url === '/' || ['/status', '/join', '/downloads', '/join-qr.svg'].includes(url)) continue;
+      if (url === '/' || ['/status', '/join', '/downloads', '/join-qr.svg', '/feed.xml'].includes(url)) continue;
       await fs.access(path.join(publicDir, url)).catch(() => assert.fail(`${name} loads ${url}, which does not exist`));
     }
     // Same-origin only: no third party scripts, styles or images.

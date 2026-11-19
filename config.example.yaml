@@ -57,6 +57,7 @@
 #   logo: site/logo.png             # png, jpg, webp or svg, up to 512 KiB; relative to this file
 #   description: Public entry points of the Acme backbone.   # up to 200 characters
 #   footer: Run by volunteers.      # up to 200 characters
+#   url: https://status.acme.example   # https address of this site, no path: for the feed's own links
 #   links:                          # up to 6, http or https, no user name or password
 #     - { label: Join us, url: "https://acme.example/join" }
 nodes:

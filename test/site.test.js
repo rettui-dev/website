@@ -301,3 +301,21 @@ test('status mode makes no release requests and asks nothing of the cache', asyn
     await s.close();
   }
 });
+
+test('site.url and SITE_URL: only the https address of the site', async () => {
+  assert.equal(loadConfig(NODES).site.url, null);
+  assert.equal(loadConfig(`${NODES}site:\n  url: https://Rettui.Example\n`).site.url, 'https://rettui.example');
+  assert.equal(loadConfig(`${NODES}site:\n  url: https://rettui.example:8443/\n`).site.url, 'https://rettui.example:8443');
+  for (const bad of ['http://rettui.example', 'rettui.example', 'https://u:p@rettui.example', 'https://rettui.example/path', 'https://rettui.example/?a=1', 'https://rettui.example/#x', 'ftp://x.example', '""', '5', '[a]']) {
+    refuses(`${NODES}site:\n  url: ${bad}\n`, /site\.url /);
+  }
+  // An error never repeats the address, which could hold a password.
+  assert.throws(() => loadConfig(`${NODES}site:\n  url: https://user:secret@rettui.example\n`), (err) => !err.message.includes('secret'));
+  assert.equal((await loadNodes({ SITE_URL: 'https://rettui.example' })).site.url, 'https://rettui.example');
+  assert.equal((await loadNodes({})).site.url, null);
+  await assert.rejects(loadNodes({ SITE_URL: 'http://rettui.example' }), /SITE_URL must be an https URL/);
+  await assert.rejects(loadNodes({ SITE_URL: '' }), /SITE_URL is empty/);
+  await assert.rejects(loadNodes({ SITE_URL: 'https://rettui.example/x' }), /SITE_URL must be only the address/);
+  const file = await configFile(NODES);
+  await assert.rejects(loadNodes({ CONFIG_FILE: file, SITE_URL: 'https://rettui.example' }), /not both/);
+});

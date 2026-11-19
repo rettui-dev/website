@@ -25,6 +25,9 @@ services:
       # and an optional GitHub token that only raises the API rate limit. Keep the token in a file.
       # RELEASE_REPOS: "rettui-dev/rettui,rettui-dev/rngit-rs"
       # GITHUB_TOKEN_FILE: /config/secrets/github.token
+      # The https address the site is served at (no path), for the absolute links in /feed.xml. Not with CONFIG_FILE:
+      # use site.url in the file.
+      # SITE_URL: "https://rettui.example"
       # A status-only site (no rettui project pages, no GitHub requests): set site_mode: status in the
       # config file, or without one SITE_MODE: "status". Branding goes in the file's site: section.
       # SITE_MODE: "status"
