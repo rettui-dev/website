@@ -50,7 +50,7 @@ test('/api/status has the expected shape', async () => {
     assert.equal(typeof body.checkedAt, 'string');
     assert.equal(body.intervalSeconds, 30);
     const h = body.hosts[0];
-    assert.deepEqual(Object.keys(h).sort(), ['checks', 'days', 'error', 'group', 'hasDetail', 'history', 'host', 'incidents', 'lastChecked', 'latencyMs', 'name', 'port', 'proxiedBy', 'proxy', 'role', 'stats', 'status', 'uptime90', 'uptimePercent']);
+    assert.deepEqual(Object.keys(h).sort(), ['checks', 'days', 'error', 'group', 'hasDetail', 'history', 'host', 'lastChecked', 'latencyMs', 'name', 'port', 'proxiedBy', 'proxy', 'role', 'stats', 'status', 'uptime90', 'uptimePercent']);
     assert.equal(h.stats, null);
     assert.equal(h.hasDetail, false);
     assert.deepEqual([h.name, h.role, h.proxy, h.proxiedBy, h.group], [null, 'node', null, null, null]);

@@ -60,7 +60,10 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     monitor.stop();
     alerts?.stop();
     releases?.stop();
-    server.close(() => process.exit(0));
-    server.closeAllConnections();
+    // The last uptime and history are written before the process ends.
+    monitor.flush().catch((err) => console.error(`final save failed: ${err.message}`)).finally(() => {
+      server.close(() => process.exit(0));
+      server.closeAllConnections();
+    });
   });
 }

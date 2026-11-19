@@ -172,6 +172,19 @@ test('save leaves no temporary file behind and creates the data dir', async () =
   assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'uptime.json']);
 });
 
+test('flush waits for a save that is running and writes what came after it', async () => {
+  const dir = await tmp();
+  const m = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: dir, probeFn: fake([{ up: true, ms: 5 }]) });
+  await m.checkAll();
+  m.history.get('a.test:1').push([1, 1, 7]);
+  const running = m.save();
+  m.history.get('a.test:1').push([2, 1, 8]);
+  await m.flush();
+  await running;
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8'));
+  assert.deepEqual(saved.hosts['a.test:1'].slice(-2), [[1, 1, 7], [2, 1, 8]]);
+});
+
 test('save failure is logged, not thrown', async () => {
   const dir = await tmp();
   const blocker = path.join(dir, 'file');

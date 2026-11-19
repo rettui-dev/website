@@ -93,7 +93,7 @@ test('a monitor without alerts works as before', async () => {
   const { m, tick } = monitorWith(await tmp(), [0, 0, 1, 1]);
   for (let i = 0; i < 4; i++) await tick();
   assert.equal(m.alerts, null);
-  assert.equal(m.snapshot().hosts[0].incidents.length, 1);
+  assert.equal(m.incidentList().length, 1);
 });
 
 test('end to end: a webhook goes out for the down and the recovery, and the probe loop does not wait for it', async () => {

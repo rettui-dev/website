@@ -272,14 +272,16 @@ test('the monitor records uptime, saves uptime.json privately and loads it again
   assert.equal(((await fs.stat(file)).mode & 0o777).toString(8), '600');
   assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'uptime.json']);
   const h = m.snapshot().hosts[0];
-  assert.equal(h.incidents.length, 1);
-  assert.equal(h.incidents[0].ongoing, false);
+  const incidents = m.incidentList();
+  assert.equal(incidents.length, 1);
+  assert.equal(incidents[0].ongoing, false);
+  assert.equal('incidents' in h, false);
   assert.equal(h.days.length, 90);
   assert.equal(h.days.at(-1), 57.1);
   assert.deepEqual(h.uptime90, { percent30: 57.1, percent90: 57.1 });
   const again = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: dir, now: () => T0 + 400_000 });
   await again.load();
-  assert.deepEqual(again.snapshot().hosts[0].incidents, h.incidents);
+  assert.deepEqual(again.incidentList(), incidents);
 });
 
 test('a node without any check has no percent and an empty bar', () => {
@@ -287,19 +289,17 @@ test('a node without any check has no percent and an empty bar', () => {
   const h = m.snapshot().hosts[0];
   assert.deepEqual(h.uptime90, { percent30: null, percent90: null });
   assert.deepEqual(h.days, new Array(90).fill(null));
-  assert.deepEqual(h.incidents, []);
+  assert.deepEqual(m.incidentList(), []);
 });
 
 test('/api/status keeps its additions small', async () => {
   const dir = await tmp();
   const { m, tick } = monitorWith(dir, [0, 0, 1, 1]);
   for (let i = 0; i < 8; i++) await tick();
-  const withIncidents = JSON.stringify(m.snapshot().hosts[0]);
   const { history, ...rest } = m.snapshot().hosts[0];
-  const extra = JSON.stringify({ u: rest.uptime90, d: rest.days, i: rest.incidents }).length;
+  const extra = JSON.stringify({ u: rest.uptime90, d: rest.days }).length;
   assert.ok(extra < 1200, `additions are ${extra} bytes`);
-  assert.ok(withIncidents.length > extra);
-  assert.ok(m.snapshot().hosts[0].incidents.length <= 5);
+  assert.equal('incidents' in rest, false);
 });
 
 async function serve(m) {
@@ -365,7 +365,7 @@ test('uptime answers stay the same for a node with private details', async () =>
   const s = await serve(m);
   try {
     const status = await (await fetch(`${s.base}/api/status`)).json();
-    assert.equal(status.hosts[0].incidents.length, 1);
+    assert.equal('incidents' in status.hosts[0], false);
     const inc = await (await fetch(`${s.base}/api/incidents`)).json();
     assert.equal(inc.incidents.length, 1);
     // Only up and down times: nothing from the node's stats or the probe error.
