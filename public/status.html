@@ -32,7 +32,19 @@
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
-  <p class="note">Each host is tried with a TCP connection from the server every 30 seconds. Uptime is over the last 24 hours of checks; the bar shows the last 90, oldest on the left. Where a node publishes its stats, the second line shows them (clients, interfaces, traffic, peers heard, announces, node uptime). This page refreshes itself.</p>
+  <p class="note">Each host is tried with a TCP connection from the server every 30 seconds. Uptime is over the last 24 hours of checks; the bar shows the last 90, oldest on the left. Where a node publishes its stats, the second line shows them (clients, interfaces, traffic, peers heard, announces, node uptime), and a Details button opens graphs of the last 6 hours, 24 hours or 7 days, the node's version and the peers it has heard. Samples are taken about every 5 minutes, so graphs fill in over time. This page refreshes itself.</p>
+  <dialog id="detail" class="detail" aria-labelledby="detail-title">
+    <div class="detail-head">
+      <h2 id="detail-title">Details</h2>
+      <button id="detail-close" type="button">Close</button>
+    </div>
+    <div id="detail-range" class="range" role="group" aria-label="Time range">
+      <button type="button" data-range="6h" aria-pressed="false">6 h</button>
+      <button type="button" data-range="24h" aria-pressed="true">24 h</button>
+      <button type="button" data-range="7d" aria-pressed="false">7 d</button>
+    </div>
+    <div id="detail-body" class="detail-body" aria-live="polite"></div>
+  </dialog>
 </main>
 <footer>
   <div class="wrap">

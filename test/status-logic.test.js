@@ -10,7 +10,8 @@ const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'publ
 const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
-const { ago, barLabel, bytes, duration, nodeStatPairs } = sandbox.statusLogic;
+const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count } =
+  sandbox.statusLogic;
 
 test('ago words', () => {
   assert.equal(ago(null), 'never');
@@ -58,4 +59,68 @@ test('nodeStatPairs skips clients when unknown', () => {
   assert.deepEqual(pairs.find((p) => p[0] === 'Peers heard'), ['Peers heard', '1,234']);
   d.interfaces.clients = null;
   assert.equal(nodeStatPairs(d).some((p) => p[0] === 'Clients'), false);
+});
+
+test('formatRate adds /s to the byte units', () => {
+  assert.equal(formatRate(0), '0 B/s');
+  assert.equal(formatRate(0.4), '0 B/s');
+  assert.equal(formatRate(1536), '1.5 KiB/s');
+});
+
+test('niceTicks gives round steps from zero that cover the maximum', () => {
+  assert.deepEqual([...niceTicks(0)], [0, 1]);
+  assert.deepEqual([...niceTicks(NaN)], [0, 1]);
+  assert.deepEqual([...niceTicks(Infinity)], [0, 1]);
+  assert.deepEqual([...niceTicks(18)], [0, 5, 10, 15, 20]);
+  for (const max of [0.3, 1, 7, 99, 1234, 5e6]) {
+    const t = niceTicks(max);
+    assert.equal(t[0], 0);
+    assert.ok(t.at(-1) >= max, String(max));
+    assert.ok(t.length >= 2 && t.length <= 7, `${max}: ${t.length}`);
+  }
+});
+
+test('runs splits at gaps and drops bad values', () => {
+  const r = [...runs([[1, 1], [2, 2], [3, null], [4, 4], [5, NaN], [6, 6], [7, 7]])].map((x) => [...x].map((p) => p[0]));
+  assert.deepEqual(r, [[1, 2], [4], [6, 7]]);
+  assert.equal(runs([]).length, 0);
+  assert.equal(runs([[1, null]]).length, 0);
+});
+
+test('summarize and summaryText', () => {
+  assert.equal(summarize([[1, null]]), null);
+  assert.equal(summaryText([], bytes), 'no data');
+  const s = summarize([[1, 2], [2, null], [3, 6]]);
+  assert.deepEqual({ ...s }, { last: 6, min: 2, max: 6, avg: 4 });
+  assert.equal(summaryText([[1, 1024], [2, 3072]], formatRate), 'now 3 KiB/s, average 2 KiB/s, peak 3 KiB/s');
+});
+
+test('axisTime shows the weekday except for 6 hours', () => {
+  const t = new Date(2026, 0, 5, 14, 30).getTime();
+  assert.match(axisTime(t, '6h'), /^14:30$/);
+  assert.match(axisTime(t, '24h'), /^\w+ 14:30$/);
+  assert.match(axisTime(t, '7d'), /^\w+ 14:30$/);
+});
+
+test('count formats whole numbers and small fractions', () => {
+  assert.equal(count(1234), '1,234');
+  assert.equal(count(2.46), '2.5');
+  assert.equal(count(12.6), '13');
+  assert.equal(count(NaN), '-');
+});
+
+test('peerShares gives counts and whole percents, with the rest as Other', () => {
+  const rows = [...peerShares({ total: 100, lxmf: 60, nomad: 30, propagation: 5 })].map((r) => ({ ...r }));
+  assert.deepEqual(rows.map((r) => [r.label, r.count, r.percent]), [['LXMF', 60, 60], ['NomadNet', 30, 30], ['Propagation', 5, 5], ['Other', 5, 5]]);
+  assert.equal(peerShares({ total: 90, lxmf: 60, nomad: 30, propagation: 0 }).length, 3);
+  const zero = peerShares({ total: 0, lxmf: 0, nomad: 0, propagation: 0 });
+  assert.ok(zero.every((r) => r.percent === 0 && r.count === 0));
+});
+
+test('versionSummary is null unless nodes differ, and names the hosts', () => {
+  const h = (host, v) => ({ host, port: 4242, stats: v === undefined ? null : { data: { rettuiVersion: v } } });
+  assert.equal(versionSummary([]), null);
+  assert.equal(versionSummary([h('a', '2.0.0'), h('b', '2.0.0'), h('c')]), null);
+  assert.equal(versionSummary([h('a', '2.0.0'), h('b', '1.9.0'), h('c', '2.0.0'), h('d', null)]), 'Nodes run different versions: 2.0.0 (a:4242, c:4242); 1.9.0 (b:4242).');
+  assert.equal(versionSummary([h('a', '__proto__'), h('b', 'constructor')]), 'Nodes run different versions: __proto__ (a:4242); constructor (b:4242).');
 });
