@@ -19,7 +19,7 @@ hosts, keeps their history and can fetch their node stats.
   incidents"). It refreshes itself and keeps open rows open. Below the banner a collapsible
   "Network map" draws the proxy, the nodes behind it and the external peers they connect out to
   (see "Network map").
-- `/api/status` is the same data as JSON, with `uptime90`, `days` and `incidents` for each host.
+- `/api/status` is the same data as JSON, with `uptime90` and `days` for each host (the incidents are in `/api/incidents`).
 - `/api/incidents` lists the latest incidents (up to 100) of all nodes, newest first. Only GET
   and HEAD are allowed.
 - `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
@@ -84,7 +84,7 @@ last good copy is shown, marked stale with its age.
 (`application/atom+xml; charset=utf-8`) with the latest release of each repository in
 `RELEASE_REPOS`, newest first. It is built from the same cache as the Downloads page, so a request
 never starts one to GitHub, and an empty cache gives an empty but valid feed. Each entry has the
-release page as its `id` and as its `rel="alternate"` link, `updated` from the publish date, a
+release page as its `id` and as its `rel="alternate"` link, `updated` from the publish date (a release without a usable date gets 1970-01-01, so the entry does not look new at every refresh), a
 title such as `rettui rettui v2.1.0`, and the release notes as `type="text"` content, cut to 4000
 characters. Everything is escaped, and characters XML does not allow are dropped. The notes are
 kept in `releases.json` (cleaned and capped at 4000 characters; an older file without them fills
@@ -163,7 +163,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `PUBLIC_DETAILS` | `true`                            | `false` removes the Details view (and `/api/stats`) for every node (see "What is public"). |
 | `PUBLIC_DISK_FIGURES` | `false`                      | `true` publishes exact free and total disk space (see "What is public"). |
 | `RELEASE_REPOS`  | `rettui-dev/rettui,rettui-dev/rngit-rs` | Comma separated `owner/name` list of the repositories the Downloads page shows (at most 8). Anything else is an error at start. |
-| `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both). |
+| `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both): a regular file of at most 1024 bytes; a pipe, a device or a bigger file stops the server at start. |
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
@@ -210,8 +210,9 @@ site:
 
 - Text is plain: no control or direction characters, no markup (it is escaped, never HTML).
 - `logo` is read once at start. The file must be a regular file, and its first bytes must match
-  its type (an SVG must start with `<svg`, and one with a script, a foreign object or an event
-  handler is refused). It is served at `/brand/site-logo` with its real type, `nosniff`, the
+  its type (an SVG must start with `<svg`, and one with a script, a foreign object, an event
+  handler, a `javascript:` link, or a `<use>`, `<animate>` or `<set>` element is refused; that check
+  is only a first filter, and the real protection is the headers below). It is served at `/brand/site-logo` with its real type, `nosniff`, the
   site's strict policy and a `sandbox` on top, and the page only uses it as an `<img>`, so an SVG
   cannot run anything. It is also the page icon. Without `name` the logo is the brand; with both
   the name sits beside it. With Docker, mount the folder (`./site:/config/site:ro`) and write
@@ -327,7 +328,7 @@ Besides the 24 hours of checks, the server keeps a long-term record in `uptime.j
 
 `/api/status` has, for each host, `uptime90` (`{percent30, percent90}`, `null` without data),
 `days` (90 numbers, oldest first and today last: the percent up that day, or `null` for a day
-without checks) and `incidents` (the 5 newest). `/api/incidents` answers
+without checks). The incidents are not in it: `/api/incidents` answers
 `{generatedAt, incidents: [{host, name, start, end, seconds, ongoing}]}`, times as ISO text,
 `end` `null` while ongoing and `seconds` counted to now for an ongoing one. Both are as public as
 up and down already is: no `public_details` or `require_login` setting changes them, and they hold
@@ -401,7 +402,8 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
   `ntfy` the text as the body, `slack` `{"text": ...}`, `discord` `{"content": ...}`.
 - **Email:** a small built-in SMTP client (no dependency). The connection is always encrypted and
   the server's certificate is always checked: `tls` is SMTPS from the first byte, `starttls`
-  upgrades the connection and refuses to go on if the server does not offer it. `username` with
+  upgrades the connection and refuses to go on if the server does not offer it, or if anything came
+  with its "go ahead" before the encryption started (a reply planted there, `starttls failed`). `username` with
   `password_file` logs in (`AUTH PLAIN` or `LOGIN`), after the encryption is up. A line break in
   any address, name or subject is refused, never cleaned. Replies and the message are capped, and
   the whole send has a 20 second limit.
@@ -452,11 +454,15 @@ A failed stats fetch breaks the run: "in a row" needs every sample. The cooldown
 down alerts: a queue that fills again within `cooldown_minutes` of the last "full" alert is not
 announced again, nor its clearing; if it then stays full, the held-back alert goes out once the
 cooldown has passed. "Was full for" counts from the first full sample. The generic webhook `event` is `announce_queue_full` or
-`announce_queue_cleared`. There are no reminders for it.
+`announce_queue_cleared`. There are no reminders for it. A node without a `stats_url` can never
+send it, so the server prints a warning at start for each such node when `announce_queue` is listed.
 
     alerts:
       events: [down, recovered, announce_queue]
       announce_queue_samples: 3
+
+On SIGINT or SIGTERM the server writes the history and the uptime once more, waiting for any save
+that is running, before it exits.
 
 ## What is public
 
@@ -802,7 +808,7 @@ heard is an exact number instead of a range.
    Files should be readable by the server only (`chmod 600`); the server warns at start when
    another user can read one. In Docker, mount the folder with the files read-only next to the
    config (`./secrets:/config/secrets:ro` in `compose.yaml`). `config.yaml`, `*.token`,
-   `stats-token*.txt` and `secrets/` are in `.gitignore` and `.dockerignore`, so they are not
+   `*.secret`, `*.password`, `stats-token*.txt` and `secrets/` are in `.gitignore` and `.dockerignore`, so they are not
    committed or copied into the image.
    A bad token stops the server at start with a message that never repeats it. Prefer the
    file forms; in Docker mount the file read-only, like the config.
