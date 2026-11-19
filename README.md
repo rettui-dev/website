@@ -93,6 +93,23 @@ use `https://<site>/feed.xml`) and links to the Downloads page. Without it the f
 nothing in a reader. The home and Downloads pages advertise it with
 `<link rel="alternate" type="application/atom+xml">`. In status-only mode `/feed.xml` is 404.
 
+## Link previews (Open Graph)
+
+Every page (home, status, Join, Downloads) has `description`, `theme-color` (dark and light),
+`og:title`, `og:description`, `og:type` and `og:site_name` in the file itself. The tags that must be
+absolute URLs are added by the server, and only when it knows its own address (`SITE_URL`, or
+`site.url` in the config file): `og:url`, `og:image` (`/brand/og-card.png`, 1200 by 630, with its
+size and a text for it), `twitter:card=summary_large_image` and `twitter:image`. Without the address
+those tags are left out rather than guessed, and the pages are served byte for byte as the files.
+The card is a static file, drawn once from the site's own logo, colours and font, and is under
+150 KB.
+
+On the status page the tags follow the branding: the name and description from the `site:` section
+(or "Status" and the usual description in status-only mode), escaped like the rest of the page. A
+page with a name or logo of its own does not use the rettui card: `og:image` is then the site's logo
+(`/brand/site-logo`) when it is a PNG, JPEG or WebP picture (card type `summary`), and left out
+for an SVG or no logo. In status-only mode the project pages and their tags do not exist.
+
 ## Run locally
 
 Needs Node.js 24.7 or later (the login uses its built-in Argon2id).
