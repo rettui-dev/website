@@ -170,6 +170,22 @@ different versions a node has reported, with when each was first seen (at most 1
   (`bytesIn`, `bytesOut`, `clients`, `peers.{total,lxmf,nomad,propagation}`, `announces`,
   `interfacesOnline`, each a list of `[time ms, value or null]`).
 - In the Details view, hovering a graph (or dragging a finger across it, or focusing it and using the Left, Right, Home and End keys) shows a guide line and a tooltip with the full date and time of the nearest sample and every value of that graph at that point; a gap reads "no data". Escape or leaving the graph hides it.
+- `/api/stats?host=<proxy>&range=...&view=combined` is the same for a proxy's whole group
+  (`view=node` is the default). It answers with `group` (the latest combined numbers),
+  `members` (address, name, version and uptime of each) and `excluded` (members without a
+  stats URL, which have no history), and `series` like the single view plus `peersLow`.
+  A host that is not a proxy gets a 400 for `view=combined`.
+  - The members' samples are matched by time: samples within half a sample interval of each
+    other form one point.
+  - **A point is added up only when every member with history has a sample in it** (and, for
+    the byte rates, a usable rate: a restart of one member leaves a gap in the sum). Otherwise
+    it is a gap. Summing whatever exists instead would make the line dip whenever one node
+    missed a sample, which looks like an outage that did not happen. `series.sampleCount`
+    is the number of complete points.
+  - Clients, announces and interfaces online are sums; `peers` is the sum (upper bound) and
+    `peersLow` the largest single member (lower bound), each with `total`, `lxmf`, `nomad`
+    and `propagation`.
+  - The answer is cached like the single view, so the cost does not grow with the visitors.
 - `STATS_SAMPLE_INTERVAL_MS` changes the sample interval (default 300000). It exists only
   so the graphs can be tried quickly during testing; do not set it in production.
 
