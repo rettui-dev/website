@@ -5,7 +5,10 @@ ENV NODE_ENV=production \
     DATA_DIR=/data
 
 WORKDIR /app
-COPY package.json server.js ./
+COPY package.json package-lock.json ./
+# Only the runtime dependency, without scripts or the npm cache, to keep the image small.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY server.js ./
 COPY lib ./lib
 COPY public ./public
 

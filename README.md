@@ -49,6 +49,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
 | `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
+| `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -59,6 +60,40 @@ server at start with a message.
 Either set `STATUS_TARGETS`, for example
 `STATUS_TARGETS=rns.rettui.dev:4242,other.example:4242`, or edit `DEFAULT_TARGETS` in
 `lib/monitor.js`. Restart the server. A host removed from the list loses its saved history.
+
+## Config file
+
+Instead of `STATUS_TARGETS` and `STATS_URLS`, the nodes can be listed in a YAML file.
+Set `CONFIG_FILE` to its path (`config.example.yaml` is a starting point). Setting
+`CONFIG_FILE` together with `STATUS_TARGETS` or `STATS_URLS` stops the server at start, so
+it is never unclear which one counts. Without `CONFIG_FILE` the variables work exactly as
+before, and nothing needs to change for an existing deployment.
+
+    nodes:
+      - address: rns.rettui.dev:4242        # required, host:port
+        name: Front door                    # optional display name, up to 48 characters
+        stats_url: https://rns.rettui.dev/stats.json   # optional, same rules as STATS_URLS
+        proxy_for:                          # optional: the nodes this one is a proxy for
+          - front.rns.rettui.dev:4242
+        count_own: false                    # optional, default false (see below)
+      - address: front.rns.rettui.dev:4242
+
+The file is checked when the server starts, and any mistake stops it with a message that
+never repeats a URL:
+
+- Only `nodes` at the top level, and only `address`, `name`, `stats_url`, `proxy_for` and
+  `count_own` in a node; anything else is an error, as are repeated keys and wrong types.
+- At most 64 nodes and a file of at most 64 KiB. The same host and port rules as
+  `STATUS_TARGETS` apply, and the same URL rules as `STATS_URLS` (`https`, or `http` only
+  for loopback and private addresses, no user name or password).
+- Every `proxy_for` entry must be a listed node. A node cannot proxy itself, a node can have
+  at most one proxy, and there can be no cycles. A proxy cannot itself be proxied (groups
+  are one level deep).
+- The file is read as plain data only: no aliases or anchors that are used, no merge keys
+  (`<<`), no custom tags and only one document.
+
+In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
+The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
 ## How checking works
 

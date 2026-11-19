@@ -1,0 +1,26 @@
+# Example config for the status page. Set CONFIG_FILE to its path.
+# It replaces the STATUS_TARGETS and STATS_URLS environment variables; setting
+# both is an error. See "Config file" in README.md.
+nodes:
+  # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
+  # The page groups those nodes under it and adds a combined view.
+  - address: rns.rettui.dev:4242
+    name: Front door
+    stats_url: https://rns.rettui.dev/stats.json
+    proxy_for:
+      - front.rns.rettui.dev:4242
+      - back.rns.rettui.dev:4242
+      - side.rns.rettui.dev:4242
+    # Whether the proxy's own numbers are added to the group's (default false).
+    # Leave it false if the proxy's stats already include the nodes behind it.
+    count_own: false
+
+  - address: front.rns.rettui.dev:4242
+    name: Front
+    stats_url: https://front.rns.rettui.dev/stats.json
+  - address: back.rns.rettui.dev:4242
+    name: Back
+    stats_url: https://back.rns.rettui.dev/stats.json
+  - address: side.rns.rettui.dev:4242
+    name: Side
+    stats_url: https://side.rns.rettui.dev/stats.json

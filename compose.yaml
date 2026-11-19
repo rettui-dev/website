@@ -9,8 +9,12 @@ services:
       # STATUS_TARGETS: "rns.rettui.dev:4242,front.rns.rettui.dev:4242"
       # Node stats (optional, host:port=url pairs; each host must be a target):
       # STATS_URLS: "rns.rettui.dev:4242=https://rns.rettui.dev/stats.json,front.rns.rettui.dev:4242=https://front.rns.rettui.dev/stats.json,back.rns.rettui.dev:4242=https://back.rns.rettui.dev/stats.json,side.rns.rettui.dev:4242=https://side.rns.rettui.dev/stats.json"
+      # Or describe the nodes in a YAML file instead (see config.example.yaml). It
+      # replaces STATUS_TARGETS and STATS_URLS; setting both is an error.
+      # CONFIG_FILE: /config/config.yaml
     volumes:
       - status-data:/data
+      # - ./config.yaml:/config/config.yaml:ro
     read_only: true
     tmpfs:
       - /tmp
