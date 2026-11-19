@@ -154,14 +154,17 @@ environment variables there is no login.
         require_login: []            # a node can override the rule, like public_details
 
 **Making a hash.** `npm run hash-password -- --name alice` asks for the password twice without
-showing it and prints the hash and a line to paste under `users:`. It also reads a password piped
+showing it and prints the hash and a line to paste under `users:`. The name in that line is in
+quotes, because YAML reads a bare `123`, `true` or `null` as a number, a boolean or nothing,
+and the config needs text; quote a name you type yourself for the same reason. It also reads a password piped
 to it (`printf '%s' "$PW" | node scripts/hash-password.js --name alice`; one final line break is
 dropped), but never takes one as an argument, where it would land in the shell history. In Docker:
 `docker compose run --rm -it website node scripts/hash-password.js --name alice`. The hash is
 Argon2id with a random 16-byte salt and the OWASP minimum costs (`m=19456,t=2,p=1`); `--memory`,
 `--passes` and `--parallelism` raise them. Only `argon2id` version 19 hashes are accepted, with
-at least those costs and at most `m=262144,t=16,p=16`; anything else stops the server at start
-(the message never repeats the hash). The config file holds hashes, not passwords, but keep it
+at least those costs and at most `m=65536,t=16,p=16`; anything else stops the server at start
+(the message never repeats the hash). The memory cap is 64 MiB because two checks run at once,
+so logins never take more than 128 MiB. The config file holds hashes, not passwords, but keep it
 private anyway.
 
 **What is locked.** `require_login` lists sections, at the top for every node or on a node to
@@ -198,14 +201,20 @@ session. Sessions are kept in memory only. An open status page refreshes itself 
 so it keeps its session alive until `max_age_hours` is reached.
 
 - A wrong name and a wrong password get the same 401 and the same message. An unknown name is
-  checked against a stand-in hash with the same costs, so it takes as long.
+  checked against a stand-in hash with the highest costs of any user, so it takes at least as
+  long as a wrong password for any real name.
 - Five failed logins for a name (any name, existing or not), or twenty from one address (an IPv6
   address counts by its /64), start a wait that doubles with each further failure, up to 15
-  minutes; during it the answer is 429 with `Retry-After`, without trying the password. A
-  failure is forgotten an hour after the last one, and at most 10000 names and addresses are
-  remembered.
-- Each check takes about 19 MiB of memory (more with higher costs). At most 2 run at once and 8
-  wait; past that the answer is 503 with `Retry-After`, rather than running out of memory.
+  minutes; during it the answer is 429 with `Retry-After`, without trying the password. Once
+  the free tries are used up, a login waits for the checks already running for that name or
+  address, so a burst sent at once gets no more tries than one sent one by one; more than 8
+  waiting for one name or address get 503. A login that works clears the count. A failure is
+  forgotten an hour after the last one. At most 10000 names and addresses are remembered; when
+  that many are waiting, a new name or address is told to wait too, rather than one still
+  waiting being forgotten.
+- Each check takes about 19 MiB of memory (more with higher costs, at most 64 MiB). At most 2
+  run at once and 8 wait; past that the answer is 503 with `Retry-After`, rather than running
+  out of memory. A 503 does not count as a failed login.
 - `/login` and `/logout` only take `application/x-www-form-urlencoded` (else 415), at most 4 KiB
   (else 413), and only from the page itself: `Sec-Fetch-Site` must be `same-origin`, or, from a
   browser too old to send it, `Origin` must name the host the request was sent to (else 403).
@@ -219,14 +228,30 @@ terminates TLS; the server itself does not read `X-Forwarded-Proto`. The proxy m
 do not send `Sec-Fetch-Site`. Without `trusted_proxies` every request seems to come from the
 proxy, so all visitors share one address for the failed-login wait. List the proxy's address in
 `login.trusted_proxies` (IP addresses only, at most 16) to have the client address taken from
-`X-Forwarded-For`, from the right, skipping trusted proxies. Never list an address that clients
-can connect from directly.
+`X-Forwarded-For`, from the right, skipping trusted proxies. An IPv6 address may be written in
+any form (`0:0:0:0:0:0:0:1` is `::1`). Never list an address that clients can connect from
+directly. If a request with `X-Forwarded-For` comes from a loopback or private address that is
+not listed, the server logs one warning saying so.
 
 **Limits.** Everything is in one process and in memory: sessions end when the server restarts
 (everyone has to log in again), and running several copies behind a load balancer does not
 share sessions or failed-login counts. The login is for keeping numbers from casual visitors,
 not for anything more sensitive: there is no password change, no second factor and no account
 lockout beyond the wait.
+
+- **Anyone can keep a known name locked out.** The wait counts failures per name, from any
+  address, so whoever knows a name can keep its owner waiting: once the wait has grown to 15
+  minutes, about four failed logins an hour keep it there. Pick names that are not easy to
+  guess, such as not `admin` or your public handle.
+- **`require_login` only covers this website.** It takes numbers out of what this server sends;
+  it does nothing to the nodes. A node's `stats.json` answers whoever fetches it, so anyone who
+  can reach a `stats_url` reads the locked numbers from the node itself. For numbers that must
+  stay private, make each `stats_url` reachable only by this website (a private network, a
+  firewall rule, or a reverse proxy in front of the node that asks for a secret).
+
+The Docker image is built `FROM node:24-alpine`, which moves with each Node.js 24 release. To
+build the exact same image every time, pin it by digest (`FROM node:24-alpine@sha256:...`, from
+`docker buildx imagetools inspect node:24-alpine`) and update the digest yourself.
 
 ## Propagation node and disk numbers
 
