@@ -10,7 +10,7 @@ import { loadConfig } from '../lib/config.js';
 import { createApp } from '../lib/app.js';
 import { createLogin } from '../lib/login.js';
 import { hashPassword } from '../lib/password.js';
-import { etagMatches, memoJson } from '../lib/public-api.js';
+import { etagMatches, memoJson, publicIncidents, publicStats } from '../lib/public-api.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -342,4 +342,44 @@ test('stats: the announce queue is published as four numbers, and null without o
   } finally {
     await s.close();
   }
+});
+
+test('the ETag survives a rebuild that finds nothing new, and changes when the content changes', async () => {
+  // Rebuilt on every request (ttl 0), with the clock moving: only `generated` differs between the answers.
+  const s = await setup();
+  try {
+    let t = NOW;
+    s.monitor.now = () => (t += 10_000);
+    const first = await request(s.port, { path: '/api/public/stats' });
+    const second = await request(s.port, { path: '/api/public/stats' });
+    const third = await request(s.port, { path: '/api/public/stats' });
+    assert.notEqual(first.json().generated, second.json().generated);
+    assert.notEqual(second.json().generated, third.json().generated);
+    assert.equal(first.headers.etag, second.headers.etag);
+    assert.equal(first.headers.etag, third.headers.etag);
+    // A client that kept the first ETag gets a 304 from a later rebuild.
+    const r = await request(s.port, { path: '/api/public/stats', headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(r.status, 304);
+    // New content (a new check) is a new ETag.
+    await s.monitor.checkAll();
+    const changed = await request(s.port, { path: '/api/public/stats' });
+    assert.notEqual(changed.headers.etag, first.headers.etag);
+  } finally {
+    await s.close();
+  }
+});
+
+test('incidents: the same list built at two times has one ETag, a new incident another', () => {
+  let list = [{ host: 'a.test:1', name: 'A', start: '2026-01-01T00:00:00.000Z', end: '2026-01-01T00:10:00.000Z', seconds: 600, ongoing: false }];
+  let t = 0;
+  const get = memoJson(() => publicIncidents(list, new Date(t).toISOString()), 1000, () => t);
+  const a = get();
+  t = 5000;
+  const b = get();
+  assert.notEqual(a.body, b.body);
+  assert.equal(a.etag, b.etag);
+  list = [...list, { ...list[0], start: '2026-01-02T00:00:00.000Z', end: null, ongoing: true }];
+  t = 10_000;
+  assert.notEqual(get().etag, a.etag);
+  assert.equal(typeof publicStats, 'function');
 });
