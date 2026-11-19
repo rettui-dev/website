@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join the network - rettui</title>
+<meta name="description" content="Connect to the rettui Reticulum entry point rns.rettui.dev on port 4242 over TCP">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/copy.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status">Status</a>
+      <a href="/join" aria-current="page">Join</a>
+      <a href="/downloads">Downloads</a>
+      <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+  </div>
+</header>
+<main class="wrap page">
+  <h1>Join the network</h1>
+  <p class="lead">Reticulum has no central server. You join by adding an interface to your own Reticulum, pointed at a node that is already part of the network. The rettui entry point is a node you can connect to over TCP:</p>
+  <p class="addr-row">
+    <code class="addr" id="hostport">rns.rettui.dev:4242</code>
+    <button type="button" data-copy-from="hostport" data-copy-status="status-hostport">Copy host and port</button>
+    <span class="copied" id="status-hostport" role="status"></span>
+  </p>
+  <p class="note-inline">Host <code>rns.rettui.dev</code>, port <code>4242</code>, TCP. If you can't connect, <a href="/status">check that it is up</a>.</p>
+
+  <h2>Reticulum config file</h2>
+  <p>This is for Reticulum itself (<code>rnsd</code>, or any program that starts its own Reticulum). Open its config file, by default <code>~/.reticulum/config</code>. Reticulum uses the first of <code>/etc/reticulum</code>, <code>~/.config/reticulum</code> and <code>~/.reticulum</code> that has a config file. Find the <code>[interfaces]</code> line and add this below it, with the other interfaces:</p>
+  <pre class="code"><code id="config-snippet">  [[rettui entry point]]
+    type = TCPClientInterface
+    enabled = yes
+    target_host = rns.rettui.dev
+    target_port = 4242
+</code></pre>
+  <p class="addr-row">
+    <button type="button" data-copy-from="config-snippet" data-copy-status="status-config">Copy interface config</button>
+    <span class="copied" id="status-config" role="status"></span>
+  </p>
+  <p>The text between the double brackets is the name of the interface; Reticulum has no separate <code>name</code> setting, so you can call it anything. If your file has no <code>[interfaces]</code> line yet, add one above the block. Then restart Reticulum, and run <code>rnstatus</code> to see the interface and its traffic.</p>
+
+  <h2>rettui</h2>
+  <p>rettui keeps a Reticulum config of its own. Open the Reticulum tab (in the terminal UI or the web UI), add an interface, and pick a TCP client. Enter <code>rns.rettui.dev</code> as the host and <code>4242</code> as the port, make sure it is enabled, and save. Restart Reticulum from there to apply it. You can also edit the config as text and paste the block above. See the <a href="https://docs.rettui.dev" rel="noopener noreferrer">documentation</a> for the details.</p>
+
+  <h2>Sideband, Columba and MeshChat</h2>
+  <p>These apps each have a place to add a Reticulum interface. Add a TCP client interface (some apps call it TCP Client, or TCPClientInterface), type <code>rns.rettui.dev</code> as the target host and <code>4242</code> as the port, and restart the app's Reticulum if it asks you to. Where that screen is differs between apps and versions, so look in their connectivity or interface settings. An app that lets you edit the Reticulum config as text takes the block above.</p>
+
+  <h2>From an Android phone</h2>
+  <div class="panel qr-panel">
+    <img class="qr" src="/join-qr.svg" width="264" height="264" alt="QR code of the interface config for rns.rettui.dev port 4242">
+    <p>Scan this with your camera or a QR scanner. It holds the same interface config as above as plain text, so you can copy it from the scanner and paste it into an app that takes a Reticulum config as text. Otherwise type the host and port by hand.</p>
+  </div>
+
+  <h2>Other entry points</h2>
+  <p>These work the same way, and you can add more than one. Use them if <code>rns.rettui.dev</code> is down, or to spread the load. <a href="/status">The status page</a> shows which ones are up.</p>
+  <ul class="entry-list">
+    <li><code id="ep-front">front.rns.rettui.dev:4242</code> <button type="button" data-copy-from="ep-front" data-copy-status="status-ep">Copy</button></li>
+    <li><code id="ep-back">back.rns.rettui.dev:4242</code> <button type="button" data-copy-from="ep-back" data-copy-status="status-ep">Copy</button></li>
+    <li><code id="ep-side">side.rns.rettui.dev:4242</code> <button type="button" data-copy-from="ep-side" data-copy-status="status-ep">Copy</button></li>
+  </ul>
+  <p class="copied" id="status-ep" role="status"></p>
+  <noscript><p class="note">The copy buttons need JavaScript. You can select the text and copy it yourself.</p></noscript>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
+    <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>
