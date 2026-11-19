@@ -1,6 +1,10 @@
 # Example config for the status page. Set CONFIG_FILE to its path.
 # It replaces the STATUS_TARGETS and STATS_URLS environment variables; setting
 # both is an error. See "Config file" in README.md.
+# Optional: a token that makes the nodes send their peer lists, so a group's peers
+# heard is counted exactly (see "Exact peer counts" in README.md). Keep it in a
+# file, not here; a relative path is relative to this file.
+# stats_token_file: stats-token.txt
 nodes:
   # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
   # The page groups those nodes under it and adds a combined view.

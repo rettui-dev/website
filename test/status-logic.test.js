@@ -11,7 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
-  hostKey, displayName, showBadges, badgeText, badgeTitle, groupHosts, peerRange, groupCoverage, groupPairs, peerRangeRows,
+  hostKey, displayName, showBadges, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
 
@@ -252,4 +252,20 @@ test('peerRangeRows give ranges per kind and the rest as Other', () => {
   const zero = [...peerRangeRows({ sum: { total: 0, lxmf: 0, nomad: 0, propagation: 0 }, max: { total: 0, lxmf: 0, nomad: 0, propagation: 0 } })];
   assert.equal(zero.length, 3);
   assert.ok(zero.every((r) => r.percent === 0));
+});
+
+test('exact group peers show plain numbers, with a de-duplicated note', () => {
+  const peers = { exact: true, union: { total: 100, lxmf: 60, nomad: 30, propagation: 5 }, sum: { total: 150 }, max: { total: 90 }, lists: { have: 2, of: 2 } };
+  const g = { data: { interfaces: { total: 1, online: 1, clients: 1, rxBytes: 0, txBytes: 0 }, announcesLastMinute: 0, peersHeard: peers } };
+  assert.deepEqual([...[...groupPairs(g)].find((p) => p[0] === 'Peers heard')], ['Peers heard', '100 (de-duplicated)']);
+  const rows = [...peerRangeRows(peers)].map((r) => [r.label, r.text, r.percent]);
+  assert.deepEqual(rows, [['LXMF', '60', 60], ['NomadNet', '30', 30], ['Propagation', '5', 5], ['Other', '5', 5]]);
+  assert.match(peerNote(peers), /de-duplicated/);
+});
+
+test('peerNote for a range says how many nodes had lists', () => {
+  const base = { exact: false, union: null, sum: {}, max: {} };
+  assert.match(peerNote({ ...base, lists: { have: 0, of: 3 } }), /cannot be removed/);
+  assert.doesNotMatch(peerNote({ ...base, lists: { have: 0, of: 3 } }), /supplied a peer list/);
+  assert.match(peerNote({ ...base, lists: { have: 2, of: 3 } }), /2 of 3 reporting nodes supplied a peer list/);
 });

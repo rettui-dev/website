@@ -50,6 +50,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). |
+| `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -81,8 +82,8 @@ before, and nothing needs to change for an existing deployment.
 The file is checked when the server starts, and any mistake stops it with a message that
 never repeats a URL:
 
-- Only `nodes` at the top level, and only `address`, `name`, `stats_url`, `proxy_for` and
-  `count_own` in a node; anything else is an error, as are repeated keys and wrong types.
+- Only `nodes`, `stats_token` and `stats_token_file` at the top level, and only `address`,
+  `name`, `stats_url`, `stats_token`, `stats_token_file`, `proxy_for` and `count_own` in a node; anything else is an error, as are repeated keys and wrong types.
 - At most 64 nodes and a file of at most 64 KiB. The same host and port rules as
   `STATUS_TARGETS` apply, and the same URL rules as `STATS_URLS` (`https`, or `http` only
   for loopback and private addresses, no user name or password).
@@ -119,6 +120,51 @@ host: `name` (or `null`), `role` (`"proxy"` or `"node"`), `proxy` (`{for: [addre
 - **`count_own`** (default `false`): by default the group is only the nodes in `proxy_for`.
   Set `count_own: true` to add the proxy's own stats too. Leave it off when the proxy's
   stats already include the nodes behind it, or they would be counted twice.
+
+### Exact peer counts with a stats token
+
+A node can hand its list of peers to a website that asks with a secret token. With the lists
+of all the nodes behind a proxy the website can count each peer once, so the group's peers
+heard is an exact number instead of a range.
+
+1. **On each node** (rettui), set the same secret with `RETTUI_STATS_TOKEN` or
+   `--stats-token-file`. It must be 16 to 256 printable ASCII characters without spaces. A
+   request to the stats URL that carries `Authorization: Bearer <token>` then gets two extra
+   fields, `"authorised": true` and `"peers"` (up to 20000 entries of `address`, `type` and
+   `name`, sorted by address, with `"peers_truncated": true` when cut). Without a valid token
+   the answer is the same as before.
+2. **On the website**, give the website the token for each stats URL:
+   - in the config file, `stats_token: <token>` on a node, or at the top level as the default
+     for every node with a `stats_url`; or `stats_token_file: <path>` instead, so the secret
+     is not in the YAML. A relative path is relative to the config file. The file holds only
+     the token (a final newline is fine) and is read once at start;
+   - with the environment variables, `STATS_TOKEN` or `STATS_TOKEN_FILE`, which apply to every
+     stats URL. They cannot be combined with `CONFIG_FILE`.
+   A bad token stops the server at start with a message that never repeats it. Prefer the
+   file forms; in Docker mount the file read-only, like the config.
+3. **The result.** When every member of a proxy group that reports stats also sent a complete
+   list, `group.data.peersHeard` has `exact: true` and `union` (`total`, `lxmf`, `nomad`,
+   `propagation`): the number of different peers, where a peer heard by several nodes counts
+   once, and one heard as two types counts once in each type and once in the total. `sum` and
+   `max` stay beside it. If any reporting member sent no list (no token, or the node did not
+   accept it) or a cut one, `exact` is false and the range stays. `lists` is
+   `{have, of}`: how many of the reporting members had a usable list.
+
+Privacy and limits:
+
+- The token is sent only as a header, and only over `https` (or `http` to loopback and private
+  addresses); a redirect is never followed. It is never in a URL, a log line, an error message
+  or an API answer.
+- The peer lists are personal enough to keep private. Only the addresses and their types are
+  read (names are dropped at once), invalid entries are dropped, duplicates are merged and at
+  most 20000 entries per node are kept. They stay in memory in a compact form (about 17 bytes
+  per peer, so under 350 KiB per node), are replaced on every fetch, and are never written to
+  `history.json` or `stats-history.json` or shown in `/api/status` or `/api/stats`: only the
+  counts are.
+- With a token the website accepts an answer of up to 4 MiB from that node (64 KiB without).
+- The history graphs are not de-duplicated: they stay the sum and the largest single node,
+  because past peer lists are not kept. The group's exact total is therefore shown as a
+  number now, not as a line over time.
 
 ### On the status page
 

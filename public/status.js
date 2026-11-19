@@ -175,7 +175,10 @@
       var line = el('div', 'stats node-stats');
       groupPairs(g).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
       box.appendChild(line);
-      box.appendChild(el('p', 'note', 'Peers heard cannot be de-duplicated, so it is shown as a range (at least the largest node, at most the sum).'));
+      box.appendChild(el('p', 'note', g.data.peersHeard.exact
+        ? 'Peers heard is de-duplicated: each peer is counted once, however many nodes heard it.'
+        : 'Peers heard cannot be de-duplicated, so it is shown as a range (at least the largest node, at most the sum).' +
+          (g.data.peersHeard.lists.have > 0 ? ' ' + g.data.peersHeard.lists.have + ' of ' + g.data.peersHeard.lists.of + ' nodes supplied peer lists.' : '')));
     } else {
       box.appendChild(el('p', 'note', 'No node of this group has reported stats.'));
     }
@@ -256,15 +259,32 @@
     if (d.interfaces.clients !== null) pairs.push(['Clients', num(d.interfaces.clients)]);
     pairs.push(['Interfaces', d.interfaces.online + '/' + d.interfaces.total + ' online']);
     pairs.push(['Traffic', '↓ ' + bytes(d.interfaces.rxBytes) + ' ↑ ' + bytes(d.interfaces.txBytes)]);
-    pairs.push(['Peers heard', peerRange(d.peersHeard.max.total, d.peersHeard.sum.total)]);
+    pairs.push(['Peers heard', d.peersHeard.exact ? num(d.peersHeard.union.total) + ' (de-duplicated)' : peerRange(d.peersHeard.max.total, d.peersHeard.sum.total)]);
     pairs.push(['Announces', num(d.announcesLastMinute) + '/min']);
     return pairs;
+  }
+
+  // The sentence under a group's peers heard: exact, or a range and how many nodes sent lists.
+  function peerNote(p) {
+    if (p.exact) return 'Peers heard is de-duplicated: every reporting node supplied its peer list, so a peer heard by several nodes is counted once.';
+    var text = PEER_NOTE;
+    if (p.lists && p.lists.have > 0) text += ' ' + p.lists.have + ' of ' + p.lists.of + ' reporting nodes supplied a peer list; it takes all of them to remove the overlap.';
+    return text;
   }
 
   var PEER_NOTE = 'Peers heard is a range: nodes publish counts only, so a peer heard by more than one node cannot be removed. The real number is at least the largest single node and at most the sum.';
 
   // The rows of the combined peer breakdown: label, range text, and the sum used for the bar.
   function peerRangeRows(p) {
+    if (p.exact) {
+      var u = p.union;
+      var ex = [['lxmf', 'LXMF'], ['nomad', 'NomadNet'], ['propagation', 'Propagation']].map(function (k) {
+        return { key: k[0], label: k[1], count: u[k[0]], text: num(u[k[0]]), percent: u.total > 0 ? Math.round((u[k[0]] / u.total) * 100) : 0 };
+      });
+      var other = u.total - u.lxmf - u.nomad - u.propagation;
+      if (other > 0) ex.push({ key: 'other', label: 'Other', count: other, text: num(other), percent: u.total > 0 ? Math.round((other / u.total) * 100) : 0 });
+      return ex;
+    }
     var rows = [['lxmf', 'LXMF'], ['nomad', 'NomadNet'], ['propagation', 'Propagation']].map(function (k) {
       return { key: k[0], label: k[1], count: p.sum[k[0]], text: peerRange(p.max[k[0]], p.sum[k[0]]), percent: p.sum.total > 0 ? Math.round((p.sum[k[0]] / p.sum.total) * 100) : 0 };
     });
@@ -839,8 +859,9 @@
     var p = d.group && d.group.data ? d.group.data.peersHeard : null;
     if (p) {
       var rows = peerRangeRows(p);
-      s.appendChild(el('p', 'total', peerRange(p.max.total, p.sum.total) + ' peers heard now'));
-      s.appendChild(peerBar(rows.map(function (r) { return { key: r.key, label: r.label, count: r.count, percent: r.percent }; }), p.sum.total, width));
+      var now = p.exact ? p.union.total : null;
+      s.appendChild(el('p', 'total', (p.exact ? num(now) + ' peers heard now (de-duplicated)' : peerRange(p.max.total, p.sum.total) + ' peers heard now')));
+      s.appendChild(peerBar(rows.map(function (r) { return { key: r.key, label: r.label, count: r.count, percent: r.percent }; }), p.exact ? p.union.total : p.sum.total, width));
       var ul = el('ul', 'shares');
       rows.forEach(function (r) {
         var li = el('li');
@@ -853,7 +874,7 @@
         ul.appendChild(li);
       });
       s.appendChild(ul);
-      s.appendChild(el('p', 'note', PEER_NOTE + ' The bar and percentages use the sum.'));
+      s.appendChild(el('p', 'note', peerNote(p) + (p.exact ? ' The graph below is still a range: past values were not de-duplicated.' : ' The bar and percentages use the sum.')));
     } else {
       s.appendChild(el('p', 'note', 'No node of this group has reported stats.'));
     }
@@ -1090,7 +1111,7 @@
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
       peerShares: peerShares, hostKey: hostKey, displayName: displayName, showBadges: showBadges, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
-      peerRange: peerRange, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
+      peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }
   setupDetail();
