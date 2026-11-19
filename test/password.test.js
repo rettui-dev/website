@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULTS, MAX_MEMORY_KIB, argon2Available, argon2id, checkCosts, costliest, dummyPhc, formatPhc, hashPassword, parsePhc, verifyPassword } from '../lib/password.js';
-import { fromPipe, parseArgs } from '../scripts/hash-password.js';
+import { fromPipe, parseArgs, usersLine } from '../scripts/hash-password.js';
+import { loadConfig } from '../lib/config.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
 
@@ -101,6 +102,20 @@ test('costliest takes the highest of each cost, so a stand-in is never cheaper t
   assert.deepEqual([d.memory, d.passes, d.parallelism, d.hash.length], [65536, 9, 8, 64]);
   const none = costliest([]);
   assert.deepEqual([none.memory, none.passes, none.parallelism, none.hash.length], [19456, 2, 1, 32]);
+});
+
+test('hash-password quotes the name, so the pasted line is read as text whatever the name', async () => {
+  const phc = await hashPassword('pw', DEFAULTS, fakeHasher);
+  for (const name of ['alice', '123', 'true', 'TRUE', 'null', 'Null', 'false', '0', '1e3', '0x1F', '0o7', '1.5', 'yes', 'no', '1_000']) {
+    const c = loadConfig(`users:\n${usersLine(name, phc)}\nnodes:\n  - address: a.test:1\n`);
+    assert.equal(c.users[0].name, name);
+  }
+});
+
+test('the config says to quote a user name that YAML does not read as text', () => {
+  for (const v of ['123', 'true', 'null', '1.5', '~']) {
+    assert.throws(() => loadConfig(`users:\n  - name: ${v}\n    password_hash: '${VECTOR}'\nnodes:\n  - address: a.test:1\n`), /name is not text: put the name in quotes/, v);
+  }
 });
 
 test('the real Argon2id matches the reference test vector', { skip: REAL }, async () => {

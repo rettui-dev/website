@@ -52,6 +52,13 @@ export function parseArgs(argv) {
   return out;
 }
 
+// The line for the config file. The name is quoted: YAML would read a bare
+// 123, true or null as a number, a boolean or nothing, and the config needs text.
+// The name and the hash have no quotes of their own (see parseArgs and formatPhc).
+export function usersLine(name, phc) {
+  return `  - { name: '${name}', password_hash: '${phc}' }`;
+}
+
 // The password of piped input: everything, less one final line break.
 export function fromPipe(text) {
   return text.replace(/\r?\n$/, '');
@@ -130,7 +137,7 @@ async function main() {
     return 1;
   }
   const phc = await hashPassword(password, args.costs);
-  process.stdout.write(`${phc}\n\nPaste under "users:" in the config file:\n  - { name: ${args.name}, password_hash: '${phc}' }\n`);
+  process.stdout.write(`${phc}\n\nPaste under "users:" in the config file:\n${usersLine(args.name, phc)}\n`);
   return 0;
 }
 
