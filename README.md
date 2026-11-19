@@ -96,6 +96,31 @@ never repeats a URL:
 In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
 The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
 
+## Propagation node and disk numbers
+
+A node that runs an LXMF propagation node can add a `propagation` object to its stats, and any
+node can add a `disk` object. Both are optional: an old node, a node with the propagation node
+turned off (no `propagation` key, or `enabled` not true) or a node that has not measured its disk
+yet just shows nothing for them. Each number inside is optional too; a missing or wrong one is
+left out (shown as nothing) and never makes the rest of the stats unavailable.
+
+- `propagation`: messages stored and their size (and the storage limit), peered nodes (alive,
+  total, static, automatic, the peer limit, inbound links, whether auto-peering is on),
+  messages received, served, sent to peers and received from peers, and unhandled messages.
+  Counters count since the node started, except messages offered to peers, which may include
+  earlier runs. Unhandled messages can lag behind the real number.
+- `disk`: the size of the node's data, and free and total space of the file system it is on.
+
+`/api/status` carries them in `stats.data.propagation` and `stats.data.disk`.
+
+**Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
+the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
+was heard or synced, counters). That list identifies other nodes, so the website keeps up to 256
+rows in memory only, cleans them strictly (hex address, names without control, bidirectional or
+zero-width characters and cut to 48 characters, a short word for the state), and publishes only
+counts: `stats.peerSummary` is `{listed, alive, static, unhandled, truncated}`. No address or
+name from the list is ever returned by the API or written to disk.
+
 ## Proxies and groups
 
 A node with `proxy_for` is a proxy (a "front door") for the nodes it lists. Every node is

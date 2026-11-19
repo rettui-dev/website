@@ -570,3 +570,124 @@ test('the union is worked out after the fetches, and a request only reads it', a
     await s.close();
   }
 });
+
+// ---- propagation node and disk numbers ----
+
+import { sanitizeStats } from '../lib/stats.js';
+import { cleanName, optCount, sanitizeDisk, sanitizePropagation, sanitizePropagationPeers, summarizePeerRows, MAX_PROPAGATION_PEERS } from '../lib/propagation.js';
+
+const prop = (o = {}) => ({
+  enabled: true, stored_messages: 1200, stored_bytes: 3_000_000, storage_limit_bytes: 500_000_000, peers_connected: 2, peers_total: 8, peers_alive: 5,
+  peers_static: 3, peers_auto: 5, peer_limit: 20, static_peers: 3, autopeer: true, autopeer_depth: 4, messages_received: 10, messages_served: 20,
+  messages_sent_to_peers: 30, messages_received_from_peers: 40, messages_offered_to_peers: 50, unhandled_messages: 6, ...o,
+});
+const disk = (o = {}) => ({ data_bytes: 5000, fs_total_bytes: 100_000, fs_free_bytes: 40_000, ...o });
+
+test('sanitizeStats keeps the optional propagation and disk objects, and nothing else of them', () => {
+  const d = sanitizeStats({ ...stats(), propagation: { ...prop(), secret: 'x' }, disk: { ...disk(), path: '/home/me' } });
+  assert.deepEqual(d.propagation, {
+    enabled: true, storedMessages: 1200, storedBytes: 3_000_000, storageLimitBytes: 500_000_000, peersConnected: 2, peersTotal: 8, peersAlive: 5,
+    peersStatic: 3, peersAuto: 5, peerLimit: 20, staticPeers: 3, autopeerDepth: 4, messagesReceived: 10, messagesServed: 20,
+    messagesSentToPeers: 30, messagesReceivedFromPeers: 40, messagesOfferedToPeers: 50, unhandledMessages: 6, autopeer: true,
+  });
+  assert.deepEqual(d.disk, { dataBytes: 5000, fsTotalBytes: 100_000, fsFreeBytes: 40_000 });
+  assert.equal(JSON.stringify(d).includes('secret'), false);
+  assert.equal(JSON.stringify(d).includes('/home/me'), false);
+});
+
+test('an old node without the new keys gives the same stats as before', () => {
+  const d = sanitizeStats(stats());
+  assert.equal('propagation' in d, false);
+  assert.equal('disk' in d, false);
+  assert.deepEqual(Object.keys(d).sort(), ['announcesLastMinute', 'generatedAt', 'interfaces', 'peersHeard', 'rettuiVersion', 'uptimeSeconds']);
+});
+
+test('propagation: missing counters become null, wrong types drop only that object', () => {
+  const missing = sanitizeStats({ ...stats(), propagation: { enabled: true, stored_messages: 5, stored_bytes: 'lots', peers_alive: NaN, autopeer: 'yes' } }).propagation;
+  assert.equal(missing.storedMessages, 5);
+  for (const k of ['storedBytes', 'peersAlive', 'peersTotal', 'autopeer', 'unhandledMessages']) assert.equal(missing[k], null, k);
+  for (const bad of [null, 5, 'x', [], { enabled: false, stored_messages: 1 }, { enabled: 'true' }, { stored_messages: 1 }, {}]) {
+    const d = sanitizeStats({ ...stats(), propagation: bad });
+    assert.equal('propagation' in d, false, JSON.stringify(bad));
+    assert.equal(d.uptimeSeconds, 1);
+  }
+  for (const bad of [null, 5, 'x', [], {}, { data_bytes: 'x', fs_free_bytes: null }]) {
+    assert.equal('disk' in sanitizeStats({ ...stats(), disk: bad }), false, JSON.stringify(bad));
+  }
+  assert.deepEqual(sanitizeStats({ ...stats(), disk: { data_bytes: 7 } }).disk, { dataBytes: 7, fsTotalBytes: null, fsFreeBytes: null });
+});
+
+test('propagation numbers are clamped like the others', () => {
+  const p = sanitizePropagation(prop({ stored_messages: -5, stored_bytes: 1e300, peers_alive: 3.9, peers_total: Infinity }));
+  assert.equal(p.storedMessages, 0);
+  assert.equal(p.storedBytes, Number.MAX_SAFE_INTEGER);
+  assert.equal(p.peersAlive, 3);
+  assert.equal(p.peersTotal, null);
+  assert.equal(optCount('5'), null);
+  assert.equal(optCount(null), null);
+  assert.equal(sanitizeDisk({ fs_free_bytes: -1 }).fsFreeBytes, 0);
+});
+
+test('the required stats are still required', () => {
+  const bad = { ...stats() };
+  delete bad.uptime_seconds;
+  assert.throws(() => sanitizeStats({ ...bad, propagation: prop(), disk: disk() }));
+});
+
+const row = (n, o = {}) => ({ address: addr(n), alive: true, depth: 2, last_heard_seconds_ago: 5, last_sync_seconds_ago: 60, messages_offered: 3, name: 'Node', peering_cost: 18, state: 'idle', static: false, unhandled: 4, ...o });
+
+test('propagation peer rows are cleaned strictly', () => {
+  const r = sanitizePropagationPeers({
+    authorised: true,
+    propagation_peers: [row(1, { name: '‮evil​ name\u0007', static: true }), row(2, { alive: 'yes', state: 'Bad State!', depth: null, unhandled: -9 }), row(2), row(3, { name: 'x'.repeat(200) }),
+      { address: 'zz', alive: true }, null, 'x', { alive: true }, row(4, { address: addr(4).toUpperCase().replace(/[0-9]/g, 'A') })],
+  });
+  assert.equal(r.rows.length, 3);
+  assert.equal(r.invalid, 5);
+  assert.equal(r.rows[0].name, 'evil name');
+  assert.equal(r.rows[0].static, true);
+  assert.equal(r.rows[1].alive, false);
+  assert.equal(r.rows[1].state, null);
+  assert.equal(r.rows[1].depth, null);
+  assert.equal(r.rows[1].unhandled, 0);
+  assert.equal(r.rows[2].name.length, 48);
+  assert.deepEqual(summarizePeerRows(r), { listed: 3, alive: 2, static: 1, unhandled: 4 + 0 + 4, truncated: false });
+  for (const none of [{ propagation_peers: [row(1)] }, { authorised: false, propagation_peers: [row(1)] }, { authorised: true }, { authorised: true, propagation_peers: {} }, null]) {
+    assert.equal(sanitizePropagationPeers(none), null);
+  }
+  assert.equal(cleanName('​‮'), null);
+  assert.equal(cleanName(5), null);
+});
+
+test('propagation peer rows are capped at 256 and flagged', () => {
+  const r = sanitizePropagationPeers({ authorised: true, propagation_peers: Array.from({ length: 400 }, (_, i) => row(i + 1)) });
+  assert.equal(r.rows.length, MAX_PROPAGATION_PEERS);
+  assert.equal(r.truncated, true);
+  assert.equal(sanitizePropagationPeers({ authorised: true, propagation_peers_truncated: true, propagation_peers: [row(1)] }).truncated, true);
+});
+
+test('rows are read only with a token, kept in memory, and never shown', async () => {
+  const body = { ...stats(), propagation: prop(), authorised: true, propagation_peers: [row(1, { name: 'Alice-Node' })] };
+  const plain = await fetchStats('https://a.test/s', { fetchFn: spy(body) });
+  assert.equal('propagationPeers' in plain, false);
+  assert.equal(plain.data.propagation.storedMessages, 1200);
+  const s = await setup({
+    tokens: new Map([['a.test:1', SECRET]]),
+    statsFn: async () => ({ ...(await fetchStats('https://a.test/s', { fetchFn: spy(body), token: SECRET })) }),
+  });
+  try {
+    await s.monitor.checkAll();
+    assert.equal(s.monitor.propagationRows.get('a.test:1').rows.length, 1);
+    const status = await (await fetch(`${s.base}/api/status`)).text();
+    const detail = await (await fetch(`${s.base}/api/stats?host=a.test:1&range=7d`)).text();
+    for (const text of [status, detail]) {
+      assert.equal(text.includes(addr(1)), false);
+      assert.equal(text.includes('Alice-Node'), false);
+    }
+    const a = JSON.parse(status).hosts.find((h) => h.host === 'a.test');
+    assert.deepEqual(a.stats.peerSummary, { listed: 1, alive: 1, static: 0, unhandled: 4, truncated: false });
+    assert.equal(JSON.parse(status).hosts[0].stats === null || !('peerSummary' in (JSON.parse(status).hosts[0].stats ?? {})), true);
+  } finally {
+    await s.close();
+  }
+});
