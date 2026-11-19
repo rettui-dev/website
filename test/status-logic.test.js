@@ -10,7 +10,7 @@ const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'publ
 const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
-const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count } =
+const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords } =
   sandbox.statusLogic;
 
 test('ago words', () => {
@@ -123,4 +123,14 @@ test('versionSummary is null unless nodes differ, and names the hosts', () => {
   assert.equal(versionSummary([h('a', '2.0.0'), h('b', '2.0.0'), h('c')]), null);
   assert.equal(versionSummary([h('a', '2.0.0'), h('b', '1.9.0'), h('c', '2.0.0'), h('d', null)]), 'Nodes run different versions: 2.0.0 (a:4242, c:4242); 1.9.0 (b:4242).');
   assert.equal(versionSummary([h('a', '__proto__'), h('b', 'constructor')]), 'Nodes run different versions: __proto__ (a:4242); constructor (b:4242).');
+});
+
+test('intervalWords says how often samples are taken', () => {
+  assert.equal(intervalWords(300), '5 minutes');
+  assert.equal(intervalWords(60), 'minute');
+  assert.equal(intervalWords(120), '2 minutes');
+  assert.equal(intervalWords(1), 'second');
+  assert.equal(intervalWords(45), '45 seconds');
+  assert.equal(intervalWords(undefined), 'so often');
+  assert.equal(intervalWords(0), 'so often');
 });

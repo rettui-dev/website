@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Monitor } from '../lib/monitor.js';
 import { createApp } from '../lib/app.js';
-import { MAX_GAP_MS, MAX_VERSIONS, RANGES, buildSeries, cleanSamples, downsample, rates, sampleFrom, validSample } from '../lib/history.js';
+import { MAX_TIME, MAX_GAP_MS, MAX_VERSIONS, RANGES, buildSeries, cleanSamples, downsample, rates, sampleFrom, validSample } from '../lib/history.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
@@ -267,7 +267,7 @@ test('detail combines current stats, versions and series', async () => {
   const m = monitorWith(dir, { now: () => clock, fetcher: async () => ({ ok: true, data: stats({ uptimeSeconds: 99 }) }) });
   await m.checkAll();
   const d = m.detail('a.test:1', '6h');
-  assert.deepEqual(Object.keys(d).sort(), ['generatedAt', 'host', 'range', 'series', 'stats', 'version']);
+  assert.deepEqual(Object.keys(d).sort(), ['generatedAt', 'host', 'range', 'sampleIntervalSeconds', 'series', 'stats', 'version']);
   assert.equal(d.stats.data.rettuiVersion, '2.0.0');
   assert.deepEqual(d.version, { current: '2.0.0', uptimeSeconds: 99, history: [{ version: '2.0.0', firstSeen: new Date(NOW).toISOString() }] });
   assert.equal(d.series.sampleCount, 1);
@@ -358,4 +358,102 @@ test('/api/stats: unknown or unconfigured host is 404, bad range is 400', async 
       assert.equal(r.headers['cache-control'], 'no-store');
     }
   });
+});
+
+test('times beyond the maximum or too far ahead are dropped', async () => {
+  assert.equal(validSample(sample(MAX_TIME, 1, 1, 1)), false);
+  assert.equal(validSample(sample(MAX_TIME - 1, 1, 1, 1)), true);
+  assert.equal(validSample(sample(Number.MAX_SAFE_INTEGER, 1, 1, 1)), false);
+  const list = [sample(NOW - MIN, 1, 1, 1), sample(NOW + 30 * MIN, 1, 1, 1), sample(NOW + 3 * 3600_000, 1, 1, 1), sample(MAX_TIME + 5, 1, 1, 1)];
+  assert.deepEqual(cleanSamples(list, NOW).map((x) => x[0]), [NOW - MIN, NOW + 30 * MIN]);
+
+  const dir = await tmp();
+  await fs.writeFile(
+    path.join(dir, 'stats-history.json'),
+    JSON.stringify({
+      hosts: {
+        'a.test:1': {
+          samples: [sample(NOW - MIN, 1, 1, 1), sample(Number.MAX_SAFE_INTEGER, 1, 1, 1), sample(Date.UTC(2099, 0, 1), 1, 1, 1)],
+          versions: [['1.0', NOW], ['2.0', Number.MAX_SAFE_INTEGER], ['3.0', NOW + 5 * 3600_000], ['4.0', MAX_TIME]],
+        },
+      },
+    }),
+  );
+  let clock = NOW;
+  const m = monitorWith(dir, { now: () => clock, fetcher: async () => ({ ok: true, data: stats() }) });
+  await m.load();
+  const h = m.statsHistory.get('a.test:1');
+  assert.equal(h.samples.length, 1);
+  assert.deepEqual(h.versions, [['1.0', NOW]]);
+  // A tampered future time cannot freeze sampling, and detail() does not throw.
+  const d = m.detail('a.test:1', '24h');
+  assert.equal(d.version.history.length, 1);
+  await m.checkAll();
+  clock += 5 * MIN;
+  await m.checkAll();
+  assert.equal(m.statsHistory.get('a.test:1').samples.length, 2);
+  assert.equal(m.statsHistory.get('a.test:1').samples.at(-1)[0], NOW + 5 * MIN);
+});
+
+test('detail never throws, even with unusable data in memory', async () => {
+  const dir = await tmp();
+  const m = monitorWith(dir, { now: () => NOW, fetcher: async () => ({ ok: false, error: 'x' }) });
+  const h = m.statsHistory.get('a.test:1');
+  h.versions.push(['9.9', Number.MAX_SAFE_INTEGER]);
+  h.samples.push('broken');
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const d = m.detail('a.test:1', '6h');
+    assert.deepEqual(d.version.history, []);
+    assert.equal(d.series.sampleCount, 0);
+  } finally {
+    console.error = original;
+  }
+});
+
+test('detail is cached until a sample or fetch arrives, or 30 seconds pass', async () => {
+  const dir = await tmp();
+  let clock = NOW;
+  let version = '1.0.0';
+  const m = monitorWith(dir, { now: () => clock, fetcher: async () => ({ ok: true, data: stats({ rettuiVersion: version }) }) });
+  await m.checkAll();
+  const first = m.detailJson('a.test:1', '24h');
+  assert.equal(m.detailJson('a.test:1', '24h'), first);
+  assert.equal(m.detail('a.test:1', '24h'), m.detail('a.test:1', '24h'));
+  assert.notEqual(m.detailJson('a.test:1', '6h'), first);
+  clock += 10_000;
+  assert.equal(m.detailJson('a.test:1', '24h'), first);
+  clock += 25_000;
+  assert.notEqual(m.detailJson('a.test:1', '24h'), first);
+  const before = m.detailJson('a.test:1', '24h');
+  version = '1.1.0';
+  await m.checkAll();
+  const after = m.detailJson('a.test:1', '24h');
+  assert.notEqual(after, before);
+  assert.equal(JSON.parse(after).version.current, '1.1.0');
+  assert.equal(m.detailJson('nope:1', '24h'), null);
+  assert.equal(m.detailJson('a.test:1', 'bad'), null);
+});
+
+test('the detail carries the sample interval', async () => {
+  const dir = await tmp();
+  const m = monitorWith(dir, { now: () => NOW, fetcher: async () => ({ ok: false, error: 'x' }), interval: 120_000 });
+  assert.equal(m.detail('a.test:1', '24h').sampleIntervalSeconds, 120);
+});
+
+test('saving replaces a stale temporary file and never follows a planted link', async () => {
+  const dir = await tmp();
+  const target = path.join(dir, 'victim.txt');
+  await fs.writeFile(target, 'keep');
+  const m = monitorWith(dir, { now: () => NOW, fetcher: async () => ({ ok: true, data: stats() }) });
+  for (const name of ['history.json', 'stats-history.json']) {
+    const tmpName = path.join(dir, `${name}.${process.pid}.tmp`);
+    await fs.symlink(target, tmpName).catch(() => fs.writeFile(tmpName, 'stale'));
+  }
+  await m.checkAll();
+  assert.equal(await fs.readFile(target, 'utf8'), 'keep');
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'stats-history.json', 'victim.txt']);
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'stats-history.json'), 'utf8')).version, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8')).version, 1);
 });

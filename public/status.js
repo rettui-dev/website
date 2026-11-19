@@ -223,6 +223,13 @@
     return n < 10 && n !== Math.floor(n) ? String(Math.round(n * 10) / 10) : num(Math.round(n));
   }
 
+  // 300 -> "5 minutes", 60 -> "minute", 45 -> "45 seconds": for "about every ...".
+  function intervalWords(sec) {
+    if (!(sec > 0)) return 'so often';
+    if (sec % 60 === 0) return sec === 60 ? 'minute' : sec / 60 + ' minutes';
+    return sec === 1 ? 'second' : Math.round(sec) + ' seconds';
+  }
+
   // The peer breakdown: label, count and share of all peers heard (whole
   // percent). "Other" is whatever the three kinds do not cover.
   function peerShares(p) {
@@ -472,7 +479,7 @@
     var parts = [versionSection(d)];
     if (collecting) {
       var empty = el('p', 'empty', 'Collecting data, graphs fill in over time.');
-      empty.appendChild(el('span', 'muted', ' ' + ser.sampleCount + (ser.sampleCount === 1 ? ' sample' : ' samples') + ' so far in the ' + RANGE_WORDS[d.range] + '; one is taken about every 5 minutes.'));
+      empty.appendChild(el('span', 'muted', ' ' + ser.sampleCount + (ser.sampleCount === 1 ? ' sample' : ' samples') + ' so far in the ' + RANGE_WORDS[d.range] + '; one is taken about every ' + intervalWords(d.sampleIntervalSeconds) + '.'));
       parts.push(empty);
     }
     parts.push(peersSection(d, ser, width, collecting));
@@ -659,7 +666,7 @@
     // Loaded by the tests: expose the pure parts only.
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
-      peerShares: peerShares, versionSummary: versionSummary, count: count };
+      peerShares: peerShares, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }
   setupDetail();
