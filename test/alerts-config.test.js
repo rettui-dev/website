@@ -279,3 +279,22 @@ test('announce_queue is accepted in events, off unless listed, with samples defa
   assert.deepEqual([c.alerts.events, c.alerts.queueSamples], [['down', 'recovered', 'announce_queue'], 5]);
   assert.deepEqual(loadConfig(withAlerts(`${hook}events: [announce_queue]`)).alerts.events, ['announce_queue']);
 });
+
+test('announce_queue for a node without a stats_url gives a warning at start', async () => {
+  const dir = await tmp();
+  const write = async (text) => {
+    const file = path.join(dir, 'c.yaml');
+    await fs.writeFile(file, text);
+    return (await loadConfigFile(file)).warnings;
+  };
+  const hook = 'channels:\n  - type: webhook\n    url: https://hooks.example/abc\n';
+  const two = 'nodes:\n  - address: a.test:4242\n    stats_url: https://a.test/stats.json\n  - address: b.test:4242\n';
+  const warned = await write(`${two}alerts:\n  ${hook.replace(/\n(?=.)/g, '\n  ')}  events: [down, announce_queue]\n`);
+  assert.equal(warned.filter((w) => /announce_queue/.test(w)).length, 1);
+  assert.match(warned.join('\n'), /b\.test:4242 has no stats_url/);
+  assert.doesNotMatch(warned.join('\n'), /a\.test/);
+  // Not listed, or every node has stats: nothing to say.
+  assert.deepEqual((await write(`${two}alerts:\n  ${hook.replace(/\n(?=.)/g, '\n  ')}`)).filter((w) => /announce_queue/.test(w)), []);
+  const all = 'nodes:\n  - address: a.test:4242\n    stats_url: https://a.test/stats.json\n';
+  assert.deepEqual((await write(`${all}alerts:\n  ${hook.replace(/\n(?=.)/g, '\n  ')}  events: [announce_queue]\n`)).filter((w) => /announce_queue/.test(w)), []);
+});
