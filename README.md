@@ -16,7 +16,9 @@ hosts, keeps their history and can fetch their node stats.
   line of warning appears only when something needs a look. "More" opens the rest, and "Full
   details" opens graphs. Under the bar of checks, a 90 day uptime bar shows one cell per day, and a
   "Recent incidents" list shows when nodes went down and for how long (see "Uptime history and
-  incidents"). It refreshes itself and keeps open rows open.
+  incidents"). It refreshes itself and keeps open rows open. Below the banner a collapsible
+  "Network map" draws the proxy, the nodes behind it and the external peers they connect out to
+  (see "Network map").
 - `/api/status` is the same data as JSON, with `uptime90`, `days` and `incidents` for each host.
 - `/api/incidents` lists the latest incidents (up to 100) of all nodes, newest first. Only GET
   and HEAD are allowed.
@@ -87,6 +89,9 @@ before, and nothing needs to change for an existing deployment.
         proxy_for:                          # optional: the nodes this one is a proxy for
           - front.rns.rettui.dev:4242
         count_own: false                    # optional, default false (see below)
+        upstreams:                          # optional: external peers shown on the network map
+          - name: Example hub               # 1 to 48 characters
+            address: hub.example.org:4965   # optional, only shown, never checked
       - address: front.rns.rettui.dev:4242
 
 The file is checked when the server starts, and any mistake stops it with a message that
@@ -95,7 +100,7 @@ never repeats a URL:
 - Only `nodes`, `stats_token`, `stats_token_file`, `public_details`, `public_disk_figures`, `users`,
   `login`, `require_login` and `alerts` at the top level, and only `address`, `name`, `stats_url`,
   `stats_token`, `stats_token_file`, `proxy_for`, `count_own`, `public_details`,
-  `public_disk_figures` and `require_login` in a node; anything else is an error, as are repeated
+  `public_disk_figures`, `require_login` and `upstreams` in a node; anything else is an error, as are repeated
   keys and wrong types.
 - At most 64 nodes and a file of at most 64 KiB. The same host and port rules as
   `STATUS_TARGETS` apply, and the same URL rules as `STATS_URLS` (`https`, or `http` only
@@ -103,6 +108,9 @@ never repeats a URL:
 - Every `proxy_for` entry must be a listed node. A node cannot proxy itself, a node can have
   at most one proxy, and there can be no cycles. A proxy cannot itself be proxied (groups
   are one level deep).
+- `upstreams` is a list of 1 to 8 maps with a `name` (1 to 48 characters, no control characters,
+  each once per node) and an optional `address` (host:port); no other key is allowed. It can only be
+  set in the file, on a node.
 - The file is read as plain data only: no aliases or anchors that are used, no merge keys
   (`<<`), no custom tags and only one document.
 
@@ -521,6 +529,36 @@ Privacy and limits:
   sections are a "Section" menu. The "View" menu of a proxy offers "Combined (N nodes)" (the
   default), the proxy itself and each node. Peers heard over time is one graph (a band between
   the least and the most for a group; by kind on request for one node).
+
+## Network map
+
+The status page has a collapsible "Network map" below the banner. It is drawn in the browser as
+inline SVG from `/api/status`, so it refreshes with the page (every 15 seconds) and needs no
+other request.
+
+- **What is drawn:** the proxy (the front door) on one side, the nodes it passes visitors to in
+  the middle, and, when any node has `upstreams`, the external peers on the other side. On a
+  narrow screen the same tiers are stacked top to bottom. Without a proxy and without `upstreams`
+  there is nothing to draw, and the map is not shown.
+- **Nodes** show their name, their state in words and a mark (`● Up`, `✕ Down`, `? Unknown`, so it
+  is not colour alone) and a short fact: the clients, when the node's stats are fresh, else the
+  connect time. A node that is down shows no clients. Up nodes pulse gently unless the visitor
+  prefers reduced motion.
+- **Lines** are solid from the proxy to its nodes and dashed to external peers. A line is grey
+  when either end is down.
+- **Upstreams** are for display only. A node's `upstreams` lists the external backbone peers it
+  connects out to, so the map can draw them as grey "External" boxes. The server never resolves,
+  probes or fetches an upstream's address, and an upstream has no state. The same name and
+  address on two nodes is drawn once, with a line from each. `/api/status` adds an `upstreams`
+  list (`[{name, address?}]`) to the hosts that have one, and nothing else.
+- **Access:** the map draws only what a visitor already sees on the page: up or down, clients,
+  connect time and the 90 day uptime. Nothing that `require_login` or `public_details` hides
+  is used, and the names and addresses in `upstreams` are public, so leave out an address you do
+  not want shown.
+- **Keyboard and screen readers:** each box can be focused with Tab and has its facts as its
+  name and as a tooltip title. "Show as list" opens the same map as a list, with what each
+  node connects to. The map can be folded; whether it is open is kept only until the page is
+  reloaded.
 
 ## How checking works
 
