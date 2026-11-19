@@ -190,11 +190,13 @@ test('long notes are cut at the cap without splitting a character', () => {
   assert.equal([...kid(entry, 'content').text].length, MAX_FEED_CONTENT);
 });
 
-test('a release without notes still has content, and a bad date falls back to the fetch time', () => {
+test('a release without notes still has content, and a bad date falls back to a fixed time, not the fetch time', () => {
   const xml = buildFeed([item({ notes: '', publishedAt: 'not a date' })]);
   const entry = kid(parseXml(xml), 'entry');
   assert.match(kid(entry, 'content').text, /No release notes/);
-  assert.equal(kid(entry, 'updated').text, '2026-11-19T12:00:00Z');
+  assert.equal(kid(entry, 'updated').text, '1970-01-01T00:00:00Z');
+  const later = kid(parseXml(buildFeed([{ ...item({ notes: '', publishedAt: null }), fetchedAt: Date.parse('2026-12-01T00:00:00Z') }])), 'entry');
+  assert.equal(kid(later, 'updated').text, '1970-01-01T00:00:00Z');
 });
 
 test('the cache keeps cleaned release notes for the feed, and the downloads API leaves them out', async () => {
