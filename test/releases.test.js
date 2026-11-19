@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { MAX_ASSETS, MAX_BYTES, MAX_CHECKSUM_FILES, ReleaseCache, ReleaseError, allowedAssetUrl, classifyAsset, cleanRelease, fetchLatest, fromGitHub, loadReleaseSettings, loadToken, parseChecksums, parseRepos } from '../lib/releases.js';
+import { MAX_ASSETS, MAX_BYTES, MAX_CHECKSUM_FILES, ReleaseCache, ReleaseError, allowedAssetUrl, classifyAsset, cleanRelease, fetchLatest, fromGitHub, loadReleaseSettings, loadToken, parseChecksums, parseRepos, withDeadline } from '../lib/releases.js';
 
 const REPO = 'rettui-dev/rettui';
 const API = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -60,6 +60,9 @@ test('the GitHub token: from the variable, from a file, and never both', async (
   await fs.writeFile(file, '\n');
   await assert.rejects(loadToken({ GITHUB_TOKEN_FILE: file }), /is empty/);
   await fs.writeFile(file, 'x'.repeat(2000));
+  await assert.rejects(loadToken({ GITHUB_TOKEN_FILE: file }), /is not a small file/);
+  await assert.rejects(loadToken({ GITHUB_TOKEN_FILE: dir }), /is not a small file/);
+  await fs.writeFile(file, 'two words');
   await assert.rejects(loadToken({ GITHUB_TOKEN_FILE: file }), /not a token/);
   await assert.rejects(loadToken({ GITHUB_TOKEN: 'two words' }), /not a token/);
   // The message never repeats the value.
@@ -586,4 +589,20 @@ test('an unwritable data folder is logged and does not stop the cache', async ()
   await cache.refreshDue();
   assert.equal(cache.snapshot().projects[0].status, 'ok');
   assert.match(logs.join('\n'), /could not save releases/);
+});
+
+test('withDeadline: a promise that fails after the signal was aborted is not an unhandled rejection', async () => {
+  const seen = [];
+  const on = (reason) => seen.push(reason);
+  process.on('unhandledRejection', on);
+  try {
+    const ctl = new AbortController();
+    ctl.abort();
+    const late = new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 5));
+    await assert.rejects(withDeadline(late, ctl.signal), /timeout/);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(seen, []);
+  } finally {
+    process.off('unhandledRejection', on);
+  }
 });

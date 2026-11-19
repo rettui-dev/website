@@ -12,3 +12,5 @@ config.yaml
 *.token
 stats-token*.txt
 secrets/
+*.secret
+*.password
