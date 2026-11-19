@@ -67,6 +67,12 @@ nodes:
     name: Front
     stats_url: https://front.rns.rettui.dev/stats.json
     # stats_token_file: secrets/front.token
+    # Optional: the external backbone peers this node connects out to, drawn as grey boxes on the
+    # network map (up to 8 per node). The address is only shown: it is never checked.
+    # upstreams:
+    #   - name: Example backbone hub
+    #     address: hub.example.org:4965
+    #   - name: Another peer
   - address: back.rns.rettui.dev:4242
     name: Back
     stats_url: https://back.rns.rettui.dev/stats.json
