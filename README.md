@@ -11,8 +11,10 @@ hosts, keeps their history and can fetch their node stats.
 ## Pages
 
 - `/` is the home page.
-- `/status` shows, for each host, whether it is up, the connect time, when it was last
-  checked, its uptime and a bar of the last 90 checks. It refreshes itself.
+- `/status` shows, for each entry point, whether it is up, one line of facts (clients, peers
+  heard, uptime over 24 hours, when it was last checked) and a bar of the last 90 checks. A
+  line of warning appears only when something needs a look. "More" opens the rest, and "Full
+  details" opens graphs. It refreshes itself and keeps open rows open.
 - `/api/status` is the same data as JSON.
 - `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
   "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
@@ -133,10 +135,10 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
 
 `/api/status` carries them in `stats.data.propagation` and `stats.data.disk`.
 
-On the status page a node with these numbers gets one more line: stored messages and size (with
-the share of its storage limit), peered nodes alive out of all (static and automatic, and the
-peer limit), whether auto-peering is on, messages sent to and received from peers, unhandled
-messages, and the node's data size and free disk space with a bar and a percentage.
+On the status page these numbers are under "More" (message store, disk) and in the Storage and
+Disk sections of Full details. The row itself says nothing unless: the disk is 75% used or
+more (90% or more reads "almost full"), fewer than half of the peered nodes are alive, or there
+are unhandled messages.
 
 For a proxy group, `group.data.propagation` adds up stored messages and bytes, peered nodes,
 message counters and unhandled messages over the reporting nodes that have them (`nodes` says
@@ -156,9 +158,10 @@ counter or uptime that goes down is a restart and a long gap is missing data, bo
 In the combined view of a proxy the stored messages and bytes, peered nodes and message flow
 are summed, only nodes that have these numbers count, and a point is summed only when all of
 them are in it; for the disk the data size is summed and the free space is that of the node with
-the least. The Details view draws stored messages, stored size, peered nodes (alive and total),
-message flow to and from peers, and the disk (data size and free space, as two graphs because
-the data is usually a small part of the disk).
+the least. The Storage section draws stored messages (the size is in the tooltip and the facts), peered
+nodes (alive and total) and, on a propagation node, message flow to and from peers. The Disk
+section shows the disk level and data size as facts, and draws the free space graph only when
+`public_disk_figures` is on.
 
 **Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
 the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
@@ -253,15 +256,21 @@ Privacy and limits:
 
 ### On the status page
 
-- A node with a `name` shows it, with the address beside it. Once at least one proxy is
-  configured, every node gets a text badge, "Proxy" or "RNS node" (with the proxy's name in
-  its title and screen reader text for nodes behind one). With only the environment
-  variables there are no proxies, so no badges are shown: they would all say the same.
-- A proxy shows an "All nodes (N)" line with the combined stats, how many nodes reported,
-  and the nodes behind it nested underneath. Peers heard is shown as a range, not a number.
-- The Details view of a proxy has a "View" menu: "Combined (N nodes)" (the default), the
-  proxy itself and each node. Combined shows what each node runs, the peer ranges and the
-  summed graphs.
+- A node with a `name` shows it, with the address beside it; a node without one shows its
+  address as the name. Only proxies have a badge ("Proxy").
+- A proxy and the nodes behind it are one card: `Front door [Proxy] passes visitors to 3
+  nodes`, then one line (`3 of 3 nodes up · 34 clients · 1,300-3,300 peers heard · 33
+  announces/min`). Peers heard is a range, and the "?" button explains why; when every node
+  sent its peer list the number is exact and marked "de-duplicated". Nodes that did not report
+  are named in a warning line. The nodes are nested in the card, and one can be open at a time.
+- A node that is down shows the connection error and when it was last up; its last known
+  stats are under "More". Stats that are old say so in words ("Stats from 12m ago"), and only
+  the check bar is dimmed.
+- Full details has a sticky header (view, range) and sections: Overview (what needs attention,
+  versions, and for a proxy the nodes), Traffic, Peers, Storage and Disk; on phones the
+  sections are a "Section" menu. The "View" menu of a proxy offers "Combined (N nodes)" (the
+  default), the proxy itself and each node. Peers heard over time is one graph (a band between
+  the least and the most for a group; by kind on request for one node).
 
 ## How checking works
 
@@ -273,8 +282,8 @@ Up to 2880 checks per host (24 hours) are kept, and uptime is calculated over th
 ## Node stats
 
 A rettui node can publish a small `stats.json` (opt-in on the node). With `STATS_URLS`
-set, the status page shows a second line under each such host: clients, interfaces
-online, traffic, peers heard, announces per minute and node uptime. A host without a
+set, the status page shows clients and peers heard on each such host's line, and interfaces
+online, traffic, announces per minute and how long the node has been running under "More". A host without a
 stats URL shows nothing extra; a host whose stats cannot be fetched shows "Stats
 unavailable". The production values are:
 
