@@ -172,8 +172,8 @@ section while there are no users stops the server at start, and so does a `login
 | ---------- | ------------------------------------------- |
 | `details`  | the Full details view and its graphs (`/api/stats` answers 401), and the node's place in a proxy's combined view |
 | `storage`  | the message store of a propagation node: stored messages and size, message counters, unhandled messages, and their graphs |
-| `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists, and their graph |
-| `disk`     | the disk level and share, free space, and data size |
+| `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists, and their graph; also the messages sent to, received from and offered to peers, and the peer message flow graph (these go with `storage` too) |
+| `disk`     | the disk level and share, free space, and data size; also the size of the message store (its bytes and graph), which on a propagation node is most of the data size |
 | `versions` | the rettui version a node runs, and the versions seen |
 
 Up or down, the check bar and uptime, clients, peers heard, traffic, announces, interfaces and how

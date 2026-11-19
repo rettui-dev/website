@@ -133,5 +133,27 @@ test('stripGroup and stripSeries take the sums and the graphs out', () => {
   const series = { bytesIn: [], disk: { fsFreeBytes: [] }, propagation: { storedMessages: [], storedBytes: [], peersAlive: [], peersTotal: [], sentPerMinute: [], receivedPerMinute: [], members: 2 } };
   assert.deepEqual(stripSeries(series, new Set(['disk', 'storage'])), { bytesIn: [], disk: null, propagation: { peersAlive: [], peersTotal: [], members: 2 } });
   assert.equal(stripSeries(series, new Set(['storage', 'peers'])).propagation, null);
-  assert.deepEqual(Object.keys(stripSeries(series, new Set(['peers'])).propagation).sort(), ['members', 'receivedPerMinute', 'sentPerMinute', 'storedBytes', 'storedMessages']);
+  // The flow to and from peers goes with peers, as well as with storage.
+  assert.deepEqual(Object.keys(stripSeries(series, new Set(['peers'])).propagation).sort(), ['members', 'storedBytes', 'storedMessages']);
+  // The store size goes with the disk: it is most of a propagation node's data size.
+  assert.deepEqual(Object.keys(stripSeries(series, new Set(['disk'])).propagation).sort(), ['members', 'peersAlive', 'peersTotal', 'receivedPerMinute', 'sentPerMinute', 'storedMessages']);
+  assert.equal(stripSeries(series, new Set(['disk'])).disk, null);
+  assert.equal(stripSeries(series, new Set(['peers', 'disk'])).propagation.storedBytes, undefined);
+  const flow = { nodes: 2, storedMessages: 1, storedBytes: 5, messagesSentToPeers: 3, messagesReceivedFromPeers: 4, peersAlive: 2 };
+  assert.deepEqual(stripGroup({ nodes: 2, data: { propagation: flow } }, new Set(['peers'])).data.propagation, { nodes: 2, storedMessages: 1, storedBytes: 5 });
+  assert.deepEqual(stripGroup({ nodes: 2, data: { propagation: flow } }, new Set(['disk'])).data.propagation, { nodes: 2, storedMessages: 1, messagesSentToPeers: 3, messagesReceivedFromPeers: 4, peersAlive: 2 });
+});
+
+test('locked peers also hide the messages exchanged with peers, and a locked disk the store size', () => {
+  const stats = { ok: true, data: data() };
+  Object.assign(stats.data.propagation, { messagesSentToPeers: 21, messagesReceivedFromPeers: 22, messagesOfferedToPeers: 23, messagesReceived: 24 });
+  const peers = stripStats(stats, new Set(['peers'])).data.propagation;
+  for (const k of ['messagesSentToPeers', 'messagesReceivedFromPeers', 'messagesOfferedToPeers', 'peersAlive']) assert.equal(k in peers, false, k);
+  assert.equal(peers.messagesReceived, 24);
+  assert.equal(peers.storedBytes, 12);
+  const disk = stripStats(stats, new Set(['disk'])).data;
+  assert.equal(disk.disk, undefined);
+  assert.equal('storedBytes' in disk.propagation, false);
+  assert.equal(disk.propagation.storedMessages, 11);
+  assert.equal(disk.propagation.messagesSentToPeers, 21);
 });
