@@ -11,7 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
-  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
+  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, backlogAbnormal, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
@@ -244,8 +244,16 @@ test('warnings say nothing when all is well and name the level when not', () => 
   // Exactly half alive is fine; fewer is not.
   assert.deepEqual(w(null, { peersAlive: 4, peersTotal: 8, unhandledMessages: 0 }), []);
   assert.deepEqual(w(null, { peersAlive: 3, peersTotal: 8, unhandledMessages: 0 }), [{ kind: 'high', text: 'Peered 3/8 alive' }]);
-  assert.deepEqual(w(null, { peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', title: 'Messages the node has received and not processed yet.', text: 'Unhandled 1 message' }]);
-  assert.deepEqual(w(null, { unhandledMessages: 28 }), [{ kind: 'high', title: 'Messages the node has received and not processed yet.', text: 'Unhandled 28 messages' }]);
+  // A backlog alone is normal: no warning, however large, while it fits stored messages x peers.
+  assert.deepEqual(w(null, { unhandledMessages: 28 }), []);
+  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 300 }), []);
+  assert.deepEqual(w(null, { storedMessages: 0, peersAlive: 0, peersTotal: 0, unhandledMessages: 0 }), []);
+  // More waiting than the store and the peers can explain is abnormal.
+  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 301 }), [{ kind: 'high', title: 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 301 messages, more than the store and peers explain' }]);
+  assert.deepEqual(w(null, { storedMessages: 5, peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', title: 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 1 message, more than the store and peers explain' }]);
+  assert.equal(backlogAbnormal(null), false);
+  assert.equal(backlogAbnormal({ storedMessages: 1, peersTotal: 1, unhandledMessages: 1 }), false);
+  assert.equal(backlogAbnormal({ storedMessages: 1, peersTotal: 1, unhandledMessages: 2 }), true);
   // Exact figures need no "about".
   assert.deepEqual(w({ level: 'high', usedPercent: 81, fsFreeBytes: 19, fsTotalBytes: 100 }, null), [{ kind: 'high', text: 'Disk 81% used' }]);
   // Old numbers are not warned about.
@@ -272,7 +280,7 @@ test('networkFacts, storeFacts and diskFacts leave out what is not known', () =>
   assert.deepEqual([...networkFacts(R({ stats: null }))], []);
   assert.deepEqual([...storeFacts(null)], []);
   assert.deepEqual([...storeFacts(PROP)].map((f) => [...f]), [
-    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Unhandled', '7 (not processed yet)'],
+    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Waiting to send to peers', '7'],
   ]);
   assert.deepEqual([...diskFacts(null)], []);
   assert.deepEqual([...diskFacts({ usedPercent: 85, level: 'high' })].map((f) => [...f]), [['Disk', 'about 85% used']]);
@@ -365,7 +373,7 @@ test('propagationPairs lists what the node sent and skips the rest', () => {
     ['Peered nodes', '5/8 alive (3 static, 5 auto), limit 20'],
     ['Auto-peering', 'on (depth 4)'],
     ['Peer traffic', '↑ 1,000 sent ↓ 2,000 received'],
-    ['Unhandled', '7'],
+    ['Waiting to send to peers', '7'],
   ]);
   assert.equal(propagationPairs(null).length, 0);
   assert.equal(propagationPairs({}).length, 0);

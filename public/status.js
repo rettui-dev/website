@@ -180,7 +180,16 @@
     return st && st.stale && st.fetchedAt ? 'Stats from ' + ago(st.fetchedAt) + ' (last fetch failed)' : null;
   }
 
-  var UNHANDLED = 'Messages the node has received and not processed yet.';
+  var BACKLOG = 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.';
+
+  // True when the backlog to send to peers cannot be real: a message waits at most once per peer,
+  // so more than stored messages x peered nodes means the numbers are wrong or stuck. A plain backlog,
+  // even a large one, is normal. Only the current sample is used here (the row has no history).
+  function backlogAbnormal(p) {
+    if (!p || !known(p.unhandledMessages) || !(p.unhandledMessages > 0)) return false;
+    if (!known(p.storedMessages) || !known(p.peersTotal)) return false;
+    return p.unhandledMessages > p.storedMessages * p.peersTotal;
+  }
 
   // Things worth a line in the collapsed row, as {kind, text}; nothing when all is well.
   // Disk uses the level the server worked out, so words and numbers agree.
@@ -199,8 +208,8 @@
     if (p && known(p.peersAlive) && known(p.peersTotal) && p.peersTotal > 0 && p.peersAlive * 2 < p.peersTotal) {
       out.push({ kind: 'high', text: 'Peered ' + num(p.peersAlive) + '/' + num(p.peersTotal) + ' alive' });
     }
-    if (p && known(p.unhandledMessages) && p.unhandledMessages > 0) {
-      out.push({ kind: 'high', title: UNHANDLED, text: 'Unhandled ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') });
+    if (backlogAbnormal(p)) {
+      out.push({ kind: 'high', title: BACKLOG, text: 'Waiting to send to peers: ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') + ', more than the store and peers explain' });
     }
     return out;
   }
@@ -235,7 +244,7 @@
       out.push(['Stored', s]);
     }
     if (known(p.peersAlive) && known(p.peersTotal)) out.push(['Peered', num(p.peersAlive) + ' of ' + num(p.peersTotal) + ' alive']);
-    if (known(p.unhandledMessages)) out.push(['Unhandled', num(p.unhandledMessages) + (p.unhandledMessages > 0 ? ' (not processed yet)' : '')]);
+    if (known(p.unhandledMessages)) out.push(['Waiting to send to peers', num(p.unhandledMessages)]);
     return out;
   }
 
@@ -678,7 +687,7 @@
     if (known(p.messagesSentToPeers) || known(p.messagesReceivedFromPeers)) {
       pairs.push(['Peer traffic', '↑ ' + (known(p.messagesSentToPeers) ? num(p.messagesSentToPeers) : '?') + ' sent ↓ ' + (known(p.messagesReceivedFromPeers) ? num(p.messagesReceivedFromPeers) : '?') + ' received']);
     }
-    if (known(p.unhandledMessages)) pairs.push(['Unhandled', num(p.unhandledMessages)]);
+    if (known(p.unhandledMessages)) pairs.push(['Waiting to send to peers', num(p.unhandledMessages)]);
     return pairs;
   }
 
@@ -1493,7 +1502,7 @@
     var pairs = d.view === 'combined' ? groupPropagationPairs(d.group) : propagationPairs(d.stats && d.stats.data ? d.stats.data.propagation : null);
     if (pairs.length) facts.appendChild(factsBlock(pairs));
     if (d.view !== 'combined' && d.stats && d.stats.peerSummary) {
-      facts.appendChild(elRuns('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
+      facts.appendChild(elRuns('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages waiting to send to them).'));
     }
     out.push(facts);
     var p = ser.propagation;
@@ -2044,7 +2053,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
       rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked };
     return;

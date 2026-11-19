@@ -174,7 +174,7 @@ section while there are no users stops the server at start, and so does a `login
 | Section    | What a visitor without a login does not get |
 | ---------- | ------------------------------------------- |
 | `details`  | the Full details view and its graphs (`/api/stats` answers 401), and the node's place in a proxy's combined view |
-| `storage`  | the message store of a propagation node: stored messages and size, message counters, unhandled messages, and their graphs |
+| `storage`  | the message store of a propagation node: stored messages and size, message counters, the backlog waiting to send to peers, and their graphs |
 | `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists, and their graph; also the messages sent to, received from and offered to peers, and the peer message flow graph (these go with `storage` too) |
 | `disk`     | the disk level and share, free space, and data size; also the size of the message store (its bytes and graph), which on a propagation node is most of the data size |
 | `versions` | the rettui version a node runs, and the versions seen |
@@ -263,9 +263,13 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
 
 - `propagation`: messages stored and their size (and the storage limit), peered nodes (alive,
   total, static, automatic, the peer limit, inbound links, whether auto-peering is on),
-  messages received, served, sent to peers and received from peers, and unhandled messages.
+  messages received, served, sent to peers and received from peers, and the messages waiting to
+  send to peers (`unhandledMessages`).
   Counters count since the node started, except messages offered to peers, which may include
-  earlier runs. Unhandled messages can lag behind the real number.
+  earlier runs. `unhandledMessages` is a sync backlog, not unprocessed mail: the stored messages a
+  node still has to offer to its peer nodes, counted once for each peer (one message waiting for
+  3 peers counts 3). It is high right after peering starts and falls as peers catch up. It can lag
+  behind the real number.
 - `disk`: the size of the node's data (public on the node) and, only in the answer to a request
   with a token, free and total space of the file system it is on (see "What is public").
 
@@ -273,11 +277,13 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
 
 On the status page these numbers are under "More" (message store, disk) and in the Storage and
 Disk sections of Full details. The row itself says nothing unless: the disk is 75% used or
-more (90% or more reads "almost full"), fewer than half of the peered nodes are alive, or there
-are unhandled messages.
+more (90% or more reads "almost full"), fewer than half of the peered nodes are alive, or the
+waiting-to-send backlog is more than stored messages times peered nodes (it cannot be, so the
+numbers are wrong or stuck; the row has no history to judge a trend). Any smaller backlog is
+shown only as a fact under "More", not as a warning.
 
 For a proxy group, `group.data.propagation` adds up stored messages and bytes, peered nodes,
-message counters and unhandled messages over the reporting nodes that have them (`nodes` says
+message counters and the waiting-to-send backlog over the reporting nodes that have them (`nodes` says
 how many), and `group.data.disk` has the summed data size and `lowestFree`: the node whose disk
 has the smallest free share. Free space is not added up, because each node has its own disk.
 Members that are down or stale are left out, as for the other numbers.
