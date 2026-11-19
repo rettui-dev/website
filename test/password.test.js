@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, MAX_MEMORY_KIB, argon2Available, argon2id, checkCosts, dummyPhc, formatPhc, hashPassword, parsePhc, verifyPassword } from '../lib/password.js';
+import { DEFAULTS, MAX_MEMORY_KIB, argon2Available, argon2id, checkCosts, costliest, dummyPhc, formatPhc, hashPassword, parsePhc, verifyPassword } from '../lib/password.js';
 import { fromPipe, parseArgs } from '../scripts/hash-password.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -91,6 +91,16 @@ test('dummyPhc has the costs of a real user and matches no password', async () =
   assert.deepEqual([d.memory, d.passes, d.parallelism, d.hash.length], [65536, 2, 1, 32]);
   assert.equal(await verifyPassword('password', d, fakeHasher), false);
   assert.deepEqual([dummyPhc().memory, dummyPhc().passes], [19456, 2]);
+});
+
+test('costliest takes the highest of each cost, so a stand-in is never cheaper than a real user', () => {
+  const phc = (memory, passes, parallelism, length) => ({ memory, passes, parallelism, salt: Buffer.alloc(16), hash: Buffer.alloc(length) });
+  const c = costliest([phc(19456, 9, 1, 16), phc(65536, 2, 1, 32), phc(20000, 3, 8, 64)]);
+  assert.deepEqual([c.memory, c.passes, c.parallelism, c.hash.length], [65536, 9, 8, 64]);
+  const d = dummyPhc(c);
+  assert.deepEqual([d.memory, d.passes, d.parallelism, d.hash.length], [65536, 9, 8, 64]);
+  const none = costliest([]);
+  assert.deepEqual([none.memory, none.passes, none.parallelism, none.hash.length], [19456, 2, 1, 32]);
 });
 
 test('the real Argon2id matches the reference test vector', { skip: REAL }, async () => {

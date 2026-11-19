@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Busy, Sessions, Throttle, clientIp, cookieValue, createLogin, hashGate, ipKey, isFormType, normalIp, sameOrigin } from '../lib/login.js';
+import { Busy, MAX_QUEUED_HASHES, Sessions, Throttle, clientIp, cookieValue, createLogin, hashGate, ipKey, isFormType, normalIp, sameOrigin } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -85,6 +85,42 @@ test('throttle memory is bounded', () => {
   for (let i = 0; i < 1000; i++) th.fail(`k${i}`);
   assert.equal(th.size, 100);
   assert.equal(th.wait('k0'), 0);
+});
+
+test('throttle: a full map never pushes out a key that is still waiting', () => {
+  let t = 0;
+  const th = new Throttle({ free: 1, baseMs: 1000, maxMs: 60_000, maxEntries: 3, now: () => t });
+  // A locked key, then the map filled with keys that are waiting too.
+  th.fail('locked');
+  th.fail('locked');
+  assert.equal(th.wait('locked'), 1000);
+  for (const k of ['a', 'b']) {
+    th.fail(k);
+    th.fail(k);
+  }
+  assert.equal(th.size, 3);
+  // A flood of new keys: none gets in, each is told to wait, and the locked key stays locked.
+  for (let i = 0; i < 100; i++) {
+    assert.ok(th.wait(`new${i}`) > 0);
+    th.fail(`new${i}`);
+  }
+  assert.equal(th.size, 3);
+  assert.equal(th.wait('locked'), 1000);
+  assert.equal(th.wait('new0'), 1000, 'the wait is until the first entry may go');
+  // A known key still counts on.
+  th.fail('locked');
+  assert.equal(th.wait('locked'), 2000);
+  // Once the waits of a and b are over, new keys push those out, oldest first, and not the locked key.
+  t += 1000;
+  assert.equal(th.wait('new1'), 0);
+  th.fail('new1');
+  th.fail('new2');
+  assert.deepEqual([...th.map.keys()].sort(), ['locked', 'new1', 'new2']);
+  assert.equal(th.wait('locked'), 1000);
+  // Entries within their free tries have no wait, so they can make room.
+  th.fail('new3');
+  assert.equal(th.size, 3);
+  assert.equal(th.map.has('locked'), true);
 });
 
 test('hashGate runs a few at once, queues a few and turns the rest away', async () => {
@@ -228,6 +264,86 @@ test('attempt: with every hash slot and the queue full the answer is busy', asyn
   // The slot is given back once the job has settled.
   await new Promise((r) => setImmediate(r));
   assert.equal((await l.attempt('alice', 'right password', '192.0.2.1')).ok, true);
+});
+
+// A hasher that holds every check until released, to send requests that overlap.
+function held(hasher = fakeHasher) {
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const calls = [];
+  return { calls, release: () => release(), hasher: async (p) => (calls.push(p), await gate, hasher(p)) };
+}
+
+test('attempt: a burst of wrong passwords sent at once is checked only up to the free tries and one more', async () => {
+  const h = held();
+  const { l } = await login({ hasher: h.hasher, gate: hashGate(10, 10) });
+  const all = Promise.all(Array.from({ length: 10 }, () => l.attempt('alice', 'wrong', '192.0.2.1')));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.calls.length, 5, 'the free tries run at once, the rest wait for them');
+  h.release();
+  const out = await all;
+  assert.equal(h.calls.length, 6);
+  assert.deepEqual(out.map((r) => r.reason).sort(), [...Array(6).fill('invalid'), ...Array(4).fill('throttled')]);
+  assert.equal(l.accounts.count('user:alice'), 6);
+});
+
+test('attempt: a burst of right passwords all log in', async () => {
+  const h = held();
+  const { l } = await login({ hasher: h.hasher });
+  const all = Promise.all(Array.from({ length: 10 }, () => l.attempt('alice', 'right password', '192.0.2.1')));
+  await new Promise((r) => setImmediate(r));
+  h.release();
+  const out = await all;
+  assert.deepEqual(out.map((r) => r.ok), Array(10).fill(true));
+  assert.equal(l.accounts.count('user:alice'), 0);
+});
+
+test('attempt: a success in a burst clears the failures before it', async () => {
+  const h = held();
+  const { l } = await login({ hasher: h.hasher });
+  const tries = ['wrong', 'wrong', 'wrong', 'wrong', 'right password', 'wrong', 'wrong'].map((pw) => l.attempt('alice', pw, '192.0.2.1'));
+  h.release();
+  const out = await Promise.all(tries);
+  assert.equal(out[4].ok, true);
+  assert.equal(out.filter((r) => r.reason === 'throttled').length, 0);
+  assert.ok(l.accounts.count('user:alice') <= 2);
+});
+
+test('attempt: too many waiting for one name are turned away as busy, and that does not count as a failure', async () => {
+  const h = held();
+  const { l } = await login({ hasher: h.hasher, gate: hashGate(100, 100) });
+  const tries = Array.from({ length: 5 + MAX_QUEUED_HASHES + 3 }, (_, i) => l.attempt('alice', 'wrong', `192.0.2.${i}`));
+  await new Promise((r) => setImmediate(r));
+  h.release();
+  const out = await Promise.all(tries);
+  assert.equal(out.filter((r) => r.reason === 'busy').length, 3);
+  assert.ok(out.filter((r) => r.reason === 'busy').every((r) => r.retryAfterMs === 2000));
+  assert.equal(l.accounts.count('user:alice'), 6);
+});
+
+test('attempt: a busy answer from the gate does not count as a failure', async () => {
+  const gate = hashGate(1, 0);
+  let release;
+  const holding = gate(() => new Promise((r) => (release = r)));
+  const { l } = await login({ gate });
+  for (let i = 0; i < 10; i++) assert.equal((await l.attempt('alice', 'wrong', '192.0.2.1')).reason, 'busy');
+  assert.equal(l.accounts.count('user:alice'), 0);
+  assert.equal(l.addresses.count('ip:192.0.2.1'), 0);
+  release();
+  await holding;
+});
+
+test('attempt: an unknown name is checked with the highest costs of any user', async () => {
+  const calls = [];
+  const counting = async (p) => (calls.push(p), fakeHasher(p));
+  const users = [
+    { name: 'cheap', phc: parsePhc(await hashPassword('a', DEFAULTS, fakeHasher)) },
+    { name: 'memory', phc: parsePhc(await hashPassword('b', { ...DEFAULTS, memory: 65536 }, fakeHasher)) },
+    { name: 'passes', phc: parsePhc(await hashPassword('c', { ...DEFAULTS, passes: 7, parallelism: 4 }, fakeHasher)) },
+  ];
+  const l = createLogin({ users, hasher: counting });
+  assert.equal((await l.attempt('nobody', 'x', '192.0.2.1')).reason, 'invalid');
+  assert.deepEqual([calls[0].memory, calls[0].passes, calls[0].parallelism, calls[0].length], [65536, 7, 4, 32]);
 });
 
 test('attempt: a hasher that fails is an error, not a login', async () => {
