@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Monitor } from './lib/monitor.js';
 import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
+import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
 import { argon2Available } from './lib/password.js';
 import { SAMPLE_INTERVAL_MS } from './lib/history.js';
@@ -21,7 +22,7 @@ const port = parsePort(process.env.PORT ?? '8080');
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 
-const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
+const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login, alerts: alertSettings } = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) });
 for (const w of warnings ?? []) console.warn(w);
 
 // STATS_SAMPLE_INTERVAL_MS is for testing only: it makes the stats history fill
@@ -32,7 +33,11 @@ if (!Number.isInteger(sampleIntervalMs) || sampleIntervalMs < 1000) throw new Er
 // Checked now rather than at the first login, so a wrong Node.js is noticed at once.
 if (users.length && !argon2Available()) throw new Error(`users in CONFIG_FILE need Node.js 24.7 or later for Argon2id (this is ${process.version})`);
 
-const monitor = new Monitor({ targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, requireLogin: defaults.requireLogin, sampleIntervalMs });
+// Messages for the operator when a node goes down or comes back; only the monitor sends them.
+const alerts = createAlerter(alertSettings, nodes);
+if (alerts) console.log(`alerts: ${alertSettings.channels.map((c) => c.type).join(', ')} for ${alertSettings.events.join(', ')}`);
+
+const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, requireLogin: defaults.requireLogin, sampleIntervalMs });
 await monitor.load();
 monitor.start();
 
@@ -42,6 +47,7 @@ server.listen(port, host, () => console.log(`listening on http://${host}:${port}
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     monitor.stop();
+    alerts?.stop();
     server.close(() => process.exit(0));
     server.closeAllConnections();
   });
