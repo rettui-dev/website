@@ -596,25 +596,31 @@
     return pairs.concat(diskFacts(d));
   }
 
+  // A group's message store numbers: sums over the nodes.
+  function groupPropagationPairs(g) {
+    if (!g || !g.data || !g.data.propagation) return [];
+    var p = g.data.propagation;
+    return propagationPairs({
+      storedMessages: p.storedMessages, storedBytes: p.storedBytes, storageLimitBytes: p.storageLimitBytes, peersAlive: p.peersAlive, peersTotal: p.peersTotal,
+      peersStatic: p.peersStatic, peersAuto: p.peersAuto, messagesSentToPeers: p.messagesSentToPeers, messagesReceivedFromPeers: p.messagesReceivedFromPeers,
+      unhandledMessages: p.unhandledMessages
+    });
+  }
+
+  // A group's disk numbers: the data of all nodes, and the fullest disk.
+  function groupDiskPairs(g) {
+    var pairs = [];
+    var d = g && g.data ? g.data.disk : null;
+    if (!d) return pairs;
+    if (known(d.dataBytes)) pairs.push(['Data size', bytes(d.dataBytes)]);
+    if (d.lowestFree) pairs.push(['Least disk free', d.lowestFree.percent + '% (' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ')']);
+    else if (d.worst) pairs.push(['Fullest disk', d.worst.usedPercent + '% used']);
+    return pairs;
+  }
+
   // A group's storage numbers: sums, and the fullest disk.
   function groupStoragePairs(g) {
-    var pairs = [];
-    if (!g || !g.data) return pairs;
-    var p = g.data.propagation;
-    if (p) {
-      pairs = propagationPairs({
-        storedMessages: p.storedMessages, storedBytes: p.storedBytes, storageLimitBytes: p.storageLimitBytes, peersAlive: p.peersAlive, peersTotal: p.peersTotal,
-        peersStatic: p.peersStatic, peersAuto: p.peersAuto, messagesSentToPeers: p.messagesSentToPeers, messagesReceivedFromPeers: p.messagesReceivedFromPeers,
-        unhandledMessages: p.unhandledMessages
-      });
-    }
-    var d = g.data.disk;
-    if (d) {
-      if (known(d.dataBytes)) pairs.push(['Data size', bytes(d.dataBytes)]);
-      if (d.lowestFree) pairs.push(['Least disk free', d.lowestFree.percent + '% (' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ')']);
-      else if (d.worst) pairs.push(['Fullest disk', d.worst.usedPercent + '% used']);
-    }
-    return pairs;
+    return groupPropagationPairs(g).concat(groupDiskPairs(g));
   }
 
   // ---- Proxies and groups (pure helpers) ----
@@ -957,6 +963,27 @@
       var px = left + pw * p[0];
       chart.appendChild(svgText(axisTime(t, o.range), { x: px, y: h - 6, 'text-anchor': p[1] }));
     });
+    if (o.band && o.lines.length === 2) {
+      // The range between two lines, as a soft fill under them.
+      var hi = o.lines[0].points;
+      var lo = o.lines[1].points;
+      var gap = gapLimit(hi);
+      var seg = [];
+      var flush = function () {
+        if (seg.length > 1) {
+          var up = seg.map(function (i, n) { return (n ? 'L' : 'M') + x(hi[i][0]).toFixed(1) + ' ' + y(hi[i][1]).toFixed(1); }).join('');
+          var down = seg.slice().reverse().map(function (i) { return 'L' + x(lo[i][0]).toFixed(1) + ' ' + y(lo[i][1]).toFixed(1); }).join('');
+          chart.appendChild(svg('path', { d: up + down + 'Z' }, 'band'));
+        }
+        seg = [];
+      };
+      for (var bi = 0; bi < hi.length && bi < lo.length; bi++) {
+        var okPair = typeof hi[bi][1] === 'number' && typeof lo[bi][1] === 'number';
+        if (okPair && seg.length && gap > 0 && hi[bi][0] - hi[seg[seg.length - 1]][0] > gap) flush();
+        if (okPair) seg.push(bi); else flush();
+      }
+      flush();
+    }
     o.lines.forEach(function (l) {
       runs(l.points, gapLimit(l.points)).forEach(function (run) {
         if (run.length === 1) {
@@ -1040,6 +1067,7 @@
       });
       var title = tooltipTitle(t);
       var rows = tooltipRows(o.lines, index, o.fmt);
+      (o.extra || []).forEach(function (l) { rows = rows.concat(tooltipRows([l], index, l.fmt)); });
       var head = el('div', 'tip-time', title);
       var list = el('ul', 'tip-rows');
       rows.forEach(function (r) {
@@ -1143,75 +1171,9 @@
 
   function bodyWidth() {
     var body = document.getElementById('detail-body');
-    return body.clientWidth > 0 ? body.clientWidth : 320;
-  }
-
-  function versionSection(d) {
-    var s = section('Version');
-    var cur = d.stats && d.stats.data ? d.stats.data : null;
-    var dl = el('dl', 'facts');
-    function fact(k, v) {
-      dl.appendChild(el('dt', null, k));
-      dl.appendChild(el('dd', null, v));
-    }
-    fact('Running', d.version.current || 'unknown');
-    fact('Node up', d.version.uptimeSeconds === null ? 'unknown' : duration(d.version.uptimeSeconds));
-    if (cur) {
-      fact('Interfaces', cur.interfaces.online + '/' + cur.interfaces.total + ' online');
-      if (cur.interfaces.clients !== null) fact('Clients', num(cur.interfaces.clients));
-      fact('Traffic since start', '↓ ' + bytes(cur.interfaces.rxBytes) + ' ↑ ' + bytes(cur.interfaces.txBytes));
-    }
-    s.appendChild(dl);
-    if (d.stats && d.stats.stale) s.appendChild(el('p', 'note', 'These numbers are stale: the last fetch failed.'));
-    if (d.version.history.length) {
-      s.appendChild(el('h4', null, 'Versions seen'));
-      var ul = el('ul', 'versions');
-      d.version.history.slice().reverse().forEach(function (v) {
-        var li = el('li', null, v.version);
-        li.appendChild(el('span', 'muted', ' since ' + when(v.firstSeen)));
-        ul.appendChild(li);
-      });
-      s.appendChild(ul);
-    }
-    var note = lastData ? versionSummary(lastData.hosts) : null;
-    if (note) s.appendChild(el('p', 'note', note));
-    return s;
-  }
-
-  function peersSection(d, ser, width, collecting) {
-    var s = section('Peers heard');
-    var cur = d.stats && d.stats.data ? d.stats.data.peersHeard : null;
-    if (cur) {
-      var rows = peerShares(cur);
-      s.appendChild(el('p', 'total', num(cur.total) + ' peers heard now'));
-      s.appendChild(peerBar(rows, cur.total, width));
-      var ul = el('ul', 'shares');
-      rows.forEach(function (r) {
-        var li = el('li');
-        var sw = svg('svg', { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': 'true', focusable: 'false' }, 'swatch-box');
-        sw.appendChild(svg('rect', { x: 0, y: 0, width: 12, height: 12, rx: 2 }, 'fill ' + SHARE_CLASS[r.key]));
-        li.appendChild(sw);
-        li.appendChild(el('span', 'share-label', r.label));
-        li.appendChild(el('b', null, num(r.count)));
-        li.appendChild(el('span', 'muted', r.percent + '%'));
-        ul.appendChild(li);
-      });
-      s.appendChild(ul);
-    } else {
-      s.appendChild(el('p', 'note', 'Stats unavailable.'));
-    }
-    if (!collecting) {
-      s.appendChild(lineChart({
-        title: 'Peers heard over time', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count,
-        lines: [
-          { label: 'Total', cls: 'c4', points: ser.peers.total },
-          { label: 'LXMF', cls: 'c1', points: ser.peers.lxmf },
-          { label: 'NomadNet', cls: 'c2 d1', points: ser.peers.nomad },
-          { label: 'Propagation', cls: 'c3 d2', points: ser.peers.propagation }
-        ]
-      }));
-    }
-    return s;
+    var cs = window.getComputedStyle(body);
+    var inner = body.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    return inner > 0 ? inner : 320;
   }
 
   function emptyState(d, ser) {
@@ -1221,73 +1183,67 @@
     return empty;
   }
 
-  // The network, clients and announces graphs: the same for one node and a group.
-  function usageSections(d, ser, width) {
-    var net = section('Network usage');
-    net.appendChild(lineChart({
-      title: 'Network usage', range: d.range, from: ser.from, to: ser.to, width: width, fmt: formatRate,
-      lines: [{ label: 'In', cls: 'c1', points: ser.bytesIn }, { label: 'Out', cls: 'c3 d1', points: ser.bytesOut }]
-    }));
-    var cl = section('Clients');
-    if (summarize(ser.clients)) {
-      cl.appendChild(lineChart({ title: 'Clients', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count, lines: [{ label: 'Clients', cls: 'c2', points: ser.clients }] }));
-    } else {
-      cl.appendChild(el('p', 'note', d.view === 'combined' ? 'No client count for the whole group: a node does not report its clients.' : 'This node does not report its clients.'));
-    }
-    var an = section('Announces per minute');
-    an.appendChild(lineChart({ title: 'Announces per minute', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count, lines: [{ label: 'Announces', cls: 'c4', points: ser.announces }] }));
-    return [net, cl, an];
-  }
-
-  function perMinute(v) { return count(v) + '/min'; }
-
-  // The propagation node and disk graphs, when the node (or any node of the group)
-  // sent numbers for them. In a group the sums are used, and for the disk the node
-  // with the least free space.
-  function storageSections(d, ser, width) {
-    var out = [];
-    var combined = d.view === 'combined';
-    function chart(title, fmt, lines) {
-      var sec = section(title);
-      sec.appendChild(lineChart({ title: title, range: d.range, from: ser.from, to: ser.to, width: width, fmt: fmt, lines: lines }));
-      out.push(sec);
-    }
-    var p = ser.propagation;
-    if (p) {
-      chart('Stored messages', count, [{ label: 'Messages', cls: 'c1', points: p.storedMessages }]);
-      chart('Stored size', bytes, [{ label: 'Size', cls: 'c2', points: p.storedBytes }]);
-      chart('Peered nodes', count, [{ label: 'Alive', cls: 'c2', points: p.peersAlive }, { label: 'Total', cls: 'c4 d1', points: p.peersTotal }]);
-      chart('Peer message flow', perMinute, [{ label: 'To peers', cls: 'c1', points: p.sentPerMinute }, { label: 'From peers', cls: 'c3 d1', points: p.receivedPerMinute }]);
-    }
-    var k = ser.disk;
-    if (k) {
-      // Two graphs: the data is a small part of the disk, and on one scale it would not show.
-      chart('Disk: data size', bytes, [{ label: combined ? 'Data (all nodes)' : 'Data', cls: 'c1', points: k.dataBytes }]);
-      chart('Disk: free space', bytes, [{ label: combined ? 'Free (node with the least)' : 'Free', cls: 'c2', points: k.fsFreeBytes }]);
-    }
-    return out;
-  }
-
-  // The current numbers of one node's message store and disk, as facts.
-  function storageFacts(d) {
-    var data = d.stats && d.stats.data ? d.stats.data : null;
-    if (!data) return null;
-    var pairs = propagationPairs(data.propagation).concat(diskPairs(data.disk));
-    if (!pairs.length) return null;
-    var s = section('Message store and disk');
+  function factsBlock(pairs) {
     var dl = el('dl', 'facts');
     pairs.forEach(function (p) {
       dl.appendChild(el('dt', null, p[0]));
       dl.appendChild(el('dd', null, p[1]));
     });
-    s.appendChild(dl);
-    if (d.stats.peerSummary) {
-      s.appendChild(el('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
+    return dl;
+  }
+
+  // What needs a look, as the warning lines of the list row. Nothing when all is well.
+  function attentionSection(d) {
+    var list = [];
+    var note = null;
+    if (d.view === 'combined') {
+      var names = {};
+      d.members.forEach(function (m) { names[m.host] = m.name || m.host; });
+      var gw = groupWarning(d.group, names);
+      if (gw) list.push(gw);
+      note = partialNote(d.group, names);
+    } else if (d.stats) {
+      list = warnings({ stats: d.stats });
     }
+    if (!list.length && !note) return null;
+    var s = section('Needs attention');
+    s.appendChild(warnLines(list));
+    if (note) s.appendChild(el('p', 'note', note));
     return s;
   }
 
-  // The members of a combined view: what each runs, and what is left out.
+  // The running version and the current numbers of one node, as facts.
+  function nowSection(d) {
+    var s = section('Now');
+    var cur = d.stats && d.stats.data ? d.stats.data : null;
+    var pairs = [['Running', d.version.current || 'unknown'], ['Node running', d.version.uptimeSeconds === null ? 'unknown' : duration(d.version.uptimeSeconds)]];
+    if (cur) {
+      pairs.push(['Interfaces', cur.interfaces.online + '/' + cur.interfaces.total + ' online']);
+      if (cur.interfaces.clients !== null) pairs.push(['Clients', num(cur.interfaces.clients)]);
+      pairs = pairs.concat(storeFacts(cur.propagation));
+    }
+    s.appendChild(factsBlock(pairs));
+    var stale = staleNote(d.stats);
+    if (stale) s.appendChild(el('p', 'note', stale));
+    return s;
+  }
+
+  function versionsSeen(d) {
+    if (!d.version.history.length) return null;
+    var s = section('Versions seen');
+    var ul = el('ul', 'versions');
+    d.version.history.slice().reverse().forEach(function (v) {
+      var li = el('li', null, v.version);
+      li.appendChild(el('span', 'muted', ' since ' + when(v.firstSeen)));
+      ul.appendChild(li);
+    });
+    s.appendChild(ul);
+    var note = lastData ? versionSummary(lastData.hosts) : null;
+    if (note) s.appendChild(el('p', 'note', note));
+    return s;
+  }
+
+  // The nodes of a combined view: what each runs, and what is left out.
   function membersSection(d) {
     var s = section('Nodes');
     var g = d.group;
@@ -1297,74 +1253,249 @@
     var ul = el('ul', 'versions');
     d.members.forEach(function (m) {
       var li = el('li', null, m.name || m.host);
-      li.appendChild(el('span', 'muted', ' ' + (m.version ? 'runs ' + m.version : 'version unknown') + (m.uptimeSeconds === null ? '' : ', up ' + duration(m.uptimeSeconds)) + (m.hasHistory ? '' : ', no stats URL so not in the graphs')));
+      li.appendChild(el('span', 'muted', ' ' + (m.version ? 'runs ' + m.version : 'version unknown') + (m.uptimeSeconds === null ? '' : ', running ' + duration(m.uptimeSeconds)) + (m.hasHistory ? '' : ', no stats URL so not in the graphs')));
       ul.appendChild(li);
     });
     s.appendChild(ul);
     var note = versionSummary(d.members.map(function (m) { return { host: m.name || m.host, stats: m.version ? { data: { rettuiVersion: m.version } } : null }; }));
     if (note) s.appendChild(el('p', 'note', note));
-    if (g && g.data) {
-      var dl = el('dl', 'facts');
-      groupPairs(g).concat(groupStoragePairs(g)).forEach(function (p) {
-        dl.appendChild(el('dt', null, p[0]));
-        dl.appendChild(el('dd', null, p[1]));
-      });
-      s.appendChild(dl);
-    }
     return s;
   }
 
-  function combinedPeersSection(d, ser, width, collecting) {
-    var s = section('Peers heard');
-    var p = d.group && d.group.data ? d.group.data.peersHeard : null;
-    if (p) {
-      var rows = peerRangeRows(p);
-      var now = p.exact ? p.union.total : null;
-      s.appendChild(el('p', 'total', (p.exact ? num(now) + ' peers heard now (de-duplicated)' : peerRange(p.max.total, p.sum.total) + ' peers heard now')));
-      s.appendChild(peerBar(rows.map(function (r) { return { key: r.key, label: r.label, count: r.count, percent: r.percent }; }), p.exact ? p.union.total : p.sum.total, width));
-      var ul = el('ul', 'shares');
-      rows.forEach(function (r) {
-        var li = el('li');
-        var sw = svg('svg', { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': 'true', focusable: 'false' }, 'swatch-box');
-        sw.appendChild(svg('rect', { x: 0, y: 0, width: 12, height: 12, rx: 2 }, 'fill ' + SHARE_CLASS[r.key]));
-        li.appendChild(sw);
-        li.appendChild(el('span', 'share-label', r.label));
-        li.appendChild(el('b', null, r.text));
-        li.appendChild(el('span', 'muted', r.percent + '%'));
-        ul.appendChild(li);
-      });
-      s.appendChild(ul);
-      s.appendChild(el('p', 'note', peerNote(p) + (p.exact ? ' The graph below is still a range: past values were not de-duplicated.' : ' The bar and percentages use the sum.')));
+  function overviewTab(d) {
+    var parts = [attentionSection(d)];
+    if (d.view === 'combined') {
+      parts.push(membersSection(d));
     } else {
-      s.appendChild(el('p', 'note', 'No node of this group has reported stats.'));
+      parts.push(nowSection(d));
+      parts.push(versionsSeen(d));
     }
-    if (!collecting) {
-      s.appendChild(lineChart({
-        title: 'Peers heard over time', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count,
+    return parts.filter(function (x) { return x; });
+  }
+
+  // "Total" by default; the three kinds on request.
+  var peersByKind = false;
+
+  function peerBreakdown(rows, total, width, texts) {
+    var box = el('div', 'peer-breakdown');
+    box.appendChild(peerBar(rows, total, width));
+    var ul = el('ul', 'shares');
+    rows.forEach(function (r, i) {
+      var li = el('li');
+      var sw = svg('svg', { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': 'true', focusable: 'false' }, 'swatch-box');
+      sw.appendChild(svg('rect', { x: 0, y: 0, width: 12, height: 12, rx: 2 }, 'fill ' + SHARE_CLASS[r.key]));
+      li.appendChild(sw);
+      li.appendChild(el('span', 'share-label', r.label));
+      li.appendChild(el('b', null, texts ? texts[i] : num(r.count)));
+      li.appendChild(el('span', 'muted', r.percent + '%'));
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+    return box;
+  }
+
+  function peersTab(d, ser, width, collecting) {
+    var combined = d.view === 'combined';
+    var s = section('Peers heard');
+    var g = d.group && d.group.data ? d.group.data.peersHeard : null;
+    var cur = combined ? g : d.stats && d.stats.data ? d.stats.data.peersHeard : null;
+    if (cur && !combined) {
+      s.appendChild(el('p', 'total', num(cur.total) + ' peers heard now'));
+      s.appendChild(peerBreakdown(peerShares(cur), cur.total, width));
+    } else if (cur) {
+      var rows = peerRangeRows(cur);
+      s.appendChild(el('p', 'total', (cur.exact ? num(cur.union.total) + ' peers heard now (de-duplicated)' : peerRange(cur.max.total, cur.sum.total) + ' peers heard now')));
+      s.appendChild(peerBreakdown(rows.map(function (r) { return { key: r.key, label: r.label, count: r.count, percent: r.percent }; }), cur.exact ? cur.union.total : cur.sum.total, width, rows.map(function (r) { return r.text; })));
+      s.appendChild(el('p', 'note', peerNote(cur) + (cur.exact ? ' The graph below is still a range: past values were not de-duplicated.' : ' The bar and percentages use the sum.')));
+    } else {
+      s.appendChild(el('p', 'note', combined ? 'No node of this group has reported stats.' : 'Stats unavailable.'));
+    }
+    var out = [s];
+    if (collecting) return out;
+    var cs = section('Peers heard over time');
+    if (combined) {
+      cs.appendChild(lineChart({
+        title: 'Peers heard over time', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count, band: true,
         lines: [
-          { label: 'Sum of nodes (at most)', cls: 'c4', points: ser.peers.total },
-          { label: 'Largest node (at least)', cls: 'c1 d1', points: ser.peersLow.total }
+          { label: 'Most (sum of nodes)', cls: 'c4', points: ser.peers.total },
+          { label: 'Fewest (largest node)', cls: 'c1 d1', points: ser.peersLow.total }
         ]
       }));
+    } else {
+      var toggle = el('button', 'toggle-btn', 'Show by kind');
+      toggle.type = 'button';
+      toggle.setAttribute('aria-pressed', peersByKind ? 'true' : 'false');
+      toggle.addEventListener('click', function () {
+        peersByKind = !peersByKind;
+        renderDetail(true);
+      });
+      cs.appendChild(toggle);
+      cs.appendChild(lineChart({
+        title: 'Peers heard over time', range: d.range, from: ser.from, to: ser.to, width: width, fmt: count,
+        lines: peersByKind
+          ? [{ label: 'LXMF', cls: 'c1', points: ser.peers.lxmf }, { label: 'NomadNet', cls: 'c2 d1', points: ser.peers.nomad }, { label: 'Propagation', cls: 'c3 d2', points: ser.peers.propagation }]
+          : [{ label: 'Total', cls: 'c4', points: ser.peers.total }]
+      }));
     }
-    return s;
+    out.push(cs);
+    return out;
   }
 
-  function renderDetail() {
+  function chartSection(title, d, ser, width, fmt, lines, extra) {
+    var sec = section(title);
+    sec.appendChild(lineChart({ title: title, range: d.range, from: ser.from, to: ser.to, width: width, fmt: fmt, lines: lines, extra: extra }));
+    return sec;
+  }
+
+  function trafficTab(d, ser, width) {
+    var out = [
+      chartSection('Network usage', d, ser, width, formatRate, [{ label: 'In', cls: 'c1', points: ser.bytesIn }, { label: 'Out', cls: 'c3 d1', points: ser.bytesOut }]),
+      chartSection('Announces per minute', d, ser, width, count, [{ label: 'Announces', cls: 'c4', points: ser.announces }])
+    ];
+    // No client count, no chart: say nothing rather than draw an empty one.
+    if (summarize(ser.clients)) out.splice(1, 0, chartSection('Clients', d, ser, width, count, [{ label: 'Clients', cls: 'c2', points: ser.clients }]));
+    return out;
+  }
+
+  function perMinute(v) { return count(v) + '/min'; }
+
+  function hasStorage(d) {
+    if (d.series.propagation) return true;
+    if (d.view === 'combined') return !!(d.group && d.group.data && d.group.data.propagation);
+    return !!(d.stats && d.stats.data && d.stats.data.propagation);
+  }
+
+  function hasDisk(d) {
+    if (d.series.disk) return true;
+    if (d.view === 'combined') return !!(d.group && d.group.data && d.group.data.disk);
+    return !!(d.stats && d.stats.data && d.stats.data.disk);
+  }
+
+  function storageTab(d, ser, width, collecting) {
+    var out = [];
+    var facts = section('Message store');
+    var pairs = d.view === 'combined' ? groupPropagationPairs(d.group) : propagationPairs(d.stats && d.stats.data ? d.stats.data.propagation : null);
+    if (pairs.length) facts.appendChild(factsBlock(pairs));
+    if (d.view !== 'combined' && d.stats && d.stats.peerSummary) {
+      facts.appendChild(el('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
+    }
+    out.push(facts);
+    var p = ser.propagation;
+    if (!p || collecting) return out;
+    // The size is in the tooltip, so one graph carries both.
+    out.push(chartSection('Stored messages', d, ser, width, count, [{ label: 'Messages', cls: 'c1', points: p.storedMessages }], [{ label: 'Size', cls: 'c2', fmt: bytes, points: p.storedBytes }]));
+    out.push(chartSection('Peered nodes', d, ser, width, count, [{ label: 'Alive', cls: 'c2', points: p.peersAlive }, { label: 'Total', cls: 'c4 d1', points: p.peersTotal }]));
+    // The flow only means something on a node that relays messages.
+    if (p.sentPerMinute && summarize(p.sentPerMinute.concat(p.receivedPerMinute || []))) {
+      out.push(chartSection('Peer message flow', d, ser, width, perMinute, [{ label: 'To peers', cls: 'c1', points: p.sentPerMinute }, { label: 'From peers', cls: 'c3 d1', points: p.receivedPerMinute }]));
+    }
+    return out;
+  }
+
+  function diskTab(d, ser, width, collecting) {
+    var out = [];
+    var facts = section('Disk');
+    var pairs = d.view === 'combined' ? groupDiskPairs(d.group) : diskPairs(d.stats && d.stats.data ? d.stats.data.disk : null);
+    if (pairs.length) facts.appendChild(factsBlock(pairs));
+    else facts.appendChild(el('p', 'note', 'No disk numbers.'));
+    out.push(facts);
+    // The free space graph is drawn only when the operator publishes exact figures.
+    var k = ser.disk;
+    if (k && !collecting) out.push(chartSection('Free disk space', d, ser, width, bytes, [{ label: d.view === 'combined' ? 'Free (node with the least)' : 'Free', cls: 'c2', points: k.fsFreeBytes }]));
+    return out;
+  }
+
+  var detailTab = 'overview';
+  var TAB_LABEL = { overview: 'Overview', traffic: 'Traffic', peers: 'Peers', storage: 'Storage', disk: 'Disk' };
+
+  function detailTabs(d) {
+    var out = ['overview', 'traffic', 'peers'];
+    if (hasStorage(d)) out.push('storage');
+    if (hasDisk(d)) out.push('disk');
+    return out;
+  }
+
+  function selectTab(key, focus) {
+    detailTab = key;
+    renderDetail(true);
+    if (focus) {
+      var t = document.getElementById('tab-' + key);
+      if (t) t.focus();
+    }
+  }
+
+  // The tabs (wide screens) and the Section choice (phones) are two views of one state.
+  // They are only rebuilt when the set changes, so the focus survives the refresh.
+  var shownTabs = '';
+
+  function syncTabs(keys) {
+    var list = document.getElementById('detail-tabs');
+    var select = document.getElementById('detail-section');
+    if (keys.join() !== shownTabs) {
+      shownTabs = keys.join();
+      list.replaceChildren();
+      select.replaceChildren();
+      keys.forEach(function (k, i) {
+        var t = el('button', 'tab', TAB_LABEL[k]);
+        t.type = 'button';
+        t.id = 'tab-' + k;
+        t.setAttribute('role', 'tab');
+        t.setAttribute('aria-controls', 'detail-body');
+        t.addEventListener('click', function () { selectTab(k, false); });
+        t.addEventListener('keydown', function (e) {
+          var to = null;
+          if (e.key === 'ArrowRight') to = keys[(i + 1) % keys.length];
+          else if (e.key === 'ArrowLeft') to = keys[(i + keys.length - 1) % keys.length];
+          else if (e.key === 'Home') to = keys[0];
+          else if (e.key === 'End') to = keys[keys.length - 1];
+          if (to === null) return;
+          e.preventDefault();
+          selectTab(to, true);
+        });
+        list.appendChild(t);
+        var o = el('option', null, TAB_LABEL[k]);
+        o.value = k;
+        select.appendChild(o);
+      });
+    }
+    var tabs = list.children;
+    for (var i = 0; i < tabs.length; i++) {
+      var on = tabs[i].id === 'tab-' + detailTab;
+      tabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
+      tabs[i].tabIndex = on ? 0 : -1;
+    }
+    select.value = detailTab;
+  }
+
+  // inPlace: a choice was made in the dialog, so keep what has the focus where it is.
+  function renderDetail(inPlace) {
     var body = document.getElementById('detail-body');
     var d = detailData;
     if (!d) return;
+    var keys = detailTabs(d);
+    if (keys.indexOf(detailTab) === -1) detailTab = 'overview';
+    syncTabs(keys);
+    body.setAttribute('aria-labelledby', 'tab-' + detailTab);
     var width = bodyWidth();
     var ser = d.series;
     var collecting = ser.sampleCount < 2;
-    var combined = d.view === 'combined';
-    var parts = [combined ? membersSection(d) : versionSection(d)];
-    var facts = combined ? null : storageFacts(d);
-    if (facts) parts.push(facts);
-    if (collecting) parts.push(emptyState(d, ser));
-    parts.push(combined ? combinedPeersSection(d, ser, width, collecting) : peersSection(d, ser, width, collecting));
-    if (!collecting) parts = parts.concat(usageSections(d, ser, width), storageSections(d, ser, width));
+    var parts = [];
+    if (detailTab === 'overview') parts = overviewTab(d);
+    else {
+      // Only the charts of the open tab are drawn.
+      if (collecting) parts.push(emptyState(d, ser));
+      if (detailTab === 'traffic') parts = parts.concat(collecting ? [] : trafficTab(d, ser, width));
+      else if (detailTab === 'peers') parts = parts.concat(peersTab(d, ser, width, collecting));
+      else if (detailTab === 'storage') parts = parts.concat(storageTab(d, ser, width, collecting));
+      else if (detailTab === 'disk') parts = parts.concat(diskTab(d, ser, width, collecting));
+    }
+    var active = document.activeElement;
+    var refocus = inPlace && active && body.contains(active) && active.className === 'toggle-btn';
     body.replaceChildren.apply(body, parts);
+    if (refocus) {
+      var again = body.querySelector('.toggle-btn');
+      if (again) again.focus();
+    }
   }
 
   function setRangeButtons() {
@@ -1379,7 +1510,9 @@
     var seq = ++detailSeq;
     if (showLoading) {
       detailData = null;
-      body.replaceChildren(el('p', 'note', 'Loading...'));
+      var wait = el('p', 'note', 'Loading...');
+      wait.setAttribute('role', 'status');
+      body.replaceChildren(wait);
     }
     var ctl = new AbortController();
     var timer = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
@@ -1399,6 +1532,7 @@
         retry.type = 'button';
         retry.addEventListener('click', function () { loadDetail(true); });
         var p = el('p', 'note', 'Could not load the details. ');
+        p.setAttribute('role', 'status');
         p.appendChild(retry);
         body.replaceChildren(p);
       })
@@ -1436,6 +1570,8 @@
     detailHost = key;
     var host = allHosts.filter(function (h) { return hostKey(h) === key; })[0];
     detailChoice = host && host.proxy ? 'combined' : key;
+    detailTab = 'overview';
+    shownTabs = '';
     var title = document.getElementById('detail-title');
     title.textContent = host ? displayName(host) : key;
     if (host && host.name) title.appendChild(el('span', 'host-addr', key));
@@ -1465,14 +1601,19 @@
       for (var i = 0; i < buttons.length; i++) {
         if (buttons[i].getAttribute('data-host') === detailHost) {
           buttons[i].focus();
-          break;
+          return;
         }
       }
+      // The row was closed meanwhile: its More button is the next best place.
+      var more = document.querySelectorAll('.more-btn');
+      for (var j = 0; j < more.length; j++) if (more[j].getAttribute('data-host') === detailHost) { more[j].focus(); return; }
     });
     document.getElementById('detail-view').addEventListener('change', function (e) {
       detailChoice = e.target.value;
+      detailTab = 'overview';
       loadDetail(true);
     });
+    document.getElementById('detail-section').addEventListener('change', function (e) { selectTab(e.target.value, false); });
     document.getElementById('detail-range').addEventListener('click', function (e) {
       var r = e.target && e.target.getAttribute && e.target.getAttribute('data-range');
       if (!r || r === detailRange || !RANGE_MS[r]) return;
@@ -1587,7 +1728,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }

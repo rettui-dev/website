@@ -12,7 +12,7 @@ sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
   hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
-  percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs,
+  percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
 
@@ -386,4 +386,13 @@ test('groupStoragePairs shows sums and the disk with the least free share', () =
   assert.deepEqual(pairs.slice(-2), [['Data size', '4 KiB'], ['Least disk free', '12.5% (1 KiB of 8 KiB)']]);
   assert.equal(groupStoragePairs({ data: {} }).length, 0);
   assert.equal(groupStoragePairs(null).length, 0);
+});
+
+test('group storage is split into the message store and the disk', () => {
+  const g = { data: { propagation: { ...PROP, nodes: 2 }, disk: { nodes: 2, dataBytes: 4096, worst: { level: 'high', usedPercent: 80, node: 'a' }, lowestFree: null } } };
+  assert.equal(groupPropagationPairs(g)[0][0], 'Stored');
+  assert.deepEqual([...groupDiskPairs(g)].map((p) => [...p]), [['Data size', '4 KiB'], ['Fullest disk', '80% used']]);
+  assert.equal(groupPropagationPairs({ data: { disk: g.data.disk } }).length, 0);
+  assert.equal(groupDiskPairs({ data: {} }).length, 0);
+  assert.equal(groupDiskPairs(null).length, 0);
 });

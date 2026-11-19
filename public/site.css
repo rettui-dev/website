@@ -204,22 +204,38 @@ p.summary { display: block; }
 .group-card > .members > .host { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; padding: 10px 0 2px 12px; }
 .group-card > .members > .host:first-child { border-top: 1px solid var(--border); }
 .members { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 0; }
-.viewbar { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; }
+.viewbar { display: flex; align-items: center; gap: 8px; }
 .viewbar[hidden] { display: none; }
-.viewbar select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
-.viewbar select:hover { border-color: var(--accent); }
+.viewbar select, .section-pick select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
+.viewbar select:hover, .section-pick select:hover { border-color: var(--accent); }
 
 /* Node details */
 .detail-btn { margin: 4px 0 8px; font-size: 13px; }
 dialog.detail {
   background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
-  padding: 14px 16px; width: min(860px, calc(100% - 16px)); max-height: calc(100vh - 16px);
+  padding: 0; width: min(860px, calc(100% - 16px)); max-height: calc(100vh - 16px);
   overflow-y: auto; overscroll-behavior: contain;
 }
 dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .detail-head h2 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
-.range { display: flex; gap: 6px; margin: 12px 0 4px; }
+.range { display: flex; gap: 6px; margin-left: auto; }
+.detail-top { position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 12px 16px 0; border-bottom: 1px solid var(--border); }
+.detail-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 10px; }
+.detail-body { padding: 8px 16px 16px; }
+.tabs { display: flex; gap: 2px; margin-top: 10px; overflow-x: auto; }
+.tab { border: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; background: transparent; padding: 6px 14px; color: var(--dim); }
+.tab:hover { color: var(--text); border-color: transparent; border-bottom-color: var(--border); }
+.tab[aria-selected=true] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.section-pick { display: none; align-items: center; gap: 8px; margin: 10px 0; }
+.toggle-btn { font-size: 13px; margin: 0 0 6px; }
+.toggle-btn[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.band { fill: var(--accent); fill-opacity: 0.18; stroke: none; pointer-events: none; }
+@media (max-width: 600px) {
+  .tabs { display: none; }
+  .section-pick { display: flex; }
+  .section-pick select { flex: 1 1 auto; min-height: 40px; }
+}
 .range button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .detail-section { margin-top: 20px; }
 .detail-section h3 { font-size: 14px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
@@ -275,8 +291,11 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .detail-body svg[role=img] { display: block; }
 
 @media (max-width: 520px) {
-  dialog.detail { padding: 12px; }
-  .range button, #detail-close, .detail-btn, .viewbar select { min-height: 40px; }
+  .detail-top { padding: 10px 12px 0; }
+  .detail-body { padding: 8px 12px 14px; }
+  .toggle-btn { min-height: 40px; }
+  .range { margin-left: 0; }
+  .range button, #detail-close, .detail-btn, .viewbar select, .section-pick select { min-height: 40px; }
   .viewbar { flex-wrap: wrap; }
   .more-btn, .help-btn { min-height: 40px; min-width: 40px; border-radius: 6px; }
   .summary { gap: 2px 14px; }
