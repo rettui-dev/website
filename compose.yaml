@@ -21,6 +21,10 @@ services:
       # PUBLIC_DISK_FIGURES: "true"   # exact free and total disk space (default: a level only)
       # Alerts (webhook or email when a node goes down) also need CONFIG_FILE: see "Alerts" in the README.
       # The webhook secret and the mail password go in files under ./secrets, not in the config.
+      # Downloads page: the repositories it lists (default rettui-dev/rettui,rettui-dev/rngit-rs),
+      # and an optional GitHub token that only raises the API rate limit. Keep the token in a file.
+      # RELEASE_REPOS: "rettui-dev/rettui,rettui-dev/rngit-rs"
+      # GITHUB_TOKEN_FILE: /config/secrets/github.token
       # Logins (users, require_login) need CONFIG_FILE. The cookie is Secure, so serve the
       # site over HTTPS through a reverse proxy; see "Logins" in the README.
     volumes:

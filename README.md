@@ -25,8 +25,51 @@ hosts, keeps their history and can fetch their node stats.
 - `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
   "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
   stats URL, is a 404; a bad range is a 400. Only GET and HEAD are allowed.
+- `/join` explains how to connect to the entry point `rns.rettui.dev:4242` over TCP, with a
+  Reticulum interface block to copy, the other entry points and a QR code for phones (see
+  "Join page").
+- `/join-qr.svg` is that QR code as an SVG (GET and HEAD only).
+- `/downloads` lists the latest rettui and rngit-rs releases by platform, with SHA-256 checksums
+  (see "Downloads page").
+- `/api/releases` is the same list as JSON (GET and HEAD only, `no-store`).
 - `/healthz` answers `ok` (used by the Docker health check).
 - `/login` and `/logout` (POST only) exist only when the config file has users (see "Logins").
+
+## Join page
+
+`/join` is static HTML (`public/join.html`) plus `/join-qr.svg`. The interface block is the one
+for Reticulum's config file: a `[[name]]` section below `[interfaces]` with `type =
+TCPClientInterface`, `enabled = yes`, `target_host` and `target_port` (Reticulum has no `name`
+key; the section title is the name). The text lives in `lib/join.js`, and a test checks that the
+page shows the same text the QR code holds. The QR code is made on the server by `lib/qr.js`, a
+small encoder with no dependency (byte mode, level M, versions 1 to 10, all 8 masks). It was
+checked by decoding generated images with OpenCV's QR detector for both levels at every version
+and mask; `test/qr.test.js` checks the parts with published answers (Reed-Solomon, format and
+version bits, capacities) and reads codes back. The copy buttons use `public/copy.js` and say
+"Copied" in a `role="status"` element.
+
+## Downloads page
+
+`lib/releases.js` asks `https://api.github.com/repos/<owner>/<repo>/releases/latest` in the
+background, at most every 15 minutes for each repository (a failed try is repeated after 30
+seconds, doubling up to 15 minutes). Visitors only read the cache: `/api/releases` and the
+page never start a request. The cache is kept in memory and in `releases.json` in `DATA_DIR`
+(written atomically), so a restart shows something at once. When GitHub cannot be reached the
+last good copy is shown, marked stale with its age.
+
+- **What is trusted:** nothing. The answer is limited to 1 MiB and 10 seconds, redirects are
+  followed only to GitHub's own hosts, every field is checked and cut to a length, and a download
+  link is kept only if it is `https://github.com/<owner>/<repo>/releases/download/<tag>/<file>`
+  of the same repository. The release page link is built here, not taken from the answer. The
+  token is sent to `api.github.com` only and is never logged or shown; failures are logged as a
+  repository and a short code (for example `http 403`, `rate limited`, `timeout`).
+- **Checksums:** the `digest` GitHub gives for each file (`sha256:...`). If a file has none, the
+  release's checksum files (`SHA256SUMS`, `*checksums*`, `*.sha256`; at most 3, same limits) are
+  read. Otherwise the page says "no checksum published".
+- **Platforms** are worked out from file names (`lib/releases.js`, `classifyAsset`): Linux x86_64
+  and aarch64, macOS (Apple silicon, Intel), Windows, Android, Docker, source, checksums, other.
+- **No release yet** (or a repository GitHub does not know) shows a plain message and a link to
+  its releases page.
 
 ## Run locally
 
@@ -57,12 +100,14 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | ---------------- | --------------------------------- | -------------------------------------------------------- |
 | `PORT`           | `8080`                            | Port to listen on.                                       |
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json` and `uptime.json` are kept. |
+| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json`, `uptime.json` and `releases.json` are kept. |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). Users who can log in can only be set there (see "Logins"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
 | `PUBLIC_DETAILS` | `true`                            | `false` removes the Details view (and `/api/stats`) for every node (see "What is public"). |
 | `PUBLIC_DISK_FIGURES` | `false`                      | `true` publishes exact free and total disk space (see "What is public"). |
+| `RELEASE_REPOS`  | `rettui-dev/rettui,rettui-dev/rngit-rs` | Comma separated `owner/name` list of the repositories the Downloads page shows (at most 8). Anything else is an error at start. |
+| `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both). |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -213,6 +258,29 @@ LXMF message itself. Point a webhook at a small bridge that does, for example a 
 runs next to a Reticulum node, listens on a private address (so `http` is allowed), checks the
 `X-Rettui-Signature` header against the shared `secret`, and forwards the `message` field as an
 LXMF message to your address. The same works for any other service that accepts a webhook.
+
+**Other services (Telegram, Matrix, Pushover and so on).** The
+[shoutrrr](https://github.com/nicholas-fedor/shoutrrr) fork `nicholas-fedor/shoutrrr` sends a
+message to many services from one notification URL. What is confirmed from its README and its
+Dockerfile: the image (`nickfedor/shoutrrr` on Docker Hub, `ghcr.io/nicholas-fedor/shoutrrr`) is a
+command line tool (`ENTRYPOINT ["/shoutrrr"]`, no shell) used as `shoutrrr send --url "<url>"
+--message "<text>"`. What is **not** confirmed, and so not claimed: that it has an HTTP listener
+that could take this server's webhook. It does not look like it has one, so a webhook cannot
+point at the container directly. Use it to check a notification URL, or from a small bridge of
+your own that receives the webhook (checking `X-Rettui-Signature`) and runs `shoutrrr send`.
+The URL holds the service's secret, so keep it in a file or the environment, not in
+`compose.yaml`:
+
+    # compose.yaml, next to the website service. Sends one test message and exits.
+    #   docker compose run --rm notify
+    notify:
+      image: nickfedor/shoutrrr:latest
+      profiles: ["tools"]
+      command: ["send", "--url", "${SHOUTRRR_URL}", "--message", "rettui test message"]
+
+The services and the URL for each are listed in the shoutrrr documentation
+(<https://shoutrrr.nickfedor.com>). `${SHOUTRRR_URL}` is filled in by compose from a `.env` file next to `compose.yaml` (one line, `SHOUTRRR_URL=telegram://...`, `chmod 600`, and listed in `.gitignore`). This was not run here
+(no Docker in the build environment).
 
 **Announce queue.** An alert for a node whose announce queue stays full is not available: the
 node stats (`stats.json`) report `announces_last_minute` but no announce queue length or
