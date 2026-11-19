@@ -28,6 +28,25 @@
 #   max_sessions: 1000
 #   # The reverse proxy's address, so failed logins are counted per visitor, not per proxy.
 #   trusted_proxies: [172.18.0.1]
+# Optional: a message when a node goes down or comes back (see "Alerts" in README.md).
+# A webhook (https, or http for private addresses; "ntfy", "discord" and "slack" formats too) and/or
+# email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
+# a missing file stops the server at start. A node counts as down after 2 failed checks in a row.
+# alerts:
+#   channels:
+#     - type: webhook
+#       url: https://hooks.example.org/rettui
+#       secret_file: secrets/hook.secret    # signs each request: X-Rettui-Signature: sha256=...
+#     - type: email
+#       host: smtp.example.org
+#       security: starttls                  # or tls (SMTPS)
+#       username: alerts
+#       password_file: secrets/mail.password
+#       from: status@example.org
+#       to: [ops@example.org]
+#   events: [down, recovered]
+#   cooldown_minutes: 15                    # a node that flaps is not announced again within this time
+#   repeat_minutes: 0                       # 0 = no reminders while a node stays down
 nodes:
   # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
   # The page groups those nodes under it and adds a combined view.

@@ -14,8 +14,12 @@ hosts, keeps their history and can fetch their node stats.
 - `/status` shows, for each entry point, whether it is up, one line of facts (clients, peers
   heard, uptime over 24 hours, when it was last checked) and a bar of the last 90 checks. A
   line of warning appears only when something needs a look. "More" opens the rest, and "Full
-  details" opens graphs. It refreshes itself and keeps open rows open.
-- `/api/status` is the same data as JSON.
+  details" opens graphs. Under the bar of checks, a 90 day uptime bar shows one cell per day, and a
+  "Recent incidents" list shows when nodes went down and for how long (see "Uptime history and
+  incidents"). It refreshes itself and keeps open rows open.
+- `/api/status` is the same data as JSON, with `uptime90`, `days` and `incidents` for each host.
+- `/api/incidents` lists the latest incidents (up to 100) of all nodes, newest first. Only GET
+  and HEAD are allowed.
 - `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
   "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
   stats URL, is a 404; a bad range is a 400. Only GET and HEAD are allowed.
@@ -51,7 +55,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | ---------------- | --------------------------------- | -------------------------------------------------------- |
 | `PORT`           | `8080`                            | Port to listen on.                                       |
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
+| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json` and `uptime.json` are kept. |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). Users who can log in can only be set there (see "Logins"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
@@ -89,7 +93,7 @@ The file is checked when the server starts, and any mistake stops it with a mess
 never repeats a URL:
 
 - Only `nodes`, `stats_token`, `stats_token_file`, `public_details`, `public_disk_figures`, `users`,
-  `login` and `require_login` at the top level, and only `address`, `name`, `stats_url`,
+  `login`, `require_login` and `alerts` at the top level, and only `address`, `name`, `stats_url`,
   `stats_token`, `stats_token_file`, `proxy_for`, `count_own`, `public_details`,
   `public_disk_figures` and `require_login` in a node; anything else is an error, as are repeated
   keys and wrong types.
@@ -104,6 +108,110 @@ never repeats a URL:
 
 In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
 The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
+
+## Uptime history and incidents
+
+Besides the 24 hours of checks, the server keeps a long-term record in `uptime.json` in
+`DATA_DIR`:
+
+- **Per node and day (UTC):** how many checks were up and how many there were, for the last 100
+  days (the page shows 90). A day's percent is rounded down to a tenth, so only a day with no
+  failed check reads 100.
+- **Incidents:** a node is down when 2 checks in a row fail, and up again when 2 in a row work, so
+  one dropped probe is not an incident. An incident starts at the first failed check of the run and
+  ends at the first good check of the run that closed it; while it lasts its end is `null` and it
+  is "ongoing". The last 50 incidents per node are kept, and 1000 over all nodes.
+- The file is written to a temporary file and renamed (readable by the owner only), is checked
+  entry by entry when loaded, and a missing, damaged or oversized (over 2 MiB) file means
+  starting empty. An incident that is open when the server restarts stays open and is not
+  announced again. A node removed from the config loses its record, like its history. Nothing is
+  backfilled: the bar fills in from the day this version is deployed.
+
+`/api/status` has, for each host, `uptime90` (`{percent30, percent90}`, `null` without data),
+`days` (90 numbers, oldest first and today last: the percent up that day, or `null` for a day
+without checks) and `incidents` (the 5 newest). `/api/incidents` answers
+`{generatedAt, incidents: [{host, name, start, end, seconds, ongoing}]}`, times as ISO text,
+`end` `null` while ongoing and `seconds` counted to now for an ongoing one. Both are as public as
+up and down already is: no `public_details` or `require_login` setting changes them, and they hold
+nothing from a node's stats.
+
+On the page, a cell is green from 99.9%, yellow and shorter from 95%, red and shorter below
+that, and short and dim with no data, so the bar does not rely on colour. Each cell's title
+gives its date and percent, and the bar has a text label with the same figures.
+
+## Alerts
+
+The server can send a message when a node goes down and when it is up again. It is off unless the
+config file has an `alerts` section (there is no environment variable for it, because it carries
+secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242) is down since
+12:03 UTC.` and `Front (front.rns.rettui.dev:4242) is back up after 5m 00s (down since 12:03 UTC).`
+
+    alerts:
+      channels:
+        - type: webhook
+          url: https://hooks.example.org/rettui   # https, or http for loopback and private hosts
+          format: generic                         # generic (default), ntfy, discord or slack
+          secret_file: secrets/hook.secret        # optional, or secret: for the value itself
+        - type: email
+          host: smtp.example.org
+          port: 587                               # default 587 (starttls) or 465 (tls)
+          security: starttls                      # starttls (default) or tls (SMTPS)
+          username: alerts                        # optional; then password_file is needed
+          password_file: secrets/mail.password
+          auth: plain                             # plain (default) or login
+          from: status@example.org
+          to: [ops@example.org]
+      events: [down, recovered]                   # default both
+      cooldown_minutes: 15                        # default 15
+      repeat_minutes: 0                           # default 0: no reminders
+
+- **When:** one alert when an incident opens (the same 2 failed checks as above) and one when it
+  closes. A node that goes down again within `cooldown_minutes` of its last "down" alert is not
+  announced again, and neither is the recovery of that incident, so a flapping node does not send
+  a stream of messages. With `repeat_minutes` (0, or 5 and more) a node that stays down gets a
+  reminder that often. A server that starts while a node is down announces it only if it is a new
+  incident: one that was open before the restart is not announced again.
+- **Sending:** alerts wait in a queue of at most 100 (the oldest is dropped if it is full) and are
+  sent in the background, so a slow or dead channel never holds up the checks. A failed send is
+  tried up to 3 times, after 5 and 30 seconds, then given up. A client error from a webhook (such
+  as 404), a refused mail address and a wrong mail password are not tried again. Failures are logged
+  as `alert: webhook channel 1 failed (http 500), ...`, never with an address, secret or answer.
+  Alerts only come from the monitor: there is no endpoint to send or test one, and nothing a
+  visitor sends starts a request.
+- **Webhook:** a POST with a short timeout (10 seconds), no redirects followed, and the answer is
+  never read. The URL follows the `stats_url` rules: `https`, or `http` only for loopback and
+  private addresses, and no user name or password. A URL that holds a secret in its path (as chat
+  services do) is treated as one: it is never logged or repeated in an error. The generic body is
+  `{event, host, name, message, since, recoveredAt, sentAt, durationSeconds}`, with `event`
+  `down`, `still_down` or `recovered`. With `secret` or `secret_file` (16 to 256 printable
+  characters) each request has `X-Rettui-Signature: sha256=<hex>`, the HMAC-SHA256 of the exact
+  body, so the receiver can check who sent it. The other formats send what that service expects:
+  `ntfy` the text as the body, `slack` `{"text": ...}`, `discord` `{"content": ...}`.
+- **Email:** a small built-in SMTP client (no dependency). The connection is always encrypted and
+  the server's certificate is always checked: `tls` is SMTPS from the first byte, `starttls`
+  upgrades the connection and refuses to go on if the server does not offer it. `username` with
+  `password_file` logs in (`AUTH PLAIN` or `LOGIN`), after the encryption is up. A line break in
+  any address, name or subject is refused, never cleaned. Replies and the message are capped, and
+  the whole send has a 20 second limit.
+- **Secrets:** `secret_file` and `password_file` are read once at start, relative to the config
+  file (a file other users can read gets a warning), and held in memory only. They are never
+  logged, never in an `/api` answer, never in `uptime.json`, and never repeated in an error.
+- **Checked at start:** unknown keys, wrong types, more than 4 channels, more than 5 recipients,
+  too-long strings and bad addresses stop the server with a message. Alerts are sent to the
+  addresses in this file only.
+
+**LXMF and other messengers.** The website server has no Reticulum stack, so it cannot send an
+LXMF message itself. Point a webhook at a small bridge that does, for example a program that
+runs next to a Reticulum node, listens on a private address (so `http` is allowed), checks the
+`X-Rettui-Signature` header against the shared `secret`, and forwards the `message` field as an
+LXMF message to your address. The same works for any other service that accepts a webhook.
+
+**Announce queue.** An alert for a node whose announce queue stays full is not available: the
+node stats (`stats.json`) report `announces_last_minute` but no announce queue length or
+capacity, so there is nothing to compare. `alerts.events` accepts `down` and `recovered` only,
+and `announce_queue` is refused with a message saying so. The rule itself (full for 3 samples in
+a row) is written and tested in `lib/alerts.js` (`createQueueWatch`), ready for the day the stats
+carry those numbers.
 
 ## What is public
 
@@ -419,7 +527,9 @@ Privacy and limits:
 Every 30 seconds the server opens a TCP connection to each host (5 second timeout) and
 closes it again. Up means the connection was made; the connect time is shown. The
 hosts come only from the configuration; nothing a visitor sends is ever probed.
-Up to 2880 checks per host (24 hours) are kept, and uptime is calculated over those.
+Up to 2880 checks per host (24 hours) are kept, and the uptime on a row is calculated over those.
+The 90 day uptime bar and the incidents come from `uptime.json` (see "Uptime history and
+incidents").
 
 ## Node stats
 

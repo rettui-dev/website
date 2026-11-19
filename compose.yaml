@@ -19,6 +19,8 @@ services:
       # public_disk_figures in the file instead.
       # PUBLIC_DETAILS: "false"       # no Details view and no /api/stats for any node
       # PUBLIC_DISK_FIGURES: "true"   # exact free and total disk space (default: a level only)
+      # Alerts (webhook or email when a node goes down) also need CONFIG_FILE: see "Alerts" in the README.
+      # The webhook secret and the mail password go in files under ./secrets, not in the config.
       # Logins (users, require_login) need CONFIG_FILE. The cookie is Secure, so serve the
       # site over HTTPS through a reverse proxy; see "Logins" in the README.
     volumes:
