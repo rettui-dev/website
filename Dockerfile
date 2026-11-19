@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:24-alpine
 
 ENV NODE_ENV=production \
     PORT=8080 \
@@ -10,6 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY server.js ./
 COPY lib ./lib
+COPY scripts ./scripts
 COPY public ./public
 
 # The data directory belongs to the unprivileged user, so a named volume

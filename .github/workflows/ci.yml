@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   test:
-    name: Tests (Node 22)
+    name: Tests (Node 24)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Run tests
         run: npm test
 
