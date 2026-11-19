@@ -21,6 +21,7 @@
 <script src="/copy.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
@@ -35,7 +36,7 @@
     <button id="theme-toggle" type="button">Theme</button>
   </div>
 </header>
-<main class="wrap page">
+<main id="main" tabindex="-1" class="wrap page">
   <h1>Join the network</h1>
   <p class="lead">Reticulum has no central server. You join by adding an interface to your own Reticulum, pointed at a node that is already part of the network. The rettui entry point is a node you can connect to over TCP:</p>
   <p class="addr-row">

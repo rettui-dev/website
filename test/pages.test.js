@@ -148,7 +148,8 @@ test('copy buttons are buttons, point at real elements, and have a status region
     }
   }
   assert.match(await read('join.html'), /data-copy-from="config-snippet"/);
-  assert.match(await read('downloads.html'), /id="copy-status"[^>]*role="status"/);
+  // The Downloads buttons are made by the script, each with its own status region beside it (the first .copied).
+  assert.match(await read('downloads.js'), /"data-copy": asset\.sha256[\s\S]*?class: "copied", role: "status"/);
   // The script copies on click, so Enter and Space on a button work, and says Copied.
   const js = await read('copy.js');
   assert.match(js, /button\[data-copy-from\]/);

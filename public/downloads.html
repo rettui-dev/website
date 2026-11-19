@@ -23,6 +23,7 @@
 <script src="/downloads.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
@@ -37,7 +38,7 @@
     <button id="theme-toggle" type="button">Theme</button>
   </div>
 </header>
-<main class="wrap page">
+<main id="main" tabindex="-1" class="wrap page">
   <h1>Downloads</h1>
   <p class="lead">The latest release of rettui and of rngit-rs, for each platform, with the SHA-256 checksum of every file. This server asks GitHub for the list every 15 minutes, so your browser does not contact GitHub until you follow a link.</p>
   <p id="downloads-status" class="note-inline" role="status">Loading the releases...</p>
@@ -47,10 +48,9 @@
       <a href="https://github.com/rettui-dev/rettui/releases/latest" rel="noopener noreferrer">rettui</a>,
       <a href="https://github.com/rettui-dev/rngit-rs/releases" rel="noopener noreferrer">rngit-rs</a>.</p>
   </noscript>
-  <p id="copy-status" class="copied" role="status"></p>
 
   <h2>Check a download</h2>
-  <p>Compare the SHA-256 of the file you downloaded with the one in the table (click a checksum to copy it). Put the checksum and the file name in a file called <code>SHA256SUMS</code>, with two spaces between them, in the folder with the download:</p>
+  <p>Compare the SHA-256 of the file you downloaded with the one listed under the file (the Copy button beside it copies it). Put the checksum and the file name in a file called <code>SHA256SUMS</code>, with two spaces between them, in the folder with the download:</p>
   <pre class="code"><code>sha256sum -c SHA256SUMS --ignore-missing</code></pre>
   <p>It prints <code>OK</code> for each file that matches. On macOS use <code>shasum -a 256 -c SHA256SUMS</code>; in Windows PowerShell use <code>Get-FileHash &lt;file&gt; -Algorithm SHA256</code> and compare the result by eye. If the release has a <code>SHA256SUMS</code> file, you can download that instead. A checksum shows that the file is the one GitHub holds; it does not show who made it.</p>
 </main>

@@ -1,5 +1,5 @@
-// The Downloads page: reads /api/releases (which the server keeps from GitHub) and draws one
-// table of files for each project. All text is set with textContent, never as HTML, and a link is
+// The Downloads page: reads /api/releases (which the server keeps from GitHub) and draws a list of
+// platforms for each project, with the main file of each first and the others folded away. All text is set with textContent, never as HTML, and a link is
 // only used when it points at github.com.
 (() => {
   const FALLBACK = [
@@ -41,23 +41,49 @@
     return `${Math.round(seconds / 86400)} days`;
   };
 
-  const row = (asset) => {
-    const platform = el("td", { "data-label": "Platform" }, asset.label);
-    if (asset.kind) platform.append(" ", el("span", { class: "dim", text: `(${asset.kind})` }));
-    const file = el("td", { "data-label": "File", class: "file" }, link(asset.url, asset.name));
-    const bytes = el("td", { "data-label": "Size", class: "num", text: size(asset.size) });
-    const sum = el("td", { "data-label": "SHA-256" });
+  // One file: its name and size, and its checksum with a button that copies it. The button says "Copy",
+  // and its name says what it copies, so the visible word is part of the name.
+  const fileBlock = (asset) => {
+    const line = el("p", { class: "file-line" }, link(asset.url, asset.name));
+    if (Number.isFinite(asset.size)) line.append(el("span", { class: "num dim", text: size(asset.size) }));
+    if (asset.kind) line.append(" ", el("span", { class: "dim", text: `(${asset.kind})` }));
+    const sum = el("div", { class: "sum-line" });
     if (asset.sha256) {
-      const title = asset.checksumSource === "file" ? "From the release's checksum file. Click to copy." : "Click to copy.";
-      sum.append(el("button", {
-        type: "button", class: "hash", "data-copy": asset.sha256, "data-copy-status": "copy-status", title,
-        "aria-label": `Copy the SHA-256 of ${asset.name}`, text: asset.sha256,
-      }));
+      const where = asset.checksumSource === "file" ? " (from the release's checksum file)" : "";
+      sum.append(
+        el("span", { class: "sum-label", text: `SHA-256${where}` }),
+        el("code", { class: "sum", text: asset.sha256 }),
+        el("button", { type: "button", class: "copy-btn", "data-copy": asset.sha256, "aria-label": `Copy the SHA-256 of ${asset.name}`, text: "Copy" }),
+        el("span", { class: "copied", role: "status" }),
+      );
     } else {
-      sum.append(el("span", { class: "dim", text: "no checksum published" }));
+      sum.append(el("span", { class: "dim", text: "No checksum published" }));
     }
-    for (const cell of [platform, file, bytes, sum]) cell.setAttribute("role", "cell");
-    return el("tr", { role: "row" }, platform, file, bytes, sum);
+    return el("div", { class: "file" }, line, sum);
+  };
+
+  // The files of one platform, in the order the server sends them (by platform, then by name).
+  const byPlatform = (assets) => {
+    const groups = new Map();
+    for (const a of assets) {
+      if (!groups.has(a.platform)) groups.set(a.platform, { label: a.label, files: [] });
+      groups.get(a.platform).files.push(a);
+    }
+    return [...groups.values()];
+  };
+
+  // The file most people want for a platform: the plain rettui build, before the desktop app and the packages.
+  const mainFile = (files) => files.find((f) => !f.kind) || files[0];
+
+  const platformItem = (group) => {
+    const first = mainFile(group.files);
+    const rest = group.files.filter((f) => f !== first);
+    const item = el("li", { class: "platform" }, el("h3", { text: group.label }), el("div", { class: "files" }, fileBlock(first)));
+    if (rest.length > 0) {
+      const word = rest.length === 1 ? "1 more file" : `${rest.length} more files`;
+      item.append(el("details", { class: "more-files" }, el("summary", { text: `${word} for ${group.label}` }), el("div", { class: "files" }, ...rest.map(fileBlock))));
+    }
+    return item;
   };
 
   const section = (p) => {
@@ -77,10 +103,7 @@
       if (r.assets.length === 0) {
         box.append(el("p", { text: "This release has no files attached." }));
       } else {
-        const table = el("table", { class: "dl", role: "table" }, el("caption", { class: "sr-only", text: `Files of ${p.repo} ${r.tag}` }));
-        table.append(el("thead", { role: "rowgroup" }, el("tr", { role: "row" }, ...["Platform", "File", "Size", "SHA-256"].map((h) => el("th", { scope: "col", role: "columnheader", text: h })))));
-        table.append(el("tbody", { role: "rowgroup" }, ...r.assets.map(row)));
-        box.append(el("div", { class: "table-wrap" }, table));
+        box.append(el("ul", { class: "platforms", "aria-label": `Files of ${p.repo} ${r.tag}` }, ...byPlatform(r.assets).map(platformItem)));
       }
     } else if (p.status === "none") {
       box.append(el("p", { text: "No release has been published yet." }));

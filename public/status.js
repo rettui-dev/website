@@ -484,7 +484,7 @@
   function factsList(title, pairs, extra) {
     if (!pairs.length && !extra) return null;
     var sec = el('section', 'more-sec');
-    sec.appendChild(el('h4', null, title));
+    sec.appendChild(el('h2', null, title));
     var dl = el('dl', 'facts');
     pairs.forEach(function (p) {
       dl.appendChild(el('dt', null, p[0]));
