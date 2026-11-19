@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +166,65 @@ test('/api/status carries the stats of a configured host', async () => {
     const body = await (await fetch(`http://127.0.0.1:${server.address().port}/api/status`)).json();
     assert.deepEqual(body.hosts[0].stats, { ok: false, fetchedAt: null, stale: false, error: 'http 503' });
   } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+  }
+});
+
+// Sends bytes as they are, which fetch and http.request would not allow.
+function rawSocket(port, text) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.write(text));
+    let data = '';
+    socket.on('data', (c) => (data += c));
+    socket.on('close', () => resolve(data));
+    socket.on('error', reject);
+  });
+}
+
+test('a request target that is not a URL is a 400, and the server keeps running', async () => {
+  const s = await start();
+  try {
+    for (const target of ['//', '///', '//?x=1', '//%']) {
+      const answer = await rawSocket(s.port, `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`);
+      assert.match(answer, /^HTTP\/1\.1 (400|404) /, target);
+    }
+    assert.equal((await fetch(`${s.base}/healthz`)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('malformed HTTP gets a 400 and the connection is closed', async () => {
+  const s = await start();
+  try {
+    const answer = await rawSocket(s.port, 'NOT HTTP AT ALL\r\n\r\n');
+    assert.match(answer, /^HTTP\/1\.1 400 Bad Request/);
+    assert.equal((await fetch(`${s.base}/healthz`)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('an error inside a handler is a 500 without details', async () => {
+  const monitor = {
+    snapshot() {
+      throw new Error('secret internals');
+    },
+  };
+  const server = createApp({ monitor, publicDir });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/status`);
+    assert.equal(res.status, 500);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    const body = await res.text();
+    assert.doesNotMatch(body, /secret|internals/);
+    assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/healthz`)).status, 200);
+  } finally {
+    console.error = original;
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
   }
