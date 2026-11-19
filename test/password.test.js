@@ -104,6 +104,13 @@ test('costliest takes the highest of each cost, so a stand-in is never cheaper t
   assert.deepEqual([none.memory, none.passes, none.parallelism, none.hash.length], [19456, 2, 1, 32]);
 });
 
+test('the memory cost is capped at 64 MiB: two checks at once stay within 128 MiB', () => {
+  assert.equal(MAX_MEMORY_KIB, 65536);
+  assert.doesNotThrow(() => checkCosts({ memory: 65536, passes: 2, parallelism: 1 }));
+  assert.throws(() => checkCosts({ memory: 65537, passes: 2, parallelism: 1 }), /memory must be 19456 to 65536 KiB/);
+  assert.throws(() => parsePhc(VECTOR.replace('m=65536', 'm=131072')), /too costly/);
+});
+
 test('hash-password quotes the name, so the pasted line is read as text whatever the name', async () => {
   const phc = await hashPassword('pw', DEFAULTS, fakeHasher);
   for (const name of ['alice', '123', 'true', 'TRUE', 'null', 'Null', 'false', '0', '1e3', '0x1F', '0o7', '1.5', 'yes', 'no', '1_000']) {
