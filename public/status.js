@@ -318,7 +318,6 @@
     }
     parts.push(factsList('Disk' + label, diskFacts(d && d.disk), bar));
     parts.forEach(function (x) { if (x) body.appendChild(x); });
-    if (!body.firstChild) body.appendChild(el('p', 'note', 'Nothing more to show.'));
     if (h.hasDetail) {
       var full = el('button', 'detail-btn', 'Full details');
       full.type = 'button';
@@ -337,6 +336,8 @@
     var key = opts.itself ? hostKey(h) + '#self' : hostKey(h);
     var id = idOf(opts.itself ? 'more-self' : 'more', hostKey(h));
     var body = moreBody(h, opts);
+    // Nothing to open: no button, rather than an empty panel.
+    if (!body.firstChild) return null;
     body.id = id;
     var open = openRows[key] === true;
     body.hidden = !open;
@@ -434,10 +435,12 @@
     if (w.length) li.appendChild(warnLines(w));
     if (!opts.itself) li.appendChild(checkBar(h));
     var x = expander(h, opts, opts.groupKeys);
-    var actions = el('div', 'row-actions');
-    actions.appendChild(x.button);
-    li.appendChild(actions);
-    li.appendChild(x.body);
+    if (x) {
+      var actions = el('div', 'row-actions');
+      actions.appendChild(x.button);
+      li.appendChild(actions);
+      li.appendChild(x.body);
+    }
     return li;
   }
 
@@ -511,10 +514,12 @@
     li.appendChild(checkBar(h));
     // The proxy's own connection details and the way to the combined graphs.
     var x = expander(h, { group: true }, null);
-    var actions = el('div', 'row-actions');
-    actions.appendChild(x.button);
-    li.appendChild(actions);
-    li.appendChild(x.body);
+    if (x) {
+      var actions = el('div', 'row-actions');
+      actions.appendChild(x.button);
+      li.appendChild(actions);
+      li.appendChild(x.body);
+    }
 
     var rows = [];
     var own = h.stats && h.stats.data && !g.countOwn;
