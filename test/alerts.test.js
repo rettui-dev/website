@@ -458,3 +458,70 @@ test('announce queue rule ignores numbers that make no sense', () => {
   assert.equal(w.observe(K, 1, 1), 'full');
   assert.doesNotThrow(() => w.miss('never.seen:1'));
 });
+
+function queueAlerter(extra = {}) {
+  const f = fakeFetch([200, 200, 200, 200, 200, 200]);
+  let now = T0;
+  const a = new Alerter({ channels: [{ type: 'webhook', url: 'https://h.example/x', format: 'generic' }], events: ['announce_queue'], fetchFn: f, now: () => now, retryDelays: [0], ...extra });
+  return { a, f, at: (t) => (now = t) };
+}
+
+test('queue alert: full for N samples in a row alerts once, and a recovery follows', async () => {
+  const { a, f } = queueAlerter({ queueSamples: 3, names: new Map([[K, 'Front']]) });
+  const full = { full: true, queued: 4096 };
+  a.observeQueue(K, full, T0);
+  a.observeQueue(K, full, T0 + 30_000);
+  assert.equal(a.queued, 0);
+  a.observeQueue(K, full, T0 + 60_000);
+  a.observeQueue(K, full, T0 + 90_000);
+  await a.idle();
+  assert.equal(f.calls.length, 1);
+  const body = JSON.parse(f.calls[0].init.body);
+  assert.equal(body.event, 'announce_queue_full');
+  assert.match(body.message, /Front \(front\.test:4242\) has a full announce queue \(4096 waiting\)/);
+  a.observeQueue(K, { full: false, queued: 3 }, T0 + 120_000);
+  await a.idle();
+  assert.equal(f.calls.length, 2);
+  const back = JSON.parse(f.calls[1].init.body);
+  assert.equal(back.event, 'announce_queue_cleared');
+  assert.equal(back.durationSeconds, 60);
+  assert.match(back.message, /no longer full \(it was full for 1m 00s\)/);
+});
+
+test('queue alert: off unless announce_queue is in events, and a missed sample breaks the run', async () => {
+  const off = queueAlerter({ events: ['down', 'recovered'], queueSamples: 1 });
+  off.a.observeQueue(K, { full: true, queued: 1 }, T0);
+  await off.a.idle();
+  assert.equal(off.f.calls.length, 0);
+  const { a, f } = queueAlerter({ queueSamples: 2 });
+  a.observeQueue(K, { full: true }, T0);
+  a.queueMissed(K);
+  a.observeQueue(K, { full: true }, T0 + 1);
+  await a.idle();
+  assert.equal(f.calls.length, 0);
+  a.observeQueue(K, { full: true }, T0 + 2);
+  await a.idle();
+  assert.equal(f.calls.length, 1);
+});
+
+test('queue alert: the cooldown keeps a queue that fills again soon quiet, with its clearing', async () => {
+  const { a, f } = queueAlerter({ queueSamples: 1, cooldownMs: 15 * MIN });
+  const full = { full: true };
+  a.observeQueue(K, full, T0);
+  a.observeQueue(K, { full: false }, T0 + MIN);
+  a.observeQueue(K, full, T0 + 2 * MIN);
+  a.observeQueue(K, { full: false }, T0 + 3 * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 2);
+  // After the cooldown it is announced again.
+  a.observeQueue(K, full, T0 + 20 * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 3);
+});
+
+test('queue alert: texts, subjects and ntfy headers', () => {
+  const e = { type: 'queue_full', key: K, name: null, start: T0, end: null, at: T0, queued: 'x' };
+  assert.equal(alertText(e), `${K} has a full announce queue: an interface is at its limit and drops new announces.`);
+  assert.equal(alertSubject(e), `[rettui] ${K} announce queue is full`);
+  assert.equal(alertSubject({ ...e, type: 'queue_cleared' }), `[rettui] ${K} announce queue is clear`);
+});

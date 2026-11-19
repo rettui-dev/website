@@ -469,3 +469,13 @@ test('incident spans say ongoing or lasted', () => {
   assert.equal(incidentSpan({ ongoing: true, seconds: 750 }), 'Down for 12m 30s so far');
   assert.equal(incidentSpan({ ongoing: false, seconds: 3700 }), 'Lasted 1h 1m');
 });
+
+test('a full announce queue is a warning, a queue that is not full is only a fact', () => {
+  const q = (announceQueue) => R({ stats: { stale: false, data: D({ announceQueue }) } });
+  assert.deepEqual([...warnings(q({ queued: 4096, limit: 8192, full: true, fullest: 4096 }))].map((x) => x.text), ['Announce queue full: 4,096 waiting']);
+  assert.equal(warnings(q({ queued: 5, limit: 8192, full: false, fullest: 4 })).length, 0);
+  assert.equal(warnings(q(undefined)).length, 0);
+  const facts = networkFacts(q({ queued: 5, limit: 8192, full: false, fullest: 4 })).find((f) => f[0] === 'Announce queue');
+  assert.deepEqual([...facts], ['Announce queue', '5 waiting of 8,192']);
+  assert.equal(networkFacts(q(undefined)).some((f) => f[0] === 'Announce queue'), false);
+});

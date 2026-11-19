@@ -99,7 +99,7 @@ test('stats: fields, versions and headers', async () => {
     assert.equal(body.generated, new Date(NOW - 15 * MIN).toISOString());
     assert.equal(body.nodes.length, 4);
     const [p, a, , c] = body.nodes;
-    assert.deepEqual(Object.keys(a), ['name', 'address', 'role', 'status', 'up', 'connectMs', 'lastChecked', 'uptime30', 'uptime90', 'clients', 'interfaces', 'peersHeard', 'announcesLastMinute', 'propagation', 'disk', 'proxyFor', 'proxiedBy', 'group']);
+    assert.deepEqual(Object.keys(a), ['name', 'address', 'role', 'status', 'up', 'connectMs', 'lastChecked', 'uptime30', 'uptime90', 'clients', 'interfaces', 'peersHeard', 'announcesLastMinute', 'propagation', 'disk', 'announceQueue', 'proxyFor', 'proxiedBy', 'group']);
     assert.equal(a.name, 'a.test');
     assert.equal(a.address, 'a.test:1');
     assert.equal(a.up, true);
@@ -113,6 +113,8 @@ test('stats: fields, versions and headers', async () => {
     assert.deepEqual(Object.keys(a.disk), ['level', 'usedPercent']);
     assert.equal(a.proxiedBy, 'p.test:1');
     assert.equal(a.group, null);
+    // No announce queue reported: null.
+    assert.equal(a.announceQueue, null);
     // A node with no stats URL: up and connect time only.
     assert.equal(c.address, 'c.test:1');
     assert.equal(c.up, false);
@@ -327,4 +329,17 @@ test('memoJson builds once per ttl and etagMatches reads the header', () => {
   assert.equal(etagMatches('"a"', '"a"'), true);
   assert.equal(etagMatches('"b" , W/"a"', '"a"'), true);
   assert.equal(etagMatches('"b"', '"a"'), false);
+});
+
+test('stats: the announce queue is published as four numbers, and null without one', async () => {
+  const queued = { queued: 4096, limit: 8192, full: true, fullest: 4096 };
+  const s = await setup({ statsFn: async (url) => ({ ok: true, data: { ...statsData(), ...(url.includes('//a.') ? { announceQueue: { ...queued, interfacesFull: 1, extra: 'x' } } : {}) } }) });
+  try {
+    const nodes = (await request(s.port, { path: '/api/public/stats' })).json().nodes;
+    assert.deepEqual(nodes[1].announceQueue, queued);
+    assert.equal(nodes[2].announceQueue, null);
+    assert.equal(nodes[3].announceQueue, null);
+  } finally {
+    await s.close();
+  }
 });

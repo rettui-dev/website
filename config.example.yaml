@@ -44,7 +44,8 @@
 #       password_file: secrets/mail.password
 #       from: status@example.org
 #       to: [ops@example.org]
-#   events: [down, recovered]
+#   events: [down, recovered]               # add announce_queue (needs rettui 2.1.0 on the node) for full queues
+#   announce_queue_samples: 3               # stats samples in a row with a full queue before an alert
 #   cooldown_minutes: 15                    # a node that flaps is not announced again within this time
 #   repeat_minutes: 0                       # 0 = no reminders while a node stays down
 # Optional: serve only the status page, without the rettui project pages (see "Status-only

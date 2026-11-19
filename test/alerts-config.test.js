@@ -23,6 +23,7 @@ test('a webhook channel with the defaults', () => {
   assert.deepEqual(c.alerts, {
     channels: [{ type: 'webhook', url: 'https://hooks.example/abc', format: 'generic' }],
     events: ['down', 'recovered'],
+    queueSamples: 3,
     cooldownMinutes: 15,
     repeatMinutes: 0,
   });
@@ -85,8 +86,11 @@ test('mistakes in the alerts section stop the start with a clear message', () =>
   bad(`${hook}unknown: 1`, /alerts has an unknown key "unknown"/);
   bad(`${hook}events: []`, /alerts\.events must be a list/);
   bad(`${hook}events: [down, down]`, /lists down twice/);
-  bad(`${hook}events: [explode]`, /alerts\.events\[1\] must be one of down, recovered/);
-  bad(`${hook}events: [announce_queue]`, /announce_queue is not available/);
+  bad(`${hook}events: [explode]`, /alerts\.events\[1\] must be one of down, recovered, announce_queue/);
+  bad(`${hook}events: [announce_queue, announce_queue]`, /lists announce_queue twice/);
+  bad(`${hook}announce_queue_samples: 0`, /announce_queue_samples must be a whole number from 1 to 100/);
+  bad(`${hook}announce_queue_samples: 2.5`, /announce_queue_samples must be a whole number/);
+  bad(`${hook}announce_queue_samples: x`, /announce_queue_samples must be a whole number/);
   bad(`${hook}events: down`, /alerts\.events must be a list/);
   bad(`${hook}cooldown_minutes: -1`, /cooldown_minutes must be a whole number from 0 to 1440/);
   bad(`${hook}cooldown_minutes: 1.5`, /cooldown_minutes must be a whole number/);
@@ -265,4 +269,13 @@ test('the alerts example in config.example.yaml is valid when uncommented', asyn
   const c = loadConfig(`${nodes}${block.join('\n')}\n`);
   assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'email']);
   assert.equal(c.alerts.cooldownMinutes, 15);
+});
+
+test('announce_queue is accepted in events, off unless listed, with samples defaulting to 3', () => {
+  const hook = 'channels:\n  - type: webhook\n    url: https://h.example/x\n';
+  const none = loadConfig(withAlerts(hook));
+  assert.deepEqual([none.alerts.events, none.alerts.queueSamples], [['down', 'recovered'], 3]);
+  const c = loadConfig(withAlerts(`${hook}events: [down, recovered, announce_queue]\nannounce_queue_samples: 5`));
+  assert.deepEqual([c.alerts.events, c.alerts.queueSamples], [['down', 'recovered', 'announce_queue'], 5]);
+  assert.deepEqual(loadConfig(withAlerts(`${hook}events: [announce_queue]`)).alerts.events, ['announce_queue']);
 });

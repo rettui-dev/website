@@ -325,6 +325,10 @@
       if (d.disk.level === 'full') out.push({ kind: 'full', text: disk + ', almost full' });
       else if (d.disk.level === 'high') out.push({ kind: 'high', text: disk });
     }
+    var q = d.announceQueue;
+    if (q && q.full === true) {
+      out.push({ kind: 'full', title: 'An interface of this node has as many announces waiting to go out as Reticulum keeps; new ones are dropped.', text: 'Announce queue full' + (known(q.queued) ? ': ' + num(q.queued) + ' waiting' : '') });
+    }
     var p = d.propagation;
     if (p && known(p.peersAlive) && known(p.peersTotal) && p.peersTotal > 0 && p.peersAlive * 2 < p.peersTotal) {
       out.push({ kind: 'high', text: 'Peered ' + num(p.peersAlive) + '/' + num(p.peersTotal) + ' alive' });
@@ -346,6 +350,7 @@
       out.push(['Interfaces', d.interfaces.online + '/' + d.interfaces.total + ' online']);
       out.push(['Traffic since start', 'In\u00a0' + nb(bytes(d.interfaces.rxBytes)) + ', out\u00a0' + nb(bytes(d.interfaces.txBytes))]);
       out.push(['Announces', num(d.announcesLastMinute) + '/min']);
+      if (d.announceQueue && known(d.announceQueue.queued)) out.push(['Announce queue', num(d.announceQueue.queued) + ' waiting' + (known(d.announceQueue.limit) ? ' of ' + num(d.announceQueue.limit) : '')]);
       out.push(['Node running', duration(d.uptimeSeconds)]);
     }
     if (d && h.latencyMs !== null && h.latencyMs !== undefined) out.push(['Connect time', h.latencyMs + ' ms']);

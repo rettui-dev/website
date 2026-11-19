@@ -125,3 +125,47 @@ test('end to end: a webhook goes out for the down and the recovery, and the prob
   const saved = (await Promise.all((await fs.readdir(dir)).map((f) => fs.readFile(path.join(dir, f), 'utf8')))).join('');
   for (const text of [published, saved]) assert.ok(!/SECRETPATH|hooks\.example|secret-0123456789abcdef/.test(text));
 });
+
+test('the monitor feeds the announce queue to the alerts, and a node without one is never watched', async () => {
+  const seen = [];
+  const alerts = { ...recorder(), observeQueue: (k, q, at) => seen.push(['obs', k, q.full, at]), queueMissed: (k) => seen.push(['miss', k]) };
+  const base = { version: 1, rettui_version: '2.1.0', generated_at: 1, uptime_seconds: 1, interfaces: { total: 1, online: 1, clients: 0, rx_bytes: 0, tx_bytes: 0 }, peers_heard: { total: 0, lxmf: 0, nomad: 0, propagation: 0 }, announces_last_minute: 0 };
+  const { sanitizeStats } = await import('../lib/stats.js');
+  const answers = [
+    { ok: true, data: sanitizeStats({ ...base, announce_queue: { queued: 4096, limit: 8192, full: true, interface_limit: 4096, fullest: 4096 } }) },
+    { ok: true, data: sanitizeStats(base) },
+    { ok: false, error: 'network' },
+  ];
+  let n = 0;
+  let clock = T0;
+  const m = new Monitor({
+    targets: [{ host: 'a.test', port: 1 }],
+    dataDir: await tmp(),
+    now: () => (clock += 30_000),
+    statsUrls: new Map([[K, 'https://a.test/s']]),
+    probeFn: async () => ({ up: true, ms: 1 }),
+    statsFn: async () => answers[n++],
+    alerts,
+  });
+  for (let i = 0; i < 3; i++) await m.checkAll();
+  assert.deepEqual(seen.map((e) => e.slice(0, 3)), [['obs', K, true], ['miss', K], ['miss', K]]);
+});
+
+test('end to end: a node that reports a full announce queue alerts once after N samples, one without never does', async () => {
+  const hooks = [];
+  const fetchFn = async (_url, init) => (hooks.push(JSON.parse(init.body)), new Response('ok'));
+  const alerter = new Alerter({ channels: [{ type: 'webhook', url: 'https://h.example/x', format: 'generic' }], events: ['announce_queue'], queueSamples: 2, fetchFn });
+  const { sanitizeStats } = await import('../lib/stats.js');
+  const base = { version: 1, rettui_version: '2.1.0', generated_at: 1, uptime_seconds: 1, interfaces: { total: 1, online: 1, clients: 0, rx_bytes: 0, tx_bytes: 0 }, peers_heard: { total: 0, lxmf: 0, nomad: 0, propagation: 0 }, announces_last_minute: 0 };
+  const fullStats = sanitizeStats({ ...base, announce_queue: { queued: 4096, limit: 4096, full: true, interface_limit: 4096, fullest: 4096 } });
+  const plain = sanitizeStats(base);
+  for (const [data, expected] of [[plain, 0], [fullStats, 1]]) {
+    hooks.length = 0;
+    const m = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: await tmp(), statsUrls: new Map([[K, 'https://a.test/s']]), probeFn: async () => ({ up: true, ms: 1 }), statsFn: async () => ({ ok: true, data }), alerts: alerter });
+    for (let i = 0; i < 4; i++) await m.checkAll();
+    await alerter.idle();
+    assert.equal(hooks.length, expected);
+    alerter.queueState.clear();
+    alerter.queueWatch.miss(K);
+  }
+});

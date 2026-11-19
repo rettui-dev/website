@@ -300,7 +300,8 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
           auth: plain                             # plain (default) or login
           from: status@example.org
           to: [ops@example.org]
-      events: [down, recovered]                   # default both
+      events: [down, recovered]                   # default both; announce_queue is added by listing it
+      announce_queue_samples: 3                   # default 3 (1 to 100): see "Announce queue" below
       cooldown_minutes: 15                        # default 15
       repeat_minutes: 0                           # default 0: no reminders
 
@@ -368,12 +369,21 @@ The services and the URL for each are listed in the shoutrrr documentation
 (<https://shoutrrr.nickfedor.com>). `${SHOUTRRR_URL}` is filled in by compose from a `.env` file next to `compose.yaml` (one line, `SHOUTRRR_URL=telegram://...`, `chmod 600`, and listed in `.gitignore`). This was not run here
 (no Docker in the build environment).
 
-**Announce queue.** An alert for a node whose announce queue stays full is not available: the
-node stats (`stats.json`) report `announces_last_minute` but no announce queue length or
-capacity, so there is nothing to compare. `alerts.events` accepts `down` and `recovered` only,
-and `announce_queue` is refused with a message saying so. The rule itself (full for 3 samples in
-a row) is written and tested in `lib/alerts.js` (`createQueueWatch`), ready for the day the stats
-carry those numbers.
+**Announce queue.** Off unless `announce_queue` is listed in `events` (the default stays
+`[down, recovered]`). A rettui node reports the announces waiting to go out in `stats.json`
+(`announce_queue`, new in rettui 2.1.0: a node on an older version never reports it, and so never
+alerts), and says itself when one interface's queue is at its limit (`full`, 4096 per interface).
+After `announce_queue_samples` samples in a row with `full` true (default 3, 1 to 100; a sample is
+one successful stats fetch, every 30 seconds) one alert goes out, `<node> has a full announce queue
+(4096 waiting): an interface is at its limit and drops new announces.`, and one more when it clears.
+A failed stats fetch breaks the run: "in a row" needs every sample. The cooldown works as for
+down alerts: a queue that fills again within `cooldown_minutes` of the last "full" alert is not
+announced again, nor its clearing. The generic webhook `event` is `announce_queue_full` or
+`announce_queue_cleared`. There are no reminders for it.
+
+    alerts:
+      events: [down, recovered, announce_queue]
+      announce_queue_samples: 3
 
 ## What is public
 
@@ -450,6 +460,8 @@ whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB
           autopeer?: boolean | null } | null,   // keys locked by require_login are absent
       "disk": { "level": "ok" | "high" | "full" | null, "usedPercent": number | null,
           "totalBytes"?: n, "freeBytes"?: n } | null,  // bytes only with public_disk_figures
+      "announceQueue": { "queued": n | null, "limit": n | null, "full": bool, "fullest": n | null } | null,
+          // null when the node reports none (needs rettui 2.1.0); full: one interface is at its limit
       "proxyFor": ["host:port", ...],
       "proxiedBy": "host:port" | null,
       "group": null | {                       // a proxy's combined view
@@ -823,6 +835,14 @@ stats are kept in memory and marked stale after three missed cycles. They are no
 to `history.json`. `/api/status` has a `stats` field on each host: `null` when no URL is
 set, else `{ok, fetchedAt, stale, error?, data?}`. Each host also has `hasDetail`, true when a stats
 URL is set (the page then offers a "Details" view).
+
+**Announce queue.** A node on rettui 2.1.0 or later also reports the announces waiting to go
+out (`announce_queue` and `interfaces.announce_queue`). `data.announceQueue` is then
+`{queued, limit, full, fullest}`: whole numbers from 0 to 1,000,000 and a true or false, anything
+else is ignored and the field is left out (an older rettui, or no interface with a queue, has none
+either). It is kept and marked stale like the other stats, but not sampled into the history.
+The page says "Announce queue full" in the node's row only when `full` is true, and shows the count
+under "More". An alert for it is described in "Alerts".
 
 ### Stats history
 

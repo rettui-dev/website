@@ -273,3 +273,47 @@ test('monitor: stats are never saved to history.json', async () => {
   assert.deepEqual(Object.keys(saved).sort(), ['hosts', 'version']);
   assert.ok(!JSON.stringify(saved).includes('uptime'));
 });
+
+const queue = (extra = {}) => ({ queued: 5, limit: 12288, full: false, interface_limit: 4096, fullest: 4, interfaces_full: 0, ...extra });
+
+test('sanitizeStats keeps the announce queue as {queued, limit, full, fullest}', () => {
+  const d = sanitizeStats({ ...good(), announce_queue: queue({ full: true, queued: 4096, fullest: 4096, interfaces_full: 1 }) });
+  assert.deepEqual(d.announceQueue, { queued: 4096, limit: 12288, full: true, fullest: 4096 });
+  assert.deepEqual(sanitizeStats({ ...good(), announce_queue: queue() }).announceQueue, { queued: 5, limit: 12288, full: false, fullest: 4 });
+});
+
+test('sanitizeStats leaves out an announce queue that is absent, null or the wrong type', () => {
+  const nulls = { queued: null, limit: null, full: null, interface_limit: 4096, fullest: null, interfaces_full: null };
+  for (const aq of [undefined, null, nulls, 'full', 7, [], queue({ full: 'yes' }), queue({ full: 1 }), queue({ queued: '5' }), queue({ queued: 1.5 }), queue({ queued: -1 }), queue({ queued: 1e12 })]) {
+    const raw = { ...good(), announce_queue: aq };
+    assert.equal(Object.hasOwn(sanitizeStats(raw), 'announceQueue'), false, JSON.stringify(aq));
+  }
+  // A bad field does not spoil the others, and the rest of the stats still count.
+  const d = sanitizeStats({ ...good(), announce_queue: queue({ limit: 'many', fullest: NaN }) });
+  assert.deepEqual(d.announceQueue, { queued: 5, limit: null, full: false, fullest: null });
+  assert.equal(d.announcesLastMinute, 12);
+});
+
+test('sanitizeStats takes the queue length from interfaces.announce_queue when the object lacks it', () => {
+  const raw = { ...good(), announce_queue: { full: true } };
+  raw.interfaces.announce_queue = 4096;
+  assert.deepEqual(sanitizeStats(raw).announceQueue, { queued: 4096, limit: null, full: true, fullest: null });
+});
+
+test('monitor: the announce queue stays with the last good stats when a fetch fails', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  let ok = true;
+  const m = new Monitor({
+    targets: [targets[0]],
+    dataDir: dir,
+    statsUrls: new Map([['a.test:4242', 'https://a.test/s']]),
+    probeFn: async () => ({ up: true, ms: 1 }),
+    statsFn: async () => (ok ? { ok: true, data: sanitizeStats({ ...good(), announce_queue: queue({ full: true }) }) } : { ok: false, error: 'network' }),
+  });
+  await m.checkAll();
+  ok = false;
+  await m.checkAll();
+  const st = m.snapshot().hosts[0].stats;
+  assert.equal(st.ok, false);
+  assert.equal(st.data.announceQueue.full, true);
+});
