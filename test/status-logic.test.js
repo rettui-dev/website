@@ -11,7 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
-  hostKey, displayName, showBadges, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
+  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
@@ -212,15 +212,81 @@ test('names and badges', () => {
   assert.equal(hostKey(hosts[0]), 'a.test:4242');
   assert.equal(displayName(hosts[0]), 'Door');
   assert.equal(displayName(hosts[1]), 'b.test:4242');
-  assert.equal(showBadges(hosts), true);
-  assert.equal(showBadges([H('x'), H('y')]), false);
-  assert.equal(showBadges([]), false);
-  assert.deepEqual([badgeText(hosts[0]), badgeText(hosts[1])], ['Proxy', 'RNS node']);
+  // Only proxies carry a badge; ordinary nodes have none.
+  assert.deepEqual([badgeText(hosts[0]), badgeText(hosts[1]), badgeText(hosts[2])], ['Proxy', null, null]);
   assert.equal(badgeTitle(hosts[0], hosts), 'Proxy for 2 nodes');
   assert.equal(badgeTitle(H('p', { role: 'proxy', proxy: { for: ['x:1'] } }), []), 'Proxy for 1 node');
-  assert.equal(badgeTitle(hosts[1], hosts), 'RNS node, behind the proxy Door');
-  assert.equal(badgeTitle(H('q', { proxiedBy: 'gone:1' }), hosts), 'RNS node, behind the proxy gone:1');
-  assert.equal(badgeTitle(hosts[2], hosts), 'RNS node');
+  assert.equal(badgeTitle(hosts[1], hosts), null);
+});
+
+const D = (o = {}) => ({
+  interfaces: { total: 2, online: 2, clients: 23, rxBytes: 2048, txBytes: 10 }, announcesLastMinute: 3, uptimeSeconds: 3600,
+  peersHeard: { total: 1300 }, propagation: null, disk: null, ...o,
+});
+const R = (o = {}) => ({ host: 'n.test', port: 4242, status: 'up', uptimePercent: 100, latencyMs: 12, error: null, history: [], stats: { stale: false, fetchedAt: new Date().toISOString(), data: D() }, ...o });
+
+test('summaryFacts is at most four short facts and leaves out the unknown', () => {
+  assert.deepEqual([...summaryFacts(R())].map((f) => [...f]), [['Clients', '23'], ['Peers heard', '1,300'], ['Up', '100% over 24 h']]);
+  const noClients = R({ uptimePercent: null, stats: { data: D({ interfaces: { total: 1, online: 1, clients: null, rxBytes: 0, txBytes: 0 } }) } });
+  assert.deepEqual([...summaryFacts(noClients)].map((f) => [...f]), [['Peers heard', '1,300']]);
+  assert.equal(summaryFacts(R({ stats: null, uptimePercent: null })).length, 0);
+});
+
+test('warnings say nothing when all is well and name the level when not', () => {
+  assert.equal(warnings(R()).length, 0);
+  assert.equal(warnings(R({ stats: null })).length, 0);
+  const w = (disk, propagation, stale = false) => [...warnings(R({ stats: { stale, data: D({ disk, propagation }) } }))].map((x) => ({ ...x }));
+  assert.deepEqual(w({ level: 'ok', usedPercent: 50 }, null), []);
+  assert.deepEqual(w({ level: 'high', usedPercent: 85 }, null), [{ kind: 'high', text: 'Disk 85% used' }]);
+  assert.deepEqual(w({ level: 'full', usedPercent: 95 }, null), [{ kind: 'full', text: 'Disk 95% used, almost full' }]);
+  // Exactly half alive is fine; fewer is not.
+  assert.deepEqual(w(null, { peersAlive: 4, peersTotal: 8, unhandledMessages: 0 }), []);
+  assert.deepEqual(w(null, { peersAlive: 3, peersTotal: 8, unhandledMessages: 0 }), [{ kind: 'high', text: 'Peered 3/8 alive' }]);
+  assert.deepEqual(w(null, { peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', text: 'Unhandled 1 message' }]);
+  assert.deepEqual(w(null, { unhandledMessages: 28 }), [{ kind: 'high', text: 'Unhandled 28 messages' }]);
+  // Old numbers are not warned about.
+  assert.deepEqual(w({ level: 'full', usedPercent: 95 }, null, true), []);
+});
+
+test('downText, staleNote and lastUp', () => {
+  const t = Date.now() - 14 * 60000;
+  const h = R({ status: 'down', error: 'timed out', history: [{ t: t - 1000, up: true, ms: 5 }, { t, up: false }] });
+  assert.equal(lastUp(h), new Date(t - 1000).toISOString());
+  assert.match(downText(h), /^Connection failed: timed out\. Last up 1[45]m ago\.$/);
+  assert.equal(downText(R({ status: 'down', error: null, history: [] })), 'Connection failed. No successful check lately.');
+  assert.equal(staleNote({ stale: false, fetchedAt: 'x' }), null);
+  assert.equal(staleNote(null), null);
+  assert.match(staleNote({ stale: true, fetchedAt: new Date(Date.now() - 12 * 60000).toISOString() }), /^Stats from 12m ago \(last fetch failed\)$/);
+});
+
+test('networkFacts, storeFacts and diskFacts leave out what is not known', () => {
+  const n = [...networkFacts(R())].map((f) => [...f]);
+  assert.deepEqual(n.map((f) => f[0]), ['Interfaces', 'Traffic since start', 'Announces', 'Node running', 'Connect']);
+  assert.deepEqual([...networkFacts(R({ stats: null, latencyMs: null }))], []);
+  assert.deepEqual([...storeFacts(null)], []);
+  assert.deepEqual([...storeFacts(PROP)].map((f) => [...f]), [
+    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Unhandled', '7'],
+  ]);
+  assert.deepEqual([...diskFacts(null)], []);
+  assert.deepEqual([...diskFacts({ usedPercent: 85, level: 'high' })].map((f) => [...f]), [['Disk', 'about 85% used']]);
+  assert.deepEqual([...diskFacts({ usedPercent: 60, level: 'ok', fsFreeBytes: 40 * 1024, fsTotalBytes: 100 * 1024 })].map((f) => [...f]), [['Disk', '60% used'], ['Free', '40 KiB of 100 KiB']]);
+  assert.equal(diskFacts({ usedPercent: 95, level: 'full' })[0][1], 'about 95% used, almost full');
+});
+
+test('groupFacts, partialNote and groupWarning', () => {
+  const ms = [R(), R({ host: 'm.test', status: 'down' })];
+  const g = { nodes: 2, reporting: 1, partial: true, missing: ['m.test:4242'], data: { interfaces: { clients: 34 }, announcesLastMinute: 33,
+    peersHeard: { exact: false, sum: { total: 3300 }, max: { total: 1300 } }, disk: { worst: { level: 'high', usedPercent: 80, node: 'm.test:4242' }, lowestFree: null } } };
+  assert.deepEqual([...groupFacts({ group: g }, ms)], ['1 of 2 nodes up', '34 clients', '1,300\u20133,300 peers heard', '33 announces/min']);
+  g.data.peersHeard = { exact: true, union: { total: 2000 } };
+  assert.equal(groupFacts({ group: g }, ms)[2], '2,000 peers heard');
+  assert.deepEqual([...groupFacts({ group: null }, ms)], ['1 of 2 nodes up']);
+  assert.equal(partialNote(g, { 'm.test:4242': 'Mine' }), '1 of 2 nodes reporting. Not reporting: Mine');
+  assert.equal(partialNote({ partial: false }, {}), null);
+  assert.deepEqual({ ...groupWarning(g, { 'm.test:4242': 'Mine' }) }, { kind: 'high', text: 'Fullest disk: Mine 80% used' });
+  g.data.disk.worst.level = 'ok';
+  assert.equal(groupWarning(g, {}), null);
+  assert.equal(groupWarning(null, {}), null);
 });
 
 test('groupHosts nests members under their proxy, in the proxy order', () => {
@@ -303,21 +369,21 @@ test('propagationPairs lists what the node sent and skips the rest', () => {
 
 test('diskPairs and diskUsedPercent', () => {
   const d = { dataBytes: 2048, fsTotalBytes: 100 * 1024, fsFreeBytes: 40 * 1024 };
-  assert.deepEqual([...diskPairs(d)].map((p) => [...p]), [['Data', '2 KiB'], ['Disk free', '40 KiB of 100 KiB (40%)']]);
+  assert.deepEqual([...diskPairs(d)].map((p) => [...p]), [['Data size', '2 KiB'], ['Free', '40 KiB of 100 KiB']]);
   assert.equal(diskUsedPercent(d), 60);
   assert.equal(diskUsedPercent({ dataBytes: 1, fsTotalBytes: null, fsFreeBytes: null }), null);
   assert.equal(diskUsedPercent({ fsTotalBytes: 0, fsFreeBytes: 0 }), null);
   assert.equal(diskUsedPercent({ fsTotalBytes: 10, fsFreeBytes: 50 }), 0);
   assert.equal(diskUsedPercent(null), null);
   assert.equal(diskPairs(null).length, 0);
-  assert.deepEqual([...diskPairs({ dataBytes: 5, fsTotalBytes: null, fsFreeBytes: null })].map((p) => [...p]), [['Data', '5 B']]);
+  assert.deepEqual([...diskPairs({ dataBytes: 5, fsTotalBytes: null, fsFreeBytes: null })].map((p) => [...p]), [['Data size', '5 B']]);
 });
 
 test('groupStoragePairs shows sums and the disk with the least free share', () => {
   const g = { data: { propagation: { ...PROP, nodes: 2 }, disk: { nodes: 2, dataBytes: 4096, lowestFree: { percent: 12.5, freeBytes: 1024, totalBytes: 8192, node: 'a' } } } };
   const pairs = [...groupStoragePairs(g)].map((p) => [...p]);
   assert.equal(pairs[0][0], 'Stored');
-  assert.deepEqual(pairs.slice(-2), [['Data', '4 KiB'], ['Least disk free', '12.5% (1 KiB of 8 KiB)']]);
+  assert.deepEqual(pairs.slice(-2), [['Data size', '4 KiB'], ['Least disk free', '12.5% (1 KiB of 8 KiB)']]);
   assert.equal(groupStoragePairs({ data: {} }).length, 0);
   assert.equal(groupStoragePairs(null).length, 0);
 });

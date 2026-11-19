@@ -118,78 +118,265 @@
     return m;
   }
 
-  // The propagation node and disk numbers of a node, as a line under its stats.
-  // Null when the node sent none.
-  function storageLine(st) {
-    if (!st || !st.data || (!st.data.propagation && !st.data.disk)) return null;
-    var line = el('div', 'stats node-stats storage-stats');
-    propagationPairs(st.data.propagation).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
-    diskPairs(st.data.disk).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
-    var used = diskUsedPercent(st.data.disk);
-    if (used !== null) {
-      var wrap = el('span', 'meter-wrap');
-      wrap.appendChild(meter(used, 'Disk ' + used + '% in use'));
-      wrap.appendChild(el('span', 'muted', ' ' + used + '% used'));
-      line.appendChild(wrap);
+  // ---- Rows: what the list says about a node (pure helpers) ----
+
+  // The few facts of the collapsed row, as [label, value]; what is unknown is left out.
+  function summaryFacts(h) {
+    var out = [];
+    var d = h.stats && h.stats.data;
+    if (d) {
+      if (d.interfaces.clients !== null) out.push(['Clients', num(d.interfaces.clients)]);
+      out.push(['Peers heard', num(d.peersHeard.total)]);
     }
-    if (st.stale) line.classList.add('stale-stats');
-    return line;
+    if (h.uptimePercent !== null && h.uptimePercent !== undefined) out.push(['Up', h.uptimePercent + '% over 24 h']);
+    return out;
   }
 
-  // Null when the host has no stats URL, so nothing is drawn for it.
-  function nodeStats(st) {
-    if (!st) return null;
-    var line = el('div', 'stats node-stats');
-    if (!st.data) {
-      line.classList.add('unavailable');
-      line.appendChild(el('span', null, 'Stats unavailable'));
-      return line;
-    }
-    nodeStatPairs(st.data).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
-    if (st.stale) {
-      line.classList.add('stale-stats');
-      var note = el('span', 'muted', 'Stale, from ');
-      note.appendChild(agoTime(st.fetchedAt));
-      line.appendChild(note);
-    }
-    return line;
+  // The time of the latest successful check in the history the page has, or null.
+  function lastUp(h) {
+    for (var i = h.history.length - 1; i >= 0; i--) if (h.history[i].up) return new Date(h.history[i].t).toISOString();
+    return null;
   }
 
-  var badges = false;
+  // What replaces the summary of a node that is down.
+  function downText(h) {
+    var up = lastUp(h);
+    return 'Connection failed' + (h.error ? ': ' + h.error : '') + '. ' + (up ? 'Last up ' + ago(up) + '.' : 'No successful check lately.');
+  }
+
+  // The note of stats that are old: said in words, not by dimming.
+  function staleNote(st) {
+    return st && st.stale && st.fetchedAt ? 'Stats from ' + ago(st.fetchedAt) + ' (last fetch failed)' : null;
+  }
+
+  // Things worth a line in the collapsed row, as {kind, text}; nothing when all is well.
+  // Disk uses the level the server worked out, so words and numbers agree.
+  function warnings(h) {
+    var out = [];
+    var st = h.stats;
+    if (!st || !st.data || st.stale) return out;
+    var d = st.data;
+    if (d.disk && d.disk.usedPercent !== null && d.disk.usedPercent !== undefined) {
+      if (d.disk.level === 'full') out.push({ kind: 'full', text: 'Disk ' + d.disk.usedPercent + '% used, almost full' });
+      else if (d.disk.level === 'high') out.push({ kind: 'high', text: 'Disk ' + d.disk.usedPercent + '% used' });
+    }
+    var p = d.propagation;
+    if (p && known(p.peersAlive) && known(p.peersTotal) && p.peersTotal > 0 && p.peersAlive * 2 < p.peersTotal) {
+      out.push({ kind: 'high', text: 'Peered ' + num(p.peersAlive) + '/' + num(p.peersTotal) + ' alive' });
+    }
+    if (p && known(p.unhandledMessages) && p.unhandledMessages > 0) {
+      out.push({ kind: 'high', text: 'Unhandled ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') });
+    }
+    return out;
+  }
+
+  // The facts of the expanded row, in three groups. A group with nothing in it is not drawn.
+  function networkFacts(h) {
+    var out = [];
+    var d = h.stats && h.stats.data;
+    if (d) {
+      out.push(['Interfaces', d.interfaces.online + '/' + d.interfaces.total + ' online']);
+      out.push(['Traffic since start', '↓ ' + bytes(d.interfaces.rxBytes) + ' ↑ ' + bytes(d.interfaces.txBytes)]);
+      out.push(['Announces', num(d.announcesLastMinute) + '/min']);
+      out.push(['Node running', duration(d.uptimeSeconds)]);
+    }
+    if (h.latencyMs !== null && h.latencyMs !== undefined) out.push(['Connect', h.latencyMs + ' ms']);
+    return out;
+  }
+
+  function storeFacts(p) {
+    var out = [];
+    if (!p) return out;
+    if (known(p.storedMessages)) {
+      var s = num(p.storedMessages) + (p.storedMessages === 1 ? ' message' : ' messages');
+      if (known(p.storedBytes)) {
+        s += ', ' + bytes(p.storedBytes);
+        var share = percentText(p.storedBytes, p.storageLimitBytes);
+        if (share) s += ' of ' + bytes(p.storageLimitBytes) + ' (' + share + ')';
+      }
+      out.push(['Stored', s]);
+    }
+    if (known(p.peersAlive) && known(p.peersTotal)) out.push(['Peered', num(p.peersAlive) + ' of ' + num(p.peersTotal) + ' alive']);
+    if (known(p.unhandledMessages)) out.push(['Unhandled', num(p.unhandledMessages)]);
+    return out;
+  }
+
+  // The disk as facts: how full, and free of total only when the operator publishes the figures.
+  function diskFacts(d) {
+    var out = [];
+    if (!d) return out;
+    if (known(d.usedPercent)) {
+      var exact = known(d.fsFreeBytes);
+      out.push(['Disk', (exact ? '' : 'about ') + d.usedPercent + '% used' + (d.level === 'full' ? ', almost full' : '')]);
+    }
+    if (known(d.fsFreeBytes) && d.fsTotalBytes > 0) out.push(['Free', bytes(d.fsFreeBytes) + ' of ' + bytes(d.fsTotalBytes)]);
+    return out;
+  }
+
+  // ---- Groups: the one line of a proxy card (pure helpers) ----
+
+  // "3 of 3 nodes up" and the numbers that add up, as plain strings.
+  function groupFacts(h, members) {
+    var g = h.group;
+    var out = [];
+    var up = members.filter(function (m) { return m.status === 'up'; }).length;
+    out.push(up + ' of ' + members.length + ' nodes up');
+    if (g && g.data) {
+      var d = g.data;
+      if (d.interfaces.clients !== null) out.push(num(d.interfaces.clients) + (d.interfaces.clients === 1 ? ' client' : ' clients'));
+      out.push((d.peersHeard.exact ? num(d.peersHeard.union.total) : peerRange(d.peersHeard.max.total, d.peersHeard.sum.total)) + ' peers heard');
+      out.push(num(d.announcesLastMinute) + ' announces/min');
+    }
+    return out;
+  }
+
+  // Only when some nodes did not report: who, in words.
+  function partialNote(g, names) {
+    if (!g || !g.partial) return null;
+    var text = g.reporting + ' of ' + g.nodes + ' nodes reporting.';
+    if (g.missing.length) text += ' Not reporting: ' + g.missing.map(function (k) { return names && names[k] ? names[k] : k; }).join(', ');
+    return text;
+  }
+
+  // The roll-up warning of a group: its fullest disk, when that is worth a line.
+  function groupWarning(g, names) {
+    var d = g && g.data && g.data.disk;
+    if (!d || !d.worst || d.worst.level === 'ok') return null;
+    var who = names && names[d.worst.node] ? names[d.worst.node] : d.worst.node;
+    if (d.lowestFree && d.lowestFree.node === d.worst.node) {
+      return { kind: d.worst.level, text: 'Least disk free: ' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ' (' + d.lowestFree.percent + '%) on ' + who };
+    }
+    return { kind: d.worst.level, text: 'Fullest disk: ' + who + ' ' + d.worst.usedPercent + '% used' + (d.worst.level === 'full' ? ', almost full' : '') };
+  }
+
+  // ---- Rows: drawing ----
+
+  var lastHostsJson = '';
   var allHosts = [];
+  // Open rows, by host (and "#self" for the proxy's own numbers), kept across refreshes.
+  var openRows = {};
+  var helpOpen = {};
 
-  function hostItem(h, members) {
-    var li = el('li', 'host' + (h.role === 'proxy' ? ' proxy' : '') + (h.proxiedBy ? ' member' : ''));
-    var head = el('div', 'host-head');
-    var title = el('span', 'host-title');
-    title.appendChild(el('span', 'host-name', displayName(h)));
-    if (h.name) title.appendChild(el('span', 'host-addr', hostKey(h)));
-    if (badges) {
-      var badge = el('span', 'badge ' + h.role, badgeText(h));
-      badge.title = badgeTitle(h, allHosts);
-      badge.setAttribute('aria-label', badgeTitle(h, allHosts));
-      title.appendChild(badge);
+  function idOf(prefix, key) { return prefix + '-' + key.replace(/[^a-z0-9]/gi, '-'); }
+
+  function glyph(kind) {
+    return el('span', 'glyph', kind === 'full' ? '✕ ' : '▲ ');
+  }
+
+  function warnLines(list) {
+    var box = el('div', 'warnings');
+    list.forEach(function (w) {
+      var p = el('p', 'warn ' + w.kind);
+      var g = glyph(w.kind);
+      g.setAttribute('aria-hidden', 'true');
+      p.appendChild(g);
+      p.appendChild(document.createTextNode(w.text));
+      box.appendChild(p);
+    });
+    return box;
+  }
+
+  function factsLine(pairs, cls) {
+    var line = el('div', 'summary ' + (cls || ''));
+    pairs.forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
+    return line;
+  }
+
+  function factsList(title, pairs, extra) {
+    if (!pairs.length && !extra) return null;
+    var sec = el('section', 'more-sec');
+    sec.appendChild(el('h4', null, title));
+    var dl = el('dl', 'facts');
+    pairs.forEach(function (p) {
+      dl.appendChild(el('dt', null, p[0]));
+      dl.appendChild(el('dd', null, p[1]));
+    });
+    sec.appendChild(dl);
+    if (extra) sec.appendChild(extra);
+    return sec;
+  }
+
+  // The expanded part of a row: sections with data only, and the way to the graphs.
+  function moreBody(h, opts) {
+    var body = el('div', 'more-body');
+    var d = h.stats && h.stats.data;
+    var parts = [];
+    var label = h.status === 'down' && d ? ' (last known)' : '';
+    var net = opts.itself ? networkFacts({ stats: h.stats, latencyMs: null }) : networkFacts(h);
+    if (opts.group && d && !(h.group && h.group.countOwn)) {
+      // The numbers of the proxy itself are in its own row below; keep only what is not repeated.
+      d = null;
+      net = h.latencyMs !== null && h.latencyMs !== undefined ? [['Connect', h.latencyMs + ' ms']] : [];
     }
-    head.appendChild(title);
+    parts.push(factsList('Network' + label, net));
+    parts.push(factsList('Message store' + label, storeFacts(d && d.propagation)));
+    var used = d && d.disk ? d.disk.usedPercent : null;
+    var bar = null;
+    if (known(used)) {
+      bar = el('div', 'meter-wrap');
+      bar.appendChild(meter(used, 'Disk ' + used + '% in use'));
+    }
+    parts.push(factsList('Disk' + label, diskFacts(d && d.disk), bar));
+    parts.forEach(function (x) { if (x) body.appendChild(x); });
+    if (!body.firstChild) body.appendChild(el('p', 'note', 'Nothing more to show.'));
+    if (h.hasDetail) {
+      var full = el('button', 'detail-btn', 'Full details');
+      full.type = 'button';
+      full.setAttribute('data-host', hostKey(h));
+      full.setAttribute('data-role', 'details');
+      full.setAttribute('aria-label', 'Full details for ' + displayName(h));
+      full.addEventListener('click', function () { openDetail(hostKey(h)); });
+      body.appendChild(full);
+    }
+    return body;
+  }
+
+  // The More or Less button and the part it opens. Open rows stay open on refresh;
+  // within a group only one member is open at a time.
+  function expander(h, opts, groupKeys) {
+    var key = opts.itself ? hostKey(h) + '#self' : hostKey(h);
+    var id = idOf(opts.itself ? 'more-self' : 'more', hostKey(h));
+    var body = moreBody(h, opts);
+    body.id = id;
+    var open = openRows[key] === true;
+    body.hidden = !open;
+    var b = el('button', 'more-btn', open ? 'Less' : 'More');
+    b.type = 'button';
+    b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    b.setAttribute('aria-controls', id);
+    b.setAttribute('data-host', key);
+    b.setAttribute('data-role', 'more');
+    b.setAttribute('aria-label', (open ? 'Less' : 'More') + ' about ' + (opts.itself ? displayName(h) + ' itself' : displayName(h)));
+    b.addEventListener('click', function () {
+      var now = body.hidden;
+      if (now && groupKeys) {
+        // One member at a time: close the others of this group.
+        groupKeys.forEach(function (k) { if (k !== key) openRows[k] = false; });
+        var others = document.querySelectorAll('[data-group="' + groupKeys.groupId + '"] .more-btn');
+        for (var i = 0; i < others.length; i++) {
+          if (others[i] !== b && others[i].getAttribute('aria-expanded') === 'true') {
+            others[i].click();
+          }
+        }
+      }
+      body.hidden = !now;
+      openRows[key] = now;
+      b.setAttribute('aria-expanded', now ? 'true' : 'false');
+      b.textContent = now ? 'Less' : 'More';
+      b.setAttribute('aria-label', (now ? 'Less' : 'More') + ' about ' + (opts.itself ? displayName(h) + ' itself' : displayName(h)));
+    });
+    return { button: b, body: body };
+  }
+
+  function statusPill(h) {
     var pill = el('span', 'pill ' + h.status);
     var status = WORD[h.status] ? h.status : 'unknown';
     pill.appendChild(el('span', null, GLYPH[status])).setAttribute('aria-hidden', 'true');
     pill.appendChild(document.createTextNode(WORD[status]));
-    head.appendChild(pill);
-    li.appendChild(head);
+    return pill;
+  }
 
-    var stats = el('div', 'stats');
-    stats.appendChild(stat('Connect', h.latencyMs === null ? 'n/a' : h.latencyMs + ' ms'));
-    stats.appendChild(stat('Uptime', h.uptimePercent === null ? '-' : h.uptimePercent + '%'));
-    stats.appendChild(stat('Checked', agoTime(h.lastChecked)));
-    if (h.error) stats.appendChild(stat('Error', h.error));
-    li.appendChild(stats);
-    var node = nodeStats(h.stats);
-    if (node) li.appendChild(node);
-    var storage = storageLine(h.stats);
-    if (storage) li.appendChild(storage);
-    if (h.hasDetail) li.appendChild(detailButton(h));
-
+  function checkBar(h) {
     var bar = el('div', 'bar');
     bar.setAttribute('role', 'img');
     bar.setAttribute('aria-label', barLabel(h.history));
@@ -200,50 +387,152 @@
       s.title = new Date(c.t).toLocaleString() + (c.up ? ': up, ' + c.ms + ' ms' : ': down');
       bar.appendChild(s);
     });
-    li.appendChild(bar);
-    if (h.group) li.appendChild(groupBlock(h, members || []));
+    return bar;
+  }
+
+  // The collapsed row of a node: name, status, one line, warnings only when needed.
+  // opts: {itself} for the numbers of a proxy shown as a member, {groupKeys} for members.
+  function hostItem(h, opts) {
+    opts = opts || {};
+    var li = el('li', 'host' + (h.role === 'proxy' ? ' proxy' : '') + (h.proxiedBy ? ' member' : '') + (opts.itself ? ' itself' : ''));
+    li.setAttribute('data-host', hostKey(h));
+    var head = el('div', 'host-head');
+    var title = el('span', 'host-title');
+    title.appendChild(el('span', 'host-name', opts.itself ? displayName(h) + ' itself' : displayName(h)));
+    if (h.name && !opts.itself) title.appendChild(el('span', 'host-addr', hostKey(h)));
+    if (h.role === 'proxy' && !opts.itself) {
+      var badge = el('span', 'badge proxy', 'Proxy');
+      badge.title = badgeTitle(h, allHosts);
+      title.appendChild(badge);
+    }
+    head.appendChild(title);
+    if (!opts.itself) head.appendChild(statusPill(h));
+    li.appendChild(head);
+
+    var st = h.stats;
+    if (!opts.itself && h.status === 'down') {
+      li.appendChild(el('p', 'summary down-text', downText(h)));
+    } else if (!opts.itself && h.status === 'unknown') {
+      li.appendChild(el('p', 'summary', 'Not checked yet.'));
+    } else {
+      var facts = opts.itself ? summaryFacts({ stats: st, uptimePercent: null }) : summaryFacts(h);
+      var line = factsLine(facts);
+      if (!opts.itself) line.appendChild(stat('checked', agoTime(h.lastChecked)));
+      li.appendChild(line);
+    }
+    if (st && !st.data) {
+      var un = el('p', 'warn high');
+      var g = glyph('high');
+      g.setAttribute('aria-hidden', 'true');
+      un.appendChild(g);
+      un.appendChild(document.createTextNode('Stats unavailable.'));
+      li.appendChild(un);
+    }
+    var note = staleNote(st);
+    if (note) li.appendChild(el('p', 'note stale-note', note));
+    var w = warnings(h);
+    if (w.length) li.appendChild(warnLines(w));
+    if (!opts.itself) li.appendChild(checkBar(h));
+    var x = expander(h, opts, opts.groupKeys);
+    var actions = el('div', 'row-actions');
+    actions.appendChild(x.button);
+    li.appendChild(actions);
+    li.appendChild(x.body);
     return li;
   }
 
-  // The combined line of a proxy and the nodes behind it, nested under it.
-  function groupBlock(h, members) {
+  // One card for a proxy: one header, one line of numbers that add up, then the
+  // nodes behind it. The proxy's own numbers are a member-style row unless they
+  // are already part of the group (count_own).
+  function groupCard(h, members) {
     var g = h.group;
-    var box = el('section', 'group');
-    var heading = el('h3', null, 'All nodes (' + g.nodes + ')');
-    heading.id = 'group-' + hostKey(h).replace(/[^a-z0-9]/gi, '-');
-    box.setAttribute('aria-labelledby', heading.id);
-    box.appendChild(heading);
+    var li = el('li', 'host proxy group-card');
+    li.setAttribute('data-host', hostKey(h));
+    var head = el('div', 'host-head');
+    var title = el('span', 'host-title');
+    title.appendChild(el('span', 'host-name', displayName(h)));
+    if (h.name) title.appendChild(el('span', 'host-addr', hostKey(h)));
+    var badge = el('span', 'badge proxy', 'Proxy');
+    badge.title = badgeTitle(h, allHosts);
+    title.appendChild(badge);
+    title.appendChild(el('span', 'passes', 'passes visitors to ' + g.nodes + (g.nodes === 1 ? ' node' : ' nodes')));
+    head.appendChild(title);
+    head.appendChild(statusPill(h));
+    li.appendChild(head);
+
     var names = {};
     allHosts.forEach(function (x) { names[hostKey(x)] = displayName(x); });
-    if (g.data) {
-      var line = el('div', 'stats node-stats');
-      groupPairs(g).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
-      box.appendChild(line);
-      var groupStorage = groupStoragePairs(g);
-      if (groupStorage.length) {
-        var sline = el('div', 'stats node-stats storage-stats');
-        groupStorage.forEach(function (p) { sline.appendChild(stat(p[0], p[1])); });
-        box.appendChild(sline);
-      }
-      box.appendChild(el('p', 'note', g.data.peersHeard.exact
-        ? 'Peers heard is de-duplicated: each peer is counted once, however many nodes heard it.'
-        : 'Peers heard cannot be de-duplicated, so it is shown as a range (at least the largest node, at most the sum).' +
-          (g.data.peersHeard.lists.have > 0 ? ' ' + g.data.peersHeard.lists.have + ' of ' + g.data.peersHeard.lists.of + ' nodes supplied peer lists.' : '')));
-    } else {
-      box.appendChild(el('p', 'note', 'No node of this group has reported stats.'));
+    var line = el('div', 'summary');
+    groupFacts(h, members).forEach(function (f, i) {
+      if (i) line.appendChild(document.createTextNode(' · '));
+      line.appendChild(document.createTextNode(f));
+    });
+    var peers = g.data && g.data.peersHeard;
+    if (peers && peers.exact) {
+      line.appendChild(el('span', 'hint', ' (de-duplicated)'));
+    } else if (peers) {
+      var helpId = idOf('help', hostKey(h));
+      var help = el('button', 'help-btn', '?');
+      help.type = 'button';
+      help.setAttribute('aria-label', 'Why peers heard is a range');
+      help.setAttribute('aria-expanded', helpOpen[hostKey(h)] ? 'true' : 'false');
+      help.setAttribute('aria-controls', helpId);
+      help.setAttribute('aria-describedby', helpId);
+      help.setAttribute('data-host', hostKey(h));
+      help.setAttribute('data-role', 'help');
+      var para = el('p', 'note help-text', peerNote(peers));
+      para.id = helpId;
+      para.hidden = !helpOpen[hostKey(h)];
+      help.addEventListener('click', function () {
+        para.hidden = !para.hidden;
+        helpOpen[hostKey(h)] = !para.hidden;
+        help.setAttribute('aria-expanded', para.hidden ? 'false' : 'true');
+      });
+      line.appendChild(document.createTextNode(' '));
+      line.appendChild(help);
+      li.appendChild(line);
+      li.appendChild(para);
     }
-    var cover = el('p', 'note' + (g.partial ? ' partial' : ''), (g.partial ? 'Partial: ' : '') + groupCoverage(g, names) + (g.countOwn ? ', including this node' : '') + '.');
-    box.appendChild(cover);
-    if (members.length) {
+    if (!li.contains(line)) li.appendChild(line);
+
+    var warn = [];
+    var gw = groupWarning(g, names);
+    if (gw) warn.push(gw);
+    if (warn.length) li.appendChild(warnLines(warn));
+    var pn = partialNote(g, names);
+    if (pn) {
+      var p = el('p', 'warn high');
+      var gl = glyph('high');
+      gl.setAttribute('aria-hidden', 'true');
+      p.appendChild(gl);
+      p.appendChild(document.createTextNode(pn));
+      li.appendChild(p);
+    }
+    li.appendChild(checkBar(h));
+    // The proxy's own connection details and the way to the combined graphs.
+    var x = expander(h, { group: true }, null);
+    var actions = el('div', 'row-actions');
+    actions.appendChild(x.button);
+    li.appendChild(actions);
+    li.appendChild(x.body);
+
+    var rows = [];
+    var own = h.stats && h.stats.data && !g.countOwn;
+    var groupKeys = [];
+    members.forEach(function (m) { groupKeys.push(hostKey(m)); });
+    if (own) groupKeys.push(hostKey(h) + '#self');
+    groupKeys.groupId = idOf('grp', hostKey(h));
+    if (own) rows.push(hostItem(h, { itself: true, groupKeys: groupKeys }));
+    members.forEach(function (m) { rows.push(hostItem(m, { groupKeys: groupKeys })); });
+    if (rows.length) {
       var ul = el('ul', 'members');
+      ul.setAttribute('data-group', groupKeys.groupId);
       ul.setAttribute('aria-label', 'Nodes behind ' + displayName(h));
-      members.forEach(function (m) { ul.appendChild(hostItem(m)); });
-      box.appendChild(ul);
+      rows.forEach(function (r) { ul.appendChild(r); });
+      li.appendChild(ul);
     }
-    return box;
+    return li;
   }
-
-
 
   // ---- Propagation node and disk (pure helpers) ----
 
@@ -291,24 +580,23 @@
     return pairs;
   }
 
-  // The share of the file system in use, 0 to 100, or null when it cannot be told.
+  // The share of the disk in use, 0 to 100: as published (rounded unless the operator allows more), or null.
   function diskUsedPercent(d) {
-    if (!d || !known(d.fsFreeBytes) || !(d.fsTotalBytes > 0)) return null;
+    if (!d) return null;
+    if (known(d.usedPercent)) return d.usedPercent;
+    if (!known(d.fsFreeBytes) || !(d.fsTotalBytes > 0)) return null;
     return Math.min(Math.max(Math.round((1 - d.fsFreeBytes / d.fsTotalBytes) * 100), 0), 100);
   }
 
-  // The disk numbers as [label, value] pairs.
+  // The disk numbers as [label, value] pairs (the Details view).
   function diskPairs(d) {
     var pairs = [];
     if (!d) return pairs;
-    if (known(d.dataBytes)) pairs.push(['Data', bytes(d.dataBytes)]);
-    if (known(d.fsFreeBytes) && d.fsTotalBytes > 0) {
-      pairs.push(['Disk free', bytes(d.fsFreeBytes) + ' of ' + bytes(d.fsTotalBytes) + ' (' + percentText(d.fsFreeBytes, d.fsTotalBytes) + ')']);
-    }
-    return pairs;
+    if (known(d.dataBytes)) pairs.push(['Data size', bytes(d.dataBytes)]);
+    return pairs.concat(diskFacts(d));
   }
 
-  // A group's storage numbers: sums, and the disk with the least free share.
+  // A group's storage numbers: sums, and the fullest disk.
   function groupStoragePairs(g) {
     var pairs = [];
     if (!g || !g.data) return pairs;
@@ -322,8 +610,9 @@
     }
     var d = g.data.disk;
     if (d) {
-      if (known(d.dataBytes)) pairs.push(['Data', bytes(d.dataBytes)]);
+      if (known(d.dataBytes)) pairs.push(['Data size', bytes(d.dataBytes)]);
       if (d.lowestFree) pairs.push(['Least disk free', d.lowestFree.percent + '% (' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ')']);
+      else if (d.worst) pairs.push(['Fullest disk', d.worst.usedPercent + '% used']);
     }
     return pairs;
   }
@@ -335,25 +624,14 @@
   // The name to show: the configured display name, else the address.
   function displayName(h) { return h.name || hostKey(h); }
 
-  // Badges only help once at least one proxy is configured; with the plain
-  // environment setup every node would say the same thing.
-  function showBadges(hosts) {
-    return hosts.some(function (h) { return h.role === 'proxy'; });
-  }
+  // Only proxies get a badge.
+  function badgeText(h) { return h.role === 'proxy' ? 'Proxy' : null; }
 
-  function badgeText(h) { return h.role === 'proxy' ? 'Proxy' : 'RNS node'; }
-
-  // The title and screen reader words of the badge.
-  function badgeTitle(h, hosts) {
-    if (h.role === 'proxy') {
-      var n = h.proxy ? h.proxy.for.length : 0;
-      return 'Proxy for ' + n + (n === 1 ? ' node' : ' nodes');
-    }
-    if (h.proxiedBy) {
-      var p = hosts.filter(function (x) { return hostKey(x) === h.proxiedBy; })[0];
-      return 'RNS node, behind the proxy ' + (p ? displayName(p) : h.proxiedBy);
-    }
-    return 'RNS node';
+  // The title and screen reader words of the badge; null for a node that is not a proxy.
+  function badgeTitle(h) {
+    if (h.role !== 'proxy') return null;
+    var n = h.proxy ? h.proxy.for.length : 0;
+    return 'Proxy for ' + n + (n === 1 ? ' node' : ' nodes');
   }
 
   // The hosts in display order as [{h, members: [h]}]: a proxy is followed by
@@ -1248,9 +1526,24 @@
     setText('banner-title', TITLE[data.overall] || TITLE.unknown);
     sub();
     var list = document.getElementById('hosts');
-    allHosts = data.hosts;
-    badges = showBadges(data.hosts);
-    list.replaceChildren.apply(list, groupHosts(data.hosts).map(function (g) { return hostItem(g.h, g.members); }));
+    var json = JSON.stringify(data.hosts);
+    if (json !== lastHostsJson) {
+      lastHostsJson = json;
+      allHosts = data.hosts;
+      // Keep the keyboard focus on the same button across the rebuild.
+      var active = document.activeElement;
+      var fHost = active && list.contains(active) ? active.getAttribute('data-host') : null;
+      var fRole = fHost ? active.getAttribute('data-role') : null;
+      list.replaceChildren.apply(list, groupHosts(data.hosts).map(function (g) {
+        return g.h.group ? groupCard(g.h, g.members) : hostItem(g.h, {});
+      }));
+      if (fHost && fRole) {
+        var btns = list.querySelectorAll('button[data-role="' + fRole + '"]');
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].getAttribute('data-host') === fHost) { btns[i].focus(); break; }
+        }
+      }
+    }
     if (data.hosts.length > 0) list.setAttribute('aria-label', 'Entry points');
     else list.removeAttribute('aria-label');
   }
@@ -1294,7 +1587,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, hostKey: hostKey, displayName: displayName, showBadges: showBadges, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }

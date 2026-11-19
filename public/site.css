@@ -141,9 +141,9 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 
 .hosts { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
 .host { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
-.host-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.host-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px 12px; }
 .host-name { font-weight: 600; overflow-wrap: anywhere; }
-.pill { display: inline-block; border-radius: 6px; padding: 1px 8px; font-weight: 600; color: #0b0b10; background: var(--grey-bg); }
+.pill { display: inline-block; flex: none; white-space: nowrap; border-radius: 6px; padding: 1px 8px; font-weight: 600; color: #0b0b10; background: var(--grey-bg); }
 .pill.up { background: var(--green-bg); }
 .pill.down { background: var(--red-bg); }
 .stats { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0; color: var(--dim); font-size: 13px; }
@@ -156,7 +156,9 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 .bar span.up { background: var(--green); }
 .bar span.down { background: var(--red); align-self: stretch; height: auto; }
 .host.loading { color: var(--dim); }
-.stale .banner, .stale .hosts { opacity: 0.6; }
+.stale .banner { opacity: 0.6; }
+/* Only decoration is dimmed when the page is stale; text stays readable. */
+.stale .bar { opacity: 0.5; }
 .bar-note { color: var(--dim); font-size: 13px; margin-top: 4px; }
 .note { color: var(--dim); font-size: 13px; margin-top: 16px; }
 
@@ -174,13 +176,34 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 .badge { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); white-space: nowrap; font-weight: 500; }
 .badge.proxy { color: var(--accent); border-color: var(--accent); }
 .host.proxy { border-color: var(--accent); }
-.group { margin-top: 12px; padding: 8px 0 0 12px; border-left: 3px solid var(--accent); }
-.group h3 { font-size: 14px; }
-.group .stats { margin: 6px 0 4px; }
-.group .note { margin: 4px 0 0; }
-.group .partial { color: var(--yellow); }
-.members { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
-.host.member { background: var(--bg); }
+.host-title { flex: 1 1 auto; }
+.passes { color: var(--dim); font-size: 13px; }
+.summary { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; margin: 6px 0 0; color: var(--dim); font-size: 13px; }
+.summary b { color: var(--text); font-weight: 500; }
+.summary > span + span::before, .summary > span + .help-btn::before { content: "\00b7"; margin: 0 8px; }
+.summary .down-text { color: var(--text); }
+p.summary { display: block; }
+.warnings { margin: 4px 0 0; }
+.warn { margin: 2px 0 0; font-size: 13px; font-weight: 500; }
+.warn.high { color: var(--yellow); }
+.warn.full { color: var(--red); }
+.warn .glyph { font-weight: 700; }
+.stale-note, .help-text { margin: 4px 0 0; }
+.hint { font-size: 12px; margin-left: 4px; }
+.help-btn { min-width: 24px; padding: 0 6px; border-radius: 999px; font-size: 12px; line-height: 1.5; margin-left: 4px; }
+.host .bar { margin-top: 8px; }
+.row-actions { margin-top: 8px; }
+.more-btn { font-size: 13px; padding: 2px 12px; }
+.more-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.more-body[hidden], .help-text[hidden] { display: none; }
+.more-sec + .more-sec { margin-top: 8px; }
+.more-sec h4 { margin: 0 0 2px; font-size: 12px; color: var(--dim); font-weight: 500; text-transform: none; }
+.more-body .detail-btn { margin: 10px 0 0; }
+/* A proxy and its nodes are one card; members are plain rows inside it. */
+.group-card > .members { margin-top: 12px; padding-top: 4px; }
+.group-card > .members > .host { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; padding: 10px 0 2px 12px; }
+.group-card > .members > .host:first-child { border-top: 1px solid var(--border); }
+.members { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 0; }
 .viewbar { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; }
 .viewbar[hidden] { display: none; }
 .viewbar select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
@@ -255,7 +278,11 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
   dialog.detail { padding: 12px; }
   .range button, #detail-close, .detail-btn, .viewbar select { min-height: 40px; }
   .viewbar { flex-wrap: wrap; }
-  .group { padding-left: 8px; }
+  .more-btn, .help-btn { min-height: 40px; min-width: 40px; border-radius: 6px; }
+  .summary { gap: 2px 14px; }
+  .summary > span + span::before, .summary > span + .help-btn::before { content: none; }
+  .host-title { flex: 1 1 0; }
+  .group-card > .members > .host { padding-left: 6px; }
   .range { gap: 8px; }
   header.top .wrap { gap: 4px 12px; }
   .brand { min-height: 40px; }
