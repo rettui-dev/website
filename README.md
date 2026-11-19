@@ -120,6 +120,18 @@ host: `name` (or `null`), `role` (`"proxy"` or `"node"`), `proxy` (`{for: [addre
   Set `count_own: true` to add the proxy's own stats too. Leave it off when the proxy's
   stats already include the nodes behind it, or they would be counted twice.
 
+### On the status page
+
+- A node with a `name` shows it, with the address beside it. Once at least one proxy is
+  configured, every node gets a text badge, "Proxy" or "RNS node" (with the proxy's name in
+  its title and screen reader text for nodes behind one). With only the environment
+  variables there are no proxies, so no badges are shown: they would all say the same.
+- A proxy shows an "All nodes (N)" line with the combined stats, how many nodes reported,
+  and the nodes behind it nested underneath. Peers heard is shown as a range, not a number.
+- The Details view of a proxy has a "View" menu: "Combined (N nodes)" (the default), the
+  proxy itself and each node. Combined shows what each node runs, the peer ranges and the
+  summed graphs.
+
 ## How checking works
 
 Every 30 seconds the server opens a TCP connection to each host (5 second timeout) and

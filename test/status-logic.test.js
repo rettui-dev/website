@@ -11,6 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
+  hostKey, displayName, showBadges, badgeText, badgeTitle, groupHosts, peerRange, groupCoverage, groupPairs, peerRangeRows,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
 
@@ -201,4 +202,54 @@ test('runs also splits where samples are missing, and gapLimit is three usual st
   assert.equal(runs(pts).length, 1);
   assert.equal(gapLimit([[0, 1], [5, 1]]), 0);
   assert.equal(gapLimit([]), 0);
+});
+
+const H = (host, o = {}) => ({ host, port: 4242, name: null, role: 'node', proxy: null, proxiedBy: null, group: null, ...o });
+
+test('names and badges', () => {
+  const hosts = [H('a.test', { role: 'proxy', name: 'Door', proxy: { for: ['b.test:4242', 'c.test:4242'] } }), H('b.test', { proxiedBy: 'a.test:4242' }), H('c.test')];
+  assert.equal(hostKey(hosts[0]), 'a.test:4242');
+  assert.equal(displayName(hosts[0]), 'Door');
+  assert.equal(displayName(hosts[1]), 'b.test:4242');
+  assert.equal(showBadges(hosts), true);
+  assert.equal(showBadges([H('x'), H('y')]), false);
+  assert.equal(showBadges([]), false);
+  assert.deepEqual([badgeText(hosts[0]), badgeText(hosts[1])], ['Proxy', 'RNS node']);
+  assert.equal(badgeTitle(hosts[0], hosts), 'Proxy for 2 nodes');
+  assert.equal(badgeTitle(H('p', { role: 'proxy', proxy: { for: ['x:1'] } }), []), 'Proxy for 1 node');
+  assert.equal(badgeTitle(hosts[1], hosts), 'RNS node, behind the proxy Door');
+  assert.equal(badgeTitle(H('q', { proxiedBy: 'gone:1' }), hosts), 'RNS node, behind the proxy gone:1');
+  assert.equal(badgeTitle(hosts[2], hosts), 'RNS node');
+});
+
+test('groupHosts nests members under their proxy, in the proxy order', () => {
+  const hosts = [H('b.test'), H('a.test', { role: 'proxy', proxy: { for: ['c.test:4242', 'b.test:4242', 'missing:1'] } }), H('c.test', { proxiedBy: 'a.test:4242' }), H('d.test')];
+  hosts[0].proxiedBy = 'a.test:4242';
+  const g = [...groupHosts(hosts)].map((x) => [x.h.host, [...x.members].map((m) => m.host)]);
+  assert.deepEqual(g, [['a.test', ['c.test', 'b.test']], ['d.test', []]]);
+  assert.equal(groupHosts([]).length, 0);
+  // A node whose proxy is not listed still shows.
+  assert.deepEqual([...groupHosts([H('x', { proxiedBy: 'nope:1' })])].map((x) => x.h.host), ['x']);
+});
+
+test('peerRange, groupCoverage and groupPairs', () => {
+  assert.equal(peerRange(5, 5), '5');
+  assert.equal(peerRange(1200, 3400), '1,200\u20133,400');
+  assert.equal(groupCoverage({ reporting: 3, nodes: 3, partial: false, missing: [] }), '3 of 3 nodes reporting');
+  assert.equal(groupCoverage({ reporting: 1, nodes: 3, partial: true, missing: ['a:1', 'b:1'] }, { 'a:1': 'Alpha' }), '1 of 3 nodes reporting (not: Alpha, b:1)');
+  assert.equal(groupPairs(null).length, 0);
+  assert.equal(groupPairs({ data: null }).length, 0);
+  const g = { data: { interfaces: { total: 5, online: 4, clients: 15, rxBytes: 2048, txBytes: 10 }, announcesLastMinute: 12, peersHeard: { sum: { total: 350 }, max: { total: 250 } } } };
+  const pairs = [...groupPairs(g)].map((p) => [...p]);
+  assert.deepEqual(pairs, [['Clients', '15'], ['Interfaces', '4/5 online'], ['Traffic', '\u2193 2 KiB \u2191 10 B'], ['Peers heard', '250\u2013350'], ['Announces', '12/min']]);
+  g.data.interfaces.clients = null;
+  assert.equal(groupPairs(g).some((p) => p[0] === 'Clients'), false);
+});
+
+test('peerRangeRows give ranges per kind and the rest as Other', () => {
+  const rows = [...peerRangeRows({ sum: { total: 100, lxmf: 60, nomad: 30, propagation: 5 }, max: { total: 70, lxmf: 40, nomad: 30, propagation: 5 } })].map((r) => ({ ...r }));
+  assert.deepEqual(rows.map((r) => [r.label, r.text, r.count, r.percent]), [['LXMF', '40\u201360', 60, 60], ['NomadNet', '30', 30, 30], ['Propagation', '5', 5, 5], ['Other', '5', 5, 5]]);
+  const zero = [...peerRangeRows({ sum: { total: 0, lxmf: 0, nomad: 0, propagation: 0 }, max: { total: 0, lxmf: 0, nomad: 0, propagation: 0 } })];
+  assert.equal(zero.length, 3);
+  assert.ok(zero.every((r) => r.percent === 0));
 });
