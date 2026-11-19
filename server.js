@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_TARGETS, Monitor, parseTargets } from './lib/monitor.js';
+import { parseStatsUrls } from './lib/stats.js';
 import { createApp } from './lib/app.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,8 +18,9 @@ const port = parsePort(process.env.PORT ?? '8080');
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 const targets = parseTargets(process.env.STATUS_TARGETS || DEFAULT_TARGETS.join(','));
+const statsUrls = parseStatsUrls(process.env.STATS_URLS, targets);
 
-const monitor = new Monitor({ targets, dataDir });
+const monitor = new Monitor({ targets, dataDir, statsUrls });
 await monitor.load();
 monitor.start();
 

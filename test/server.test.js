@@ -49,7 +49,8 @@ test('/api/status has the expected shape', async () => {
     assert.equal(typeof body.checkedAt, 'string');
     assert.equal(body.intervalSeconds, 30);
     const h = body.hosts[0];
-    assert.deepEqual(Object.keys(h).sort(), ['checks', 'error', 'history', 'host', 'lastChecked', 'latencyMs', 'port', 'status', 'uptimePercent']);
+    assert.deepEqual(Object.keys(h).sort(), ['checks', 'error', 'history', 'host', 'lastChecked', 'latencyMs', 'port', 'stats', 'status', 'uptimePercent']);
+    assert.equal(h.stats, null);
     assert.equal(h.host, 'a.test');
     assert.equal(h.latencyMs, 9);
     assert.deepEqual(Object.keys(h.history[0]).sort(), ['ms', 't', 'up']);
@@ -145,4 +146,25 @@ test('resolveStatic stays inside the root', () => {
   assert.equal(resolveStatic(root, '/a/../../x'), null);
   assert.equal(resolveStatic(root, '/%2e%2e/x'), null);
   assert.equal(resolveStatic(root, '/a\0b'), null);
+});
+
+test('/api/status carries the stats of a configured host', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  const monitor = new Monitor({
+    targets: [{ host: 'a.test', port: 4242 }],
+    dataDir,
+    probeFn: async () => ({ up: true, ms: 9 }),
+    statsUrls: new Map([['a.test:4242', 'http://a.test/stats.json']]),
+    statsFn: async () => ({ ok: false, error: 'http 503' }),
+  });
+  await monitor.checkAll();
+  const server = createApp({ monitor, publicDir });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const body = await (await fetch(`http://127.0.0.1:${server.address().port}/api/status`)).json();
+    assert.deepEqual(body.hosts[0].stats, { ok: false, fetchedAt: null, stale: false, error: 'http 503' });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+  }
 });
