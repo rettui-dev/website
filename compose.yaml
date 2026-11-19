@@ -25,6 +25,9 @@ services:
       # and an optional GitHub token that only raises the API rate limit. Keep the token in a file.
       # RELEASE_REPOS: "rettui-dev/rettui,rettui-dev/rngit-rs"
       # GITHUB_TOKEN_FILE: /config/secrets/github.token
+      # A status-only site (no rettui project pages, no GitHub requests): set site_mode: status in the
+      # config file, or without one SITE_MODE: "status". Branding goes in the file's site: section.
+      # SITE_MODE: "status"
       # Logins (users, require_login) need CONFIG_FILE. The cookie is Secure, so serve the
       # site over HTTPS through a reverse proxy; see "Logins" in the README.
     volumes:
@@ -33,6 +36,8 @@ services:
       # One token file per node, each readable by the server only (chmod 600). In
       # config.yaml write stats_token_file: secrets/front.token (relative to the config).
       # - ./secrets:/config/secrets:ro
+      # The site logo (site.logo: site/logo.png in config.yaml), read once at start.
+      # - ./site:/config/site:ro
     read_only: true
     tmpfs:
       - /tmp

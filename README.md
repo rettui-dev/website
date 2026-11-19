@@ -10,7 +10,7 @@ hosts, keeps their history and can fetch their node stats.
 
 ## Pages
 
-- `/` is the home page.
+- `/` is the home page (the status page in status-only mode, see "Status-only site").
 - `/status` shows, for each entry point, whether it is up, one line of facts (clients, peers
   heard, uptime over 24 hours, when it was last checked) and a bar of the last 90 checks. A
   line of warning appears only when something needs a look. "More" opens the rest, and "Full
@@ -32,6 +32,8 @@ hosts, keeps their history and can fetch their node stats.
 - `/downloads` lists the latest rettui and rngit-rs releases by platform, with SHA-256 checksums
   (see "Downloads page").
 - `/api/releases` is the same list as JSON (GET and HEAD only, `no-store`).
+- `/api/public/stats` and `/api/public/incidents` are the public, versioned JSON API for
+  dashboards (see "Public stats API").
 - `/healthz` answers `ok` (used by the Docker health check).
 - `/login` and `/logout` (POST only) exist only when the config file has users (see "Logins").
 
@@ -108,10 +110,94 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `PUBLIC_DISK_FIGURES` | `false`                      | `true` publishes exact free and total disk space (see "What is public"). |
 | `RELEASE_REPOS`  | `rettui-dev/rettui,rettui-dev/rngit-rs` | Comma separated `owner/name` list of the repositories the Downloads page shows (at most 8). Anything else is an error at start. |
 | `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both). |
+| `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
 server at start with a message.
+
+## Status-only site
+
+Operators who run their own Reticulum backbone can use this server for the status page alone,
+without the rettui project pages. Set `SITE_MODE=status` (or `site_mode: status` at the top
+of the config file; setting both is an error, and a value other than `full` or `status` stops
+the server at start).
+
+In `status` mode:
+
+- `/` is the status page, and `/status` is the same page (an alias, not a redirect).
+- `/join`, `/join-qr.svg`, `/downloads`, `/api/releases` and the files that belong to the
+  project pages (`/index.html`, `/join.html`, `/downloads.html`, `/downloads.js`, `/copy.js`)
+  answer 404. No release list is read, cached or fetched, so the server makes no requests to
+  GitHub, and `RELEASE_REPOS` and `GITHUB_TOKEN` are not used.
+- The menu and footer have no link to the project pages: the menu is "Status" and your own
+  links, the footer is the site name and your own text.
+- `/api/status`, `/api/stats`, `/api/incidents` and the public API (`/api/public/...`) work as in
+  `full` mode, with the same privacy rules and logins.
+
+### Branding: the `site:` section
+
+The config file may have a `site:` section, in either mode, to give the status page a name and
+look of its own. Every key is optional, and an unknown key is an error at start. Errors name the
+key, never the value or the file content.
+
+```yaml
+site_mode: status
+site:
+  name: Acme Mesh              # 1 to 48 characters; shown in the title and the menu
+  logo: site/logo.png          # png, jpg, webp or svg, up to 512 KiB, relative to this file
+  description: Public entry points of the Acme backbone.   # up to 200 characters
+  footer: Run by volunteers.   # up to 200 characters, plain text
+  links:                       # up to 6; http or https, no user name or password
+    - { label: Join us, url: "https://acme.example/join" }
+```
+
+- Text is plain: no control or direction characters, no markup (it is escaped, never HTML).
+- `logo` is read once at start. The file must be a regular file, and its first bytes must match
+  its type (an SVG must start with `<svg`, and one with a script, a foreign object or an event
+  handler is refused). It is served at `/brand/site-logo` with its real type, `nosniff`, the
+  site's strict policy and a `sandbox` on top, and the page only uses it as an `<img>`, so an SVG
+  cannot run anything. It is also the page icon. Without `name` the logo is the brand; with both
+  the name sits beside it. With Docker, mount the folder (`./site:/config/site:ro`) and write
+  `logo: site/logo.png` in a config at `/config/config.yaml`.
+- Without a `name`, `status` mode shows "Status" as the brand (not the rettui wordmark).
+- In `full` mode the section changes the status page only: the name replaces the rettui name in
+  the title and footer, your links are added to the menu, and `description` and `footer` are
+  added. The home, Join and Downloads pages are the rettui project's and stay as they are. With no
+  `site:` the pages are byte for byte what they were.
+- The theme toggle, fonts and the strict CSP are unchanged: no inline script or style.
+
+How it works: `status.html` stays a plain file. When the site is customised (status mode, or a
+`site:` section), the server fills in its title, description, icon, menu, brand and footer once,
+from the checked config, escaping every value (text and attributes), and serves that. A
+template step was chosen over an `/api/site` JSON that `status.js` would read, because the page
+is then correct on first paint, works without a second request, and the browser never handles
+config text as anything but text. Without branding the file is served as it is.
+
+A status-only compose file:
+
+```yaml
+services:
+  status:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      DATA_DIR: /data
+      CONFIG_FILE: /config/config.yaml    # holds site_mode: status, site: and your nodes
+    volumes:
+      - status-data:/data
+      - ./config.yaml:/config/config.yaml:ro
+      - ./site:/config/site:ro            # the logo: site/logo.png
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+volumes:
+  status-data:
+```
+
+Without a config file (`SITE_MODE=status` and `STATUS_TARGETS`), there is no branding.
 
 ## Add a monitored host
 
@@ -316,6 +402,87 @@ see "Logins".
   this option says, and it is not purged. Setting `public_disk_figures: true` later therefore
   shows the free-space graph for the time already recorded, not only from then on. Keep the data
   directory private, and delete that file if you do not want that history.
+
+## Public stats API
+
+For others to build dashboards. Version 1 is stable: fields are only ever added, and a change
+that removes or renames one would be `/api/public/v2/...`.
+
+- `GET /api/public/stats` (GET and HEAD only; anything else is 405).
+- `GET /api/public/incidents`: the same incidents as `/api/incidents` (up to 100, newest first).
+
+Both work in `full` and `status` mode, with the usual security headers plus
+`Access-Control-Allow-Origin: *`, which no other route has. `Cache-Control: public, max-age=30`,
+and a strong `ETag`; `If-None-Match` gets a 304. The answer is built from memory at most every 10
+seconds, whatever the number of requests, and the query string is ignored.
+
+**What it shows.** Exactly what a visitor who is not logged in sees on the status page. It is
+built from the same anonymous view, with only the fields below copied. With users in the config,
+it never depends on the cookie: it reads none, sets none and always shows the anonymous view.
+`require_login` sections are left out (`propagation` and `disk` are then `null`, or lose
+those counters), and `public_disk_figures` decides whether `disk` has byte figures. It never has
+tokens, peer lists, hashes, versions, upstreams, stats URLs or paths. A node with no stats URL, or
+whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB.
+
+`GET /api/public/stats`:
+
+```
+{
+  "version": 1,
+  "generated": ISO time,
+  "nodes": [ {
+      "name": text (the configured name, else the host),
+      "address": "host:port",
+      "role": "node" | "proxy",
+      "status": "up" | "down" | "unknown",
+      "up": true | false | null,
+      "connectMs": number | null,            // last TCP connect time, null when down
+      "lastChecked": ISO time | null,
+      "uptime30": percent | null,  "uptime90": percent | null,
+      "clients": number | null,
+      "interfaces": { "total": n, "online": n } | null,
+      "peersHeard": { "total": n, "lxmf": n, "nomad": n, "propagation": n } | null,
+      "announcesLastMinute": number | null,
+      "propagation": { storedMessages, storedBytes, storageLimitBytes, peersConnected,
+          peersTotal, peersAlive, peersStatic, peersAuto, peerLimit, staticPeers,
+          autopeerDepth, messagesReceived, messagesServed, messagesSentToPeers,
+          messagesReceivedFromPeers, messagesOfferedToPeers, unhandledMessages: number | null,
+          autopeer?: boolean | null } | null,   // keys locked by require_login are absent
+      "disk": { "level": "ok" | "high" | "full" | null, "usedPercent": number | null,
+          "totalBytes"?: n, "freeBytes"?: n } | null,  // bytes only with public_disk_figures
+      "proxyFor": ["host:port", ...],
+      "proxiedBy": "host:port" | null,
+      "group": null | {                       // a proxy's combined view
+          "countOwn": bool, "nodes": n, "reporting": n, "partial": bool,
+          "clients": n | null, "interfaces": { "total": n, "online": n } | null,
+          "announcesLastMinute": n | null,
+          "peersHeard": { "exact": bool, "total"|"lxmf"|"nomad"|"propagation": { "min": n, "max": n } } | null,
+          "propagation": { the same counters, added up, plus "nodes" } | null,
+          "disk": { "nodes": n, "worstLevel": text | null, "worstUsedPercent": n | null,
+              "lowestFreePercent"?, "lowestFreeBytes"?, "lowestFreeTotalBytes"? } | null } } ],
+  "network": {
+    "overall": "up" | "degraded" | "down" | "unknown", "checkedAt": ISO time | null,
+    "intervalSeconds": n, "nodes": n, "up": n, "down": n, "unknown": n, "reporting": n,
+    "clients": n | null, "interfaces": { "total": n | null, "online": n | null },
+    "announcesLastMinute": n | null,
+    "peersHeardSum": { "total": n | null, "lxmf": ..., "nomad": ..., "propagation": ... }
+  }
+}
+```
+
+In `group`, peers heard is a range from the busiest single node (`min`) to the sum (`max`),
+and one number when `exact` is true (see "Proxies and groups"). In `network`, every node counts
+once: the nodes behind a proxy through the proxy's `group`, any other node through its own
+numbers. `peersHeardSum` is an upper bound, as one peer heard by two nodes counts twice.
+`reporting` is the number of nodes with fresh stats.
+
+`GET /api/public/incidents`:
+
+```
+{ "version": 1, "generated": ISO time,
+  "incidents": [ { "address": "host:port", "name": text, "start": ISO time,
+                   "end": ISO time | null, "seconds": n, "ongoing": bool } ] }
+```
 
 ## Logins
 
