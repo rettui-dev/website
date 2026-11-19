@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
 import { Alerter, alertText, alertSubject, spanText, utcTime, sendWebhook, webhookBody, createQueueWatch, createAlerter, MAX_ATTEMPTS } from '../lib/alerts.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Monitor } from '../lib/monitor.js';
 import { fakeSmtp, TRUST } from './helpers/fake-smtp.js';
 
 const T0 = Date.UTC(2026, 10, 19, 12, 3, 0);
@@ -92,14 +96,18 @@ test('the signature is the HMAC-SHA256 of the body', async () => {
   a.notify(down());
   await a.idle();
   const { body, headers } = fetchFn.calls[0].init;
-  const want = crypto.createHmac('sha256', SECRET).update(body).digest('hex');
+  // The signed text is "<unix seconds>.<body>", so a captured request cannot be replayed with a fresh time.
+  assert.equal(headers['X-Rettui-Timestamp'], String(Math.floor((T0 + 30_000) / 1000)));
+  const want = crypto.createHmac('sha256', SECRET).update(`${headers['X-Rettui-Timestamp']}.${body}`).digest('hex');
   assert.equal(headers['X-Rettui-Signature'], `sha256=${want}`);
+  assert.notEqual(headers['X-Rettui-Signature'], `sha256=${crypto.createHmac('sha256', SECRET).update(body).digest('hex')}`);
   assert.equal(headers['Content-Type'], 'application/json');
   // Without a secret there is no signature header.
   const plain = make({ channels: [{ type: 'webhook', url: URL_SECRET, format: 'generic' }] });
   plain.a.notify(down());
   await plain.a.idle();
   assert.equal('X-Rettui-Signature' in plain.fetchFn.calls[0].init.headers, false);
+  assert.equal('X-Rettui-Timestamp' in plain.fetchFn.calls[0].init.headers, false);
 });
 
 test('the other formats', () => {
@@ -379,7 +387,10 @@ test('a real webhook gets a signed POST', async () => {
     const got = s.seen[0];
     assert.equal(got.method, 'POST');
     assert.equal(got.url, '/hook');
-    assert.equal(got.headers['x-rettui-signature'], `sha256=${crypto.createHmac('sha256', SECRET).update(got.body).digest('hex')}`);
+    const ts = got.headers['x-rettui-timestamp'];
+    assert.match(ts, /^\d{10}$/);
+    assert.ok(Math.abs(Number(ts) - Date.now() / 1000) < 5);
+    assert.equal(got.headers['x-rettui-signature'], `sha256=${crypto.createHmac('sha256', SECRET).update(`${ts}.${got.body}`).digest('hex')}`);
     assert.equal(JSON.parse(got.body).message, 'Front is down');
   } finally {
     await s.close();
@@ -484,8 +495,9 @@ test('queue alert: full for N samples in a row alerts once, and a recovery follo
   assert.equal(f.calls.length, 2);
   const back = JSON.parse(f.calls[1].init.body);
   assert.equal(back.event, 'announce_queue_cleared');
-  assert.equal(back.durationSeconds, 60);
-  assert.match(back.message, /no longer full \(it was full for 1m 00s\)/);
+  // Counted from the first full sample, not from the alert three samples later.
+  assert.equal(back.durationSeconds, 120);
+  assert.match(back.message, /no longer full \(it was full for 2m 00s\)/);
 });
 
 test('queue alert: off unless announce_queue is in events, and a missed sample breaks the run', async () => {
@@ -524,4 +536,163 @@ test('queue alert: texts, subjects and ntfy headers', () => {
   assert.equal(alertText(e), `${K} has a full announce queue: an interface is at its limit and drops new announces.`);
   assert.equal(alertSubject(e), `[rettui] ${K} announce queue is full`);
   assert.equal(alertSubject({ ...e, type: 'queue_cleared' }), `[rettui] ${K} announce queue is clear`);
+});
+
+test('a node that flaps once and then stays down is announced when the cooldown has passed', async () => {
+  const { a, fetchFn } = make({ cooldownMs: 15 * MIN });
+  a.notify(down({ at: T0 }));
+  a.notify(back({ at: T0 + 3 * MIN, end: T0 + 3 * MIN }));
+  // Down again after 8 minutes, inside the cooldown: held back, and it stays down.
+  a.notify(down({ start: T0 + 8 * MIN, at: T0 + 8 * MIN }));
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 2);
+  const open = [[K, T0 + 8 * MIN]];
+  // Rounds inside the cooldown send nothing, even with no repeat_minutes.
+  a.remind(open, T0 + 10 * MIN);
+  a.remind(open, T0 + 14 * MIN);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 2);
+  // At 15 minutes after the last "down" alert the deferred alert goes out as a normal down alert, once.
+  a.remind(open, T0 + 15 * MIN + 30_000);
+  a.remind(open, T0 + 16 * MIN);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 3);
+  const body = JSON.parse(fetchFn.calls[2].init.body);
+  assert.equal(body.event, 'down');
+  assert.equal(body.since, new Date(T0 + 8 * MIN).toISOString());
+  // The recovery of that incident is then announced too.
+  a.notify(back({ start: T0 + 8 * MIN, end: T0 + 30 * MIN, at: T0 + 31 * MIN }));
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 4);
+});
+
+test('a held back down is not sent when the node has recovered, nor when down is not an event', async () => {
+  const { a, fetchFn } = make({ cooldownMs: 15 * MIN });
+  a.notify(down({ at: T0 }));
+  a.notify(down({ at: T0 + 5 * MIN }));
+  a.notify(back({ at: T0 + 6 * MIN, end: T0 + 6 * MIN }));
+  a.remind([], T0 + 20 * MIN);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 1);
+  const rec = make({ cooldownMs: 15 * MIN, events: ['recovered'] });
+  rec.a.notify(down({ at: T0 }));
+  rec.a.notify(back({ at: T0 + MIN }));
+  rec.a.notify(down({ at: T0 + 5 * MIN }));
+  rec.a.remind([[K, T0 + 5 * MIN]], T0 + 20 * MIN);
+  await rec.a.idle();
+  assert.equal(rec.fetchFn.calls.length, 1);
+});
+
+test('a queue that fills again inside the cooldown and stays full is announced after it', async () => {
+  const { a, f } = queueAlerter({ queueSamples: 1, cooldownMs: 15 * MIN });
+  const full = { full: true, queued: 9 };
+  a.observeQueue(K, full, T0);
+  a.observeQueue(K, { full: false }, T0 + 3 * MIN);
+  a.observeQueue(K, full, T0 + 8 * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 2);
+  for (const m of [10, 12, 14]) a.observeQueue(K, full, T0 + m * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 2);
+  a.observeQueue(K, full, T0 + 15 * MIN);
+  a.observeQueue(K, full, T0 + 16 * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 3);
+  const body = JSON.parse(f.calls[2].init.body);
+  assert.equal(body.event, 'announce_queue_full');
+  assert.equal(body.since, new Date(T0 + 8 * MIN).toISOString());
+  a.observeQueue(K, { full: false }, T0 + 20 * MIN);
+  await a.idle();
+  assert.equal(f.calls.length, 4);
+  assert.equal(JSON.parse(f.calls[3].init.body).event, 'announce_queue_cleared');
+});
+
+test('the queue-cleared text counts from the first full sample', () => {
+  const w = createQueueWatch(3);
+  w.observe(K, 1, 1, T0);
+  w.observe(K, 1, 1, T0 + 30_000);
+  assert.equal(w.since(K), T0);
+  w.observe(K, 1, 1, T0 + 60_000);
+  assert.equal(w.since(K), T0);
+  w.observe(K, 0, 1, T0 + 90_000);
+  w.observe(K, 1, 1, T0 + 120_000);
+  assert.equal(w.since(K), T0 + 120_000);
+  assert.equal(w.since('nobody:1'), null);
+});
+
+test('an incident left open by uptime.json gets reminders after a restart, with the real alerter', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  let clock = T0;
+  const first = new Monitor({ targets: [{ host: 'front.test', port: 4242 }], dataDir: dir, now: () => clock, probeFn: async () => ({ up: false, ms: 0, error: 'x' }) });
+  await first.checkAll();
+  clock += 30_000;
+  await first.checkAll();
+  assert.equal(first.uptime.openIncidents().length, 1);
+
+  const fetchFn = fakeFetch();
+  const alerts = new Alerter({ channels: [{ type: 'webhook', url: 'https://h.example/x', format: 'generic' }], repeatMs: 30 * MIN, now: () => clock, fetchFn, log: () => {} });
+  const second = new Monitor({ targets: [{ host: 'front.test', port: 4242 }], dataDir: dir, now: () => clock, probeFn: async () => ({ up: false, ms: 0, error: 'x' }), alerts });
+  await second.load();
+  for (let i = 0; i < 3; i++) {
+    clock += 30_000;
+    await second.checkAll();
+  }
+  await alerts.idle();
+  // The restart itself announces nothing, and the reminders count from the first round after it.
+  assert.equal(fetchFn.calls.length, 0);
+  clock += 31 * MIN;
+  await second.checkAll();
+  await alerts.idle();
+  assert.equal(fetchFn.calls.length, 1);
+  assert.equal(JSON.parse(fetchFn.calls[0].init.body).event, 'still_down');
+  clock += 31 * MIN;
+  await second.checkAll();
+  await alerts.idle();
+  assert.equal(fetchFn.calls.length, 2);
+});
+
+test('a channel that keeps failing does not hold up the others while it waits to retry', async () => {
+  const fetchFn = async (url) => {
+    if (url.includes('dead')) return new Response('', { status: 503 });
+    return new Response('', { status: 200 });
+  };
+  const sent = [];
+  const mailFn = async (_c, mail) => void sent.push(mail.subject);
+  let wake;
+  const never = new Promise((r) => (wake = r));
+  const { a } = make({
+    fetchFn,
+    mailFn,
+    cooldownMs: 0,
+    // The retry wait of the dead webhook does not end until the test says so.
+    sleep: () => never,
+    channels: [
+      { type: 'webhook', url: 'https://dead.example/x', format: 'generic' },
+      { type: 'email', host: 'x.test', port: 1, security: 'tls', from: 'a@example.org', to: ['b@example.org'] },
+    ],
+  });
+  for (let i = 0; i < 5; i++) a.notify(down({ key: `n${i}.test:1` }));
+  // The mails all go out although both webhook slots would have been held for the whole wait.
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(sent.length, 5);
+  let idled = false;
+  a.idle().then(() => (idled = true));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(idled, false);
+  a.stop();
+  wake();
+  await a.idle();
+});
+
+test('a retry that was waiting when the alerter stops is dropped', async () => {
+  let wake;
+  const gate = new Promise((r) => (wake = r));
+  const { a, fetchFn } = make({ fetchFn: fakeFetch([500]), sleep: () => gate });
+  a.notify(down());
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fetchFn.calls.length, 1);
+  a.stop();
+  wake();
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 1);
 });

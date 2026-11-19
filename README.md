@@ -367,12 +367,16 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
 - **When:** one alert when an incident opens (the same 2 failed checks as above) and one when it
   closes. A node that goes down again within `cooldown_minutes` of its last "down" alert is not
   announced again, and neither is the recovery of that incident, so a flapping node does not send
-  a stream of messages. With `repeat_minutes` (0, or 5 and more) a node that stays down gets a
+  a stream of messages. If that node then stays down, the held-back "down" alert is sent as soon
+  as `cooldown_minutes` have passed since the last one, so a node that is down is always announced
+  in the end. With `repeat_minutes` (0, or 5 and more) a node that stays down gets a
   reminder that often. A server that starts while a node is down announces it only if it is a new
-  incident: one that was open before the restart is not announced again.
+  incident: one that was open before the restart is not announced again, but it gets its
+  reminders (counted from the first check after the restart).
 - **Sending:** alerts wait in a queue of at most 100 (the oldest is dropped if it is full) and are
   sent in the background, so a slow or dead channel never holds up the checks. A failed send is
-  tried up to 3 times, after 5 and 30 seconds, then given up. A client error from a webhook (such
+  tried up to 3 times, after 5 and 30 seconds, then given up; while it waits it holds no sending
+  slot, so a dead channel does not hold up the others. A client error from a webhook (such
   as 404), a refused mail address and a wrong mail password are not tried again. Failures are logged
   as `alert: webhook channel 1 failed (http 500), ...`, never with an address, secret or answer.
   Alerts only come from the monitor: there is no endpoint to send or test one, and nothing a
@@ -383,8 +387,17 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
   services do) is treated as one: it is never logged or repeated in an error. The generic body is
   `{event, host, name, message, since, recoveredAt, sentAt, durationSeconds}`, with `event`
   `down`, `still_down` or `recovered`. With `secret` or `secret_file` (16 to 256 printable
-  characters) each request has `X-Rettui-Signature: sha256=<hex>`, the HMAC-SHA256 of the exact
-  body, so the receiver can check who sent it. The other formats send what that service expects:
+  characters) each request has `X-Rettui-Timestamp` (unix seconds) and `X-Rettui-Signature:
+  sha256=<hex>`, the HMAC-SHA256 of `<timestamp>.<body>` (the exact body bytes), so the receiver
+  can check who sent it and when. **Reject a timestamp more than 5 minutes from your clock**, or a
+  captured request could be sent again later. In Node.js:
+
+      const ts = req.headers['x-rettui-timestamp'];
+      const want = 'sha256=' + crypto.createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest('hex');
+      const ok = Math.abs(Date.now() / 1000 - Number(ts)) <= 300 &&
+        req.headers['x-rettui-signature']?.length === want.length &&
+        crypto.timingSafeEqual(Buffer.from(req.headers['x-rettui-signature']), Buffer.from(want));
+ The other formats send what that service expects:
   `ntfy` the text as the body, `slack` `{"text": ...}`, `discord` `{"content": ...}`.
 - **Email:** a small built-in SMTP client (no dependency). The connection is always encrypted and
   the server's certificate is always checked: `tls` is SMTPS from the first byte, `starttls`
@@ -437,7 +450,8 @@ one successful stats fetch, every 30 seconds) one alert goes out, `<node> has a 
 (4096 waiting): an interface is at its limit and drops new announces.`, and one more when it clears.
 A failed stats fetch breaks the run: "in a row" needs every sample. The cooldown works as for
 down alerts: a queue that fills again within `cooldown_minutes` of the last "full" alert is not
-announced again, nor its clearing. The generic webhook `event` is `announce_queue_full` or
+announced again, nor its clearing; if it then stays full, the held-back alert goes out once the
+cooldown has passed. "Was full for" counts from the first full sample. The generic webhook `event` is `announce_queue_full` or
 `announce_queue_cleared`. There are no reminders for it.
 
     alerts:
