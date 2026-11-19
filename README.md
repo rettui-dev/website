@@ -14,6 +14,9 @@ hosts, keeps their history and can fetch their node stats.
 - `/status` shows, for each host, whether it is up, the connect time, when it was last
   checked, its uptime and a bar of the last 90 checks. It refreshes itself.
 - `/api/status` is the same data as JSON.
+- `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
+  "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
+  stats URL, is a 404; a bad range is a 400. Only GET and HEAD are allowed.
 - `/healthz` answers `ok` (used by the Docker health check).
 
 ## Run locally
@@ -44,7 +47,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | ---------------- | --------------------------------- | -------------------------------------------------------- |
 | `PORT`           | `8080`                            | Port to listen on.                                       |
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` is kept.                            |
+| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` and `stats-history.json` are kept.  |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 
@@ -81,7 +84,33 @@ numbers are clamped to whole non-negative numbers, text is cut to length and
 unknown keys are dropped (the per-interface list is not kept, only the totals); anything that does not fit counts as unavailable. The last good
 stats are kept in memory and marked stale after three missed cycles. They are not saved
 to `history.json`. `/api/status` has a `stats` field on each host: `null` when no URL is
-set, else `{ok, fetchedAt, stale, error?, data?}`.
+set, else `{ok, fetchedAt, stale, error?, data?}`. Each host also has `hasDetail`, true when a stats
+URL is set (the page then offers a "Details" view).
+
+### Stats history
+
+For each host with a stats URL, the server keeps a sample about every 5 minutes (not on
+every 30 second cycle), taken only when a fetch worked: clients, received and sent byte
+counters, peers heard (total, LXMF, NomadNet, propagation), announces per minute, node
+uptime and interfaces online. It keeps the last 7 days (2016 samples per host), and the
+different versions a node has reported, with when each was first seen (at most 10).
+
+- It is saved in `stats-history.json` in `DATA_DIR`, apart from `history.json`, which is
+  unchanged. Both are written to a temporary file and renamed, readable by the owner only.
+  Each saved entry is checked when loaded; bad entries are dropped and a missing or
+  damaged file means starting empty. A file over 8 MiB is ignored.
+- History needs `STATS_URLS`, and only starts collecting after this version is deployed:
+  nothing older is backfilled, so graphs fill in over time.
+- `/api/stats` turns the samples into bytes per second between neighbouring samples. The
+  byte counters count since the node started, so a counter or uptime that goes down means
+  the node restarted: that interval is left as a gap, never a negative or invented rate.
+  An interval longer than 30 minutes (samples missing) is a gap too. Series are averaged
+  down to at most 240 points per range. The answer has `stats` (the current stats),
+  `version` (`current`, `uptimeSeconds`, `history` of `{version, firstSeen}`) and `series`
+  (`bytesIn`, `bytesOut`, `clients`, `peers.{total,lxmf,nomad,propagation}`, `announces`,
+  `interfacesOnline`, each a list of `[time ms, value or null]`).
+- `STATS_SAMPLE_INTERVAL_MS` changes the sample interval (default 300000). It exists only
+  so the graphs can be tried quickly during testing; do not set it in production.
 
 Security: use `https` URLs. Plain `http` is accepted only for loopback and private addresses (`localhost`, `127/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`). URLs cannot carry a user name or password, and start-up errors never print the URL. A node exposes only aggregate numbers (no peer or identity details), and the
 website fetches only the URLs set by the operator in `STATS_URLS`, never anything a
