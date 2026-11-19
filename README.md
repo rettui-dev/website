@@ -142,11 +142,11 @@ the data is usually a small part of the disk).
 
 **Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
 the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
-was heard or synced, counters). That list identifies other nodes, so the website keeps up to 256
-rows in memory only, cleans them strictly (hex address, names without control, bidirectional or
-zero-width characters and cut to 48 characters, a short word for the state), and publishes only
-counts: `stats.peerSummary` is `{listed, alive, static, unhandled, truncated}`. No address or
-name from the list is ever returned by the API or written to disk.
+was heard or synced, counters). That list identifies other nodes, so the website only counts it
+(up to 256 entries, valid 32 character hex addresses, each counted once) and keeps nothing else:
+no address, name or state is stored, even in memory, or returned by the API or written to disk.
+`stats.peerSummary` is `{listed, alive, static, unhandled, truncated}`. Text from a node (such as
+its version) loses control, bidirectional and zero-width characters before it is shown or saved.
 
 ## Proxies and groups
 

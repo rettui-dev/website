@@ -574,7 +574,7 @@ test('the union is worked out after the fetches, and a request only reads it', a
 // ---- propagation node and disk numbers ----
 
 import { sanitizeStats } from '../lib/stats.js';
-import { cleanName, optCount, sanitizeDisk, sanitizePropagation, sanitizePropagationPeers, summarizePeerRows, MAX_PROPAGATION_PEERS } from '../lib/propagation.js';
+import { cleanText, optCount, sanitizeDisk, sanitizePropagation, summarizePropagationPeers, MAX_PROPAGATION_PEERS } from '../lib/propagation.js';
 
 const prop = (o = {}) => ({
   enabled: true, stored_messages: 1200, stored_bytes: 3_000_000, storage_limit_bytes: 500_000_000, peers_connected: 2, peers_total: 8, peers_alive: 5,
@@ -636,38 +636,42 @@ test('the required stats are still required', () => {
 
 const row = (n, o = {}) => ({ address: addr(n), alive: true, depth: 2, last_heard_seconds_ago: 5, last_sync_seconds_ago: 60, messages_offered: 3, name: 'Node', peering_cost: 18, state: 'idle', static: false, unhandled: 4, ...o });
 
-test('propagation peer rows are cleaned strictly', () => {
-  const r = sanitizePropagationPeers({
+test('the peered nodes are only counted: valid entries once each, nothing else kept', () => {
+  const r = summarizePropagationPeers({
     authorised: true,
-    propagation_peers: [row(1, { name: '‮evil​ name\u0007', static: true }), row(2, { alive: 'yes', state: 'Bad State!', depth: null, unhandled: -9 }), row(2), row(3, { name: 'x'.repeat(200) }),
+    propagation_peers: [row(1, { name: '\u202eevil\u200b name\u0007', static: true }), row(2, { alive: 'yes', state: 'Bad State!', depth: null, unhandled: -9 }), row(2), row(3, { name: 'x'.repeat(200) }),
       { address: 'zz', alive: true }, null, 'x', { alive: true }, row(4, { address: addr(4).toUpperCase().replace(/[0-9]/g, 'A') })],
   });
-  assert.equal(r.rows.length, 3);
-  assert.equal(r.invalid, 5);
-  assert.equal(r.rows[0].name, 'evil name');
-  assert.equal(r.rows[0].static, true);
-  assert.equal(r.rows[1].alive, false);
-  assert.equal(r.rows[1].state, null);
-  assert.equal(r.rows[1].depth, null);
-  assert.equal(r.rows[1].unhandled, 0);
-  assert.equal(r.rows[2].name.length, 48);
-  assert.deepEqual(summarizePeerRows(r), { listed: 3, alive: 2, static: 1, unhandled: 4 + 0 + 4, truncated: false });
+  assert.deepEqual(r, { listed: 3, alive: 2, static: 1, unhandled: 4 + 0 + 4, truncated: false, invalid: 5 });
+  // No address, name or state of a peer is in what is kept.
+  const text = JSON.stringify(r);
+  for (const secret of [addr(1), addr(2), addr(3), 'evil', 'xxxx', 'idle']) assert.equal(text.includes(secret), false, secret);
+  assert.deepEqual(Object.keys(r).sort(), ['alive', 'invalid', 'listed', 'static', 'truncated', 'unhandled']);
   for (const none of [{ propagation_peers: [row(1)] }, { authorised: false, propagation_peers: [row(1)] }, { authorised: true }, { authorised: true, propagation_peers: {} }, null]) {
-    assert.equal(sanitizePropagationPeers(none), null);
+    assert.equal(summarizePropagationPeers(none), null);
   }
-  assert.equal(cleanName('​‮'), null);
-  assert.equal(cleanName(5), null);
+  assert.deepEqual(summarizePropagationPeers({ authorised: true, propagation_peers: [] }), { listed: 0, alive: 0, static: 0, unhandled: 0, truncated: false, invalid: 0 });
 });
 
-test('propagation peer rows are capped at 256 and flagged', () => {
-  const r = sanitizePropagationPeers({ authorised: true, propagation_peers: Array.from({ length: 400 }, (_, i) => row(i + 1)) });
-  assert.equal(r.rows.length, MAX_PROPAGATION_PEERS);
+test('at most 256 peered nodes are looked at, and the cut is flagged', () => {
+  const r = summarizePropagationPeers({ authorised: true, propagation_peers: Array.from({ length: 400 }, (_, i) => row(i + 1)) });
+  assert.equal(r.listed, MAX_PROPAGATION_PEERS);
   assert.equal(r.truncated, true);
-  assert.equal(sanitizePropagationPeers({ authorised: true, propagation_peers_truncated: true, propagation_peers: [row(1)] }).truncated, true);
+  assert.equal(summarizePropagationPeers({ authorised: true, propagation_peers_truncated: true, propagation_peers: [row(1)] }).truncated, true);
 });
 
-test('rows are read only with a token, kept in memory, and never shown', async () => {
-  const body = { ...stats(), propagation: prop(), authorised: true, propagation_peers: [row(1, { name: 'Alice-Node' })] };
+test('text from the network loses control, bidirectional and zero-width characters', () => {
+  assert.equal(cleanText('\u202eevil\u200b name\u0007\u2066x\u2069\ufeff', 48), 'evil namex');
+  assert.equal(cleanText('  a  ', 5), 'a');
+  assert.equal(cleanText('x'.repeat(100), 10).length, 10);
+  assert.equal(cleanText(5, 10), null);
+  const d = sanitizeStats({ ...stats(), rettui_version: '2.\u202e0\u200b.1\u0000\u2067' });
+  assert.equal(d.rettuiVersion, '2.0.1');
+  assert.equal(sanitizeStats({ ...stats(), rettui_version: '\u202e\u200b' }).rettuiVersion, '');
+});
+
+test('the peered nodes are counted only with a token, and no address or name reaches any API', async () => {
+  const body = { ...stats(), propagation: prop(), authorised: true, propagation_peers: [row(1, { name: 'Alice-Node', state: 'link_ready' })] };
   const plain = await fetchStats('https://a.test/s', { fetchFn: spy(body) });
   assert.equal('propagationPeers' in plain, false);
   assert.equal(plain.data.propagation.storedMessages, 1200);
@@ -677,16 +681,20 @@ test('rows are read only with a token, kept in memory, and never shown', async (
   });
   try {
     await s.monitor.checkAll();
-    assert.equal(s.monitor.propagationRows.get('a.test:1').rows.length, 1);
+    assert.equal('propagationRows' in s.monitor, false);
+    // Not even in memory: look at everything the monitor holds.
+    const held = JSON.stringify([...s.monitor.peerSummaries]) + JSON.stringify([...s.monitor.stats]);
+    assert.equal(held.includes(addr(1)), false);
+    assert.equal(held.includes('Alice-Node'), false);
     const status = await (await fetch(`${s.base}/api/status`)).text();
     const detail = await (await fetch(`${s.base}/api/stats?host=a.test:1&range=7d`)).text();
     for (const text of [status, detail]) {
       assert.equal(text.includes(addr(1)), false);
       assert.equal(text.includes('Alice-Node'), false);
+      assert.equal(text.includes('link_ready'), false);
     }
     const a = JSON.parse(status).hosts.find((h) => h.host === 'a.test');
     assert.deepEqual(a.stats.peerSummary, { listed: 1, alive: 1, static: 0, unhandled: 4, truncated: false });
-    assert.equal(JSON.parse(status).hosts[0].stats === null || !('peerSummary' in (JSON.parse(status).hosts[0].stats ?? {})), true);
   } finally {
     await s.close();
   }
