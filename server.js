@@ -6,6 +6,7 @@ import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
 import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
+import { ReleaseCache, loadReleaseSettings } from './lib/releases.js';
 import { argon2Available } from './lib/password.js';
 import { SAMPLE_INTERVAL_MS } from './lib/history.js';
 
@@ -41,13 +42,20 @@ const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens
 await monitor.load();
 monitor.start();
 
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, settings: login }) });
+// The latest releases for the Downloads page: read from releases.json now, refreshed in the background.
+const releaseSettings = await loadReleaseSettings(process.env);
+const releases = new ReleaseCache({ ...releaseSettings, dataDir });
+await releases.load();
+releases.start();
+
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, settings: login }), releases });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     monitor.stop();
     alerts?.stop();
+    releases.stop();
     server.close(() => process.exit(0));
     server.closeAllConnections();
   });
