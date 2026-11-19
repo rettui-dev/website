@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, loadConfigFile, loadNodes, MAX_CHANNELS, MAX_RECIPIENTS } from '../lib/config.js';
 
 const nodes = `
@@ -253,4 +254,15 @@ test('the environment variables give no alerts, and the config file is the only 
 test('YAML tricks in the alerts section are refused like elsewhere', () => {
   assert.throws(() => loadConfig(`${nodes}alerts: &a\n  channels: *a\n`), /invalid YAML/);
   assert.throws(() => loadConfig(withAlerts('channels:\n  - type: webhook\n    url: https://h.example/x\n    url: https://h.example/y')), /invalid YAML/);
+});
+
+test('the alerts example in config.example.yaml is valid when uncommented', async () => {
+  const lines = (await fs.readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config.example.yaml'), 'utf8')).split('\n');
+  const at = lines.indexOf('# alerts:');
+  assert.ok(at >= 0);
+  const block = [];
+  for (let i = at; i < lines.length && /^# ( |alerts:)/.test(lines[i]); i++) block.push(lines[i].slice(2));
+  const c = loadConfig(`${nodes}${block.join('\n')}\n`);
+  assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'email']);
+  assert.equal(c.alerts.cooldownMinutes, 15);
 });
