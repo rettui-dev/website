@@ -12,6 +12,7 @@ sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
   hostKey, displayName, showBadges, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
+  percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
 
@@ -268,4 +269,55 @@ test('peerNote for a range says how many nodes had lists', () => {
   assert.match(peerNote({ ...base, lists: { have: 0, of: 3 } }), /cannot be removed/);
   assert.doesNotMatch(peerNote({ ...base, lists: { have: 0, of: 3 } }), /supplied a peer list/);
   assert.match(peerNote({ ...base, lists: { have: 2, of: 3 } }), /2 of 3 reporting nodes supplied a peer list/);
+});
+
+const PROP = {
+  enabled: true, storedMessages: 1234, storedBytes: 5 * 1024 * 1024, storageLimitBytes: 50 * 1024 * 1024, peersConnected: 2, peersTotal: 8, peersAlive: 5, peersStatic: 3, peersAuto: 5,
+  peerLimit: 20, autopeer: true, autopeerDepth: 4, messagesSentToPeers: 1000, messagesReceivedFromPeers: 2000, unhandledMessages: 7,
+};
+
+test('percentText', () => {
+  assert.equal(percentText(5, 10), '50%');
+  assert.equal(percentText(1, 40), '2.5%');
+  assert.equal(percentText(0, 40), '0%');
+  assert.equal(percentText(1, 0), null);
+  assert.equal(percentText(null, 10), null);
+  assert.equal(percentText(undefined, 10), null);
+});
+
+test('propagationPairs lists what the node sent and skips the rest', () => {
+  const pairs = [...propagationPairs(PROP)].map((p) => [...p]);
+  assert.deepEqual(pairs, [
+    ['Stored', '1,234 messages, 5 MiB (10% of 50 MiB)'],
+    ['Peered nodes', '5/8 alive (3 static, 5 auto), limit 20'],
+    ['Auto-peering', 'on (depth 4)'],
+    ['Peer traffic', '↑ 1,000 sent ↓ 2,000 received'],
+    ['Unhandled', '7'],
+  ]);
+  assert.equal(propagationPairs(null).length, 0);
+  assert.equal(propagationPairs({}).length, 0);
+  const sparse = [...propagationPairs({ storedMessages: 1, storedBytes: null, peersAlive: 2, autopeer: false })].map((p) => [...p]);
+  assert.deepEqual(sparse, [['Stored', '1 message'], ['Peered nodes', '2/? alive'], ['Auto-peering', 'off']]);
+  assert.deepEqual([...propagationPairs({ storedBytes: 2048 })].map((p) => [...p]), [['Stored', '2 KiB']]);
+});
+
+test('diskPairs and diskUsedPercent', () => {
+  const d = { dataBytes: 2048, fsTotalBytes: 100 * 1024, fsFreeBytes: 40 * 1024 };
+  assert.deepEqual([...diskPairs(d)].map((p) => [...p]), [['Data', '2 KiB'], ['Disk free', '40 KiB of 100 KiB (40%)']]);
+  assert.equal(diskUsedPercent(d), 60);
+  assert.equal(diskUsedPercent({ dataBytes: 1, fsTotalBytes: null, fsFreeBytes: null }), null);
+  assert.equal(diskUsedPercent({ fsTotalBytes: 0, fsFreeBytes: 0 }), null);
+  assert.equal(diskUsedPercent({ fsTotalBytes: 10, fsFreeBytes: 50 }), 0);
+  assert.equal(diskUsedPercent(null), null);
+  assert.equal(diskPairs(null).length, 0);
+  assert.deepEqual([...diskPairs({ dataBytes: 5, fsTotalBytes: null, fsFreeBytes: null })].map((p) => [...p]), [['Data', '5 B']]);
+});
+
+test('groupStoragePairs shows sums and the disk with the least free share', () => {
+  const g = { data: { propagation: { ...PROP, nodes: 2 }, disk: { nodes: 2, dataBytes: 4096, lowestFree: { percent: 12.5, freeBytes: 1024, totalBytes: 8192, node: 'a' } } } };
+  const pairs = [...groupStoragePairs(g)].map((p) => [...p]);
+  assert.equal(pairs[0][0], 'Stored');
+  assert.deepEqual(pairs.slice(-2), [['Data', '4 KiB'], ['Least disk free', '12.5% (1 KiB of 8 KiB)']]);
+  assert.equal(groupStoragePairs({ data: {} }).length, 0);
+  assert.equal(groupStoragePairs(null).length, 0);
 });

@@ -113,6 +113,17 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
 
 `/api/status` carries them in `stats.data.propagation` and `stats.data.disk`.
 
+On the status page a node with these numbers gets one more line: stored messages and size (with
+the share of its storage limit), peered nodes alive out of all (static and automatic, and the
+peer limit), whether auto-peering is on, messages sent to and received from peers, unhandled
+messages, and the node's data size and free disk space with a bar and a percentage.
+
+For a proxy group, `group.data.propagation` adds up stored messages and bytes, peered nodes,
+message counters and unhandled messages over the reporting nodes that have them (`nodes` says
+how many), and `group.data.disk` has the summed data size and `lowestFree`: the node whose disk
+has the smallest free share. Free space is not added up, because each node has its own disk.
+Members that are down or stale are left out, as for the other numbers.
+
 **Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
 the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
 was heard or synced, counters). That list identifies other nodes, so the website keeps up to 256

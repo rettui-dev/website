@@ -94,6 +94,48 @@
     return pairs;
   }
 
+  // A small bar for the share of the disk in use: its fill and a text label.
+  function meter(usedPercent, label) {
+    var m = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    m.setAttribute('class', 'meter');
+    m.setAttribute('width', '70');
+    m.setAttribute('height', '8');
+    m.setAttribute('viewBox', '0 0 70 8');
+    m.setAttribute('role', 'img');
+    m.setAttribute('aria-label', label);
+    var bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('class', 'meter-bg');
+    bg.setAttribute('width', '70');
+    bg.setAttribute('height', '8');
+    bg.setAttribute('rx', '3');
+    m.appendChild(bg);
+    var fill = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    fill.setAttribute('class', 'meter-fill' + (usedPercent >= 90 ? ' full' : usedPercent >= 75 ? ' high' : ''));
+    fill.setAttribute('width', String((70 * usedPercent) / 100));
+    fill.setAttribute('height', '8');
+    fill.setAttribute('rx', '3');
+    m.appendChild(fill);
+    return m;
+  }
+
+  // The propagation node and disk numbers of a node, as a line under its stats.
+  // Null when the node sent none.
+  function storageLine(st) {
+    if (!st || !st.data || (!st.data.propagation && !st.data.disk)) return null;
+    var line = el('div', 'stats node-stats storage-stats');
+    propagationPairs(st.data.propagation).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
+    diskPairs(st.data.disk).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
+    var used = diskUsedPercent(st.data.disk);
+    if (used !== null) {
+      var wrap = el('span', 'meter-wrap');
+      wrap.appendChild(meter(used, 'Disk ' + used + '% in use'));
+      wrap.appendChild(el('span', 'muted', ' ' + used + '% used'));
+      line.appendChild(wrap);
+    }
+    if (st.stale) line.classList.add('stale-stats');
+    return line;
+  }
+
   // Null when the host has no stats URL, so nothing is drawn for it.
   function nodeStats(st) {
     if (!st) return null;
@@ -144,6 +186,8 @@
     li.appendChild(stats);
     var node = nodeStats(h.stats);
     if (node) li.appendChild(node);
+    var storage = storageLine(h.stats);
+    if (storage) li.appendChild(storage);
     if (h.hasDetail) li.appendChild(detailButton(h));
 
     var bar = el('div', 'bar');
@@ -175,6 +219,12 @@
       var line = el('div', 'stats node-stats');
       groupPairs(g).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
       box.appendChild(line);
+      var groupStorage = groupStoragePairs(g);
+      if (groupStorage.length) {
+        var sline = el('div', 'stats node-stats storage-stats');
+        groupStorage.forEach(function (p) { sline.appendChild(stat(p[0], p[1])); });
+        box.appendChild(sline);
+      }
       box.appendChild(el('p', 'note', g.data.peersHeard.exact
         ? 'Peers heard is de-duplicated: each peer is counted once, however many nodes heard it.'
         : 'Peers heard cannot be de-duplicated, so it is shown as a range (at least the largest node, at most the sum).' +
@@ -193,6 +243,90 @@
     return box;
   }
 
+
+
+  // ---- Propagation node and disk (pure helpers) ----
+
+  // "34%" of a total; one decimal under 10%; null without a usable total.
+  function percentText(n, total) {
+    if (n === null || n === undefined || !(total > 0)) return null;
+    var p = (n / total) * 100;
+    return (p < 10 ? Math.round(p * 10) / 10 : Math.round(p)) + '%';
+  }
+
+  function known(v) { return v !== null && v !== undefined; }
+
+  // The propagation numbers as [label, value] pairs. Anything the node did not
+  // send is left out. `p` is stats.data.propagation, or a group's sums.
+  function propagationPairs(p) {
+    var pairs = [];
+    if (!p) return pairs;
+    if (known(p.storedMessages)) {
+      var stored = num(p.storedMessages) + (p.storedMessages === 1 ? ' message' : ' messages');
+      if (known(p.storedBytes)) {
+        stored += ', ' + bytes(p.storedBytes);
+        var share = percentText(p.storedBytes, p.storageLimitBytes);
+        if (share) stored += ' (' + share + ' of ' + bytes(p.storageLimitBytes) + ')';
+      }
+      pairs.push(['Stored', stored]);
+    } else if (known(p.storedBytes)) {
+      pairs.push(['Stored', bytes(p.storedBytes)]);
+    }
+    if (known(p.peersAlive) || known(p.peersTotal)) {
+      var peers = (known(p.peersAlive) ? num(p.peersAlive) : '?') + '/' + (known(p.peersTotal) ? num(p.peersTotal) : '?') + ' alive';
+      var kinds = [];
+      if (known(p.peersStatic)) kinds.push(num(p.peersStatic) + ' static');
+      if (known(p.peersAuto)) kinds.push(num(p.peersAuto) + ' auto');
+      if (kinds.length) peers += ' (' + kinds.join(', ') + ')';
+      if (known(p.peerLimit)) peers += ', limit ' + num(p.peerLimit);
+      pairs.push(['Peered nodes', peers]);
+    }
+    if (p.autopeer === true || p.autopeer === false) {
+      pairs.push(['Auto-peering', p.autopeer ? 'on' + (known(p.autopeerDepth) ? ' (depth ' + p.autopeerDepth + ')' : '') : 'off']);
+    }
+    if (known(p.messagesSentToPeers) || known(p.messagesReceivedFromPeers)) {
+      pairs.push(['Peer traffic', '↑ ' + (known(p.messagesSentToPeers) ? num(p.messagesSentToPeers) : '?') + ' sent ↓ ' + (known(p.messagesReceivedFromPeers) ? num(p.messagesReceivedFromPeers) : '?') + ' received']);
+    }
+    if (known(p.unhandledMessages)) pairs.push(['Unhandled', num(p.unhandledMessages)]);
+    return pairs;
+  }
+
+  // The share of the file system in use, 0 to 100, or null when it cannot be told.
+  function diskUsedPercent(d) {
+    if (!d || !known(d.fsFreeBytes) || !(d.fsTotalBytes > 0)) return null;
+    return Math.min(Math.max(Math.round((1 - d.fsFreeBytes / d.fsTotalBytes) * 100), 0), 100);
+  }
+
+  // The disk numbers as [label, value] pairs.
+  function diskPairs(d) {
+    var pairs = [];
+    if (!d) return pairs;
+    if (known(d.dataBytes)) pairs.push(['Data', bytes(d.dataBytes)]);
+    if (known(d.fsFreeBytes) && d.fsTotalBytes > 0) {
+      pairs.push(['Disk free', bytes(d.fsFreeBytes) + ' of ' + bytes(d.fsTotalBytes) + ' (' + percentText(d.fsFreeBytes, d.fsTotalBytes) + ')']);
+    }
+    return pairs;
+  }
+
+  // A group's storage numbers: sums, and the disk with the least free share.
+  function groupStoragePairs(g) {
+    var pairs = [];
+    if (!g || !g.data) return pairs;
+    var p = g.data.propagation;
+    if (p) {
+      pairs = propagationPairs({
+        storedMessages: p.storedMessages, storedBytes: p.storedBytes, storageLimitBytes: p.storageLimitBytes, peersAlive: p.peersAlive, peersTotal: p.peersTotal,
+        peersStatic: p.peersStatic, peersAuto: p.peersAuto, messagesSentToPeers: p.messagesSentToPeers, messagesReceivedFromPeers: p.messagesReceivedFromPeers,
+        unhandledMessages: p.unhandledMessages
+      });
+    }
+    var d = g.data.disk;
+    if (d) {
+      if (known(d.dataBytes)) pairs.push(['Data', bytes(d.dataBytes)]);
+      if (d.lowestFree) pairs.push(['Least disk free', d.lowestFree.percent + '% (' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ')']);
+    }
+    return pairs;
+  }
 
   // ---- Proxies and groups (pure helpers) ----
 
@@ -1110,7 +1244,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, hostKey: hostKey, displayName: displayName, showBadges: showBadges, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, hostKey: hostKey, displayName: displayName, showBadges: showBadges, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count };
     return;
   }

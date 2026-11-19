@@ -140,3 +140,41 @@ test('without a config every host is a plain node', async () => {
   const h = m.snapshot().hosts[0];
   assert.deepEqual([h.name, h.role, h.proxy, h.proxiedBy, h.group], [null, 'node', null, null, null]);
 });
+
+const prop = (o = {}) => ({
+  enabled: true, storedMessages: 100, storedBytes: 1000, storageLimitBytes: 10_000, peersConnected: 1, peersTotal: 4, peersAlive: 3, peersStatic: 1, peersAuto: 3,
+  peerLimit: 20, staticPeers: 1, autopeer: true, autopeerDepth: 4, messagesReceived: 5, messagesServed: 6, messagesSentToPeers: 70, messagesReceivedFromPeers: 80,
+  messagesOfferedToPeers: 9, unhandledMessages: 2, ...o,
+});
+
+test('aggregateGroup adds up the propagation numbers and reports the fullest disk, not summed free space', () => {
+  const a = member('a', data({ propagation: prop(), disk: { dataBytes: 500, fsTotalBytes: 1000, fsFreeBytes: 400 } }));
+  const b = member('b', data({ propagation: prop({ storedMessages: 50, storedBytes: null, peersAlive: 1, unhandledMessages: null }), disk: { dataBytes: 300, fsTotalBytes: 2000, fsFreeBytes: 200 } }));
+  const old = member('old', data());
+  const g = aggregateGroup([a, b, old]).data;
+  assert.equal(g.propagation.nodes, 2);
+  assert.equal(g.propagation.storedMessages, 150);
+  assert.equal(g.propagation.storedBytes, 1000);
+  assert.equal(g.propagation.peersAlive, 4);
+  assert.equal(g.propagation.messagesSentToPeers, 140);
+  assert.equal(g.propagation.unhandledMessages, 2);
+  assert.equal(g.disk.nodes, 2);
+  assert.equal(g.disk.dataBytes, 800);
+  assert.deepEqual(g.disk.lowestFree, { percent: 10, freeBytes: 200, totalBytes: 2000, node: 'b' });
+});
+
+test('aggregateGroup: no propagation or disk anywhere gives null, unknown sums stay null', () => {
+  const g = aggregateGroup([member('a', data()), member('b', data())]).data;
+  assert.equal(g.propagation, null);
+  assert.equal(g.disk, null);
+  const partial = aggregateGroup([member('a', data({ propagation: prop({ storedBytes: null, peerLimit: null }), disk: { dataBytes: null, fsTotalBytes: 0, fsFreeBytes: 5 } }))]).data;
+  assert.equal(partial.propagation.storedBytes, null);
+  assert.equal(partial.disk.dataBytes, null);
+  assert.equal(partial.disk.lowestFree, null);
+});
+
+test('members that are down or stale are left out of the storage sums', () => {
+  const a = member('a', data({ propagation: prop() }));
+  const down = member('d', data({ propagation: prop({ storedMessages: 999 }) }), { status: 'down' });
+  assert.equal(aggregateGroup([a, down]).data.propagation.storedMessages, 100);
+});
