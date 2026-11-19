@@ -64,6 +64,17 @@ test('STARTTLS is required: a server that does not offer it gets nothing', async
   }
 });
 
+test('an answer that comes with the 220 to STARTTLS is refused, and nothing more is sent', async () => {
+  const s = await fakeSmtp({ mode: 'starttls', inject: true, auth: { user: 'u', pass: 'p' } });
+  try {
+    await assert.rejects(sendMail(base(s.port, { username: 'u', password: 'p' }), mail, opts), { message: 'starttls failed' });
+    assert.deepEqual(s.log.commands, ['EHLO localhost', 'STARTTLS']);
+    assert.deepEqual(s.log.auths, []);
+  } finally {
+    await s.close();
+  }
+});
+
 test('AUTH PLAIN and AUTH LOGIN', async () => {
   const s = await fakeSmtp({ mode: 'starttls', auth: { user: 'alerts', pass: 'p@ss word' } });
   try {

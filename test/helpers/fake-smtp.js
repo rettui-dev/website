@@ -27,9 +27,9 @@ export const TRUST = { ca: CERT };
 
 // opts: {mode: 'tls' | 'starttls', starttls: offer STARTTLS (default true), auth: {user, pass} or null,
 // hang: never answer after the greeting, rcptReply: code for RCPT, bigReply: send a huge greeting,
-// authReply: code for the AUTH answer}.
+// authReply: code for the AUTH answer, inject: send an extra reply in the same write as the answer to STARTTLS}.
 export async function fakeSmtp(opts = {}) {
-  const { mode = 'starttls', starttls = true, auth = null, hang = false, rcptReply = 250, bigReply = false } = opts;
+  const { mode = 'starttls', starttls = true, auth = null, hang = false, rcptReply = 250, bigReply = false, inject = false } = opts;
   const log = { commands: [], messages: [], auths: [] };
   const handle = (socket0) => {
     let socket = socket0;
@@ -78,7 +78,7 @@ export async function fakeSmtp(opts = {}) {
         return say(lines.map((l, n) => `250${n === lines.length - 1 ? ' ' : '-'}${l}`).join('\r\n'));
       }
       if (verb === 'STARTTLS') {
-        say('220 go ahead');
+        say(inject ? '220 go ahead\r\n250 fake' : '220 go ahead');
         socket.removeAllListeners('data');
         const wrapped = new tls.TLSSocket(socket, { isServer: true, key: KEY, cert: CERT });
         wrapped.on('error', () => {});
