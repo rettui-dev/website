@@ -7,6 +7,8 @@ services:
     environment:
       DATA_DIR: /data
       # STATUS_TARGETS: "rns.rettui.dev:4242,front.rns.rettui.dev:4242"
+      # Node stats (optional, host:port=url pairs; each host must be a target):
+      # STATS_URLS: "rns.rettui.dev:4242=https://rns.rettui.dev/stats.json,front.rns.rettui.dev:4242=https://front.rns.rettui.dev/stats.json,back.rns.rettui.dev:4242=https://back.rns.rettui.dev/stats.json,side.rns.rettui.dev:4242=https://side.rns.rettui.dev/stats.json"
     volumes:
       - status-data:/data
     read_only: true

@@ -56,6 +56,63 @@
     return s;
   }
 
+  // 1536 -> "1.5 KiB". Whole numbers below 1 KiB.
+  function bytes(n) {
+    var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return (i === 0 || n >= 100 ? Math.round(n) : Math.round(n * 10) / 10) + ' ' + units[i];
+  }
+
+  // 93784 -> "1d 2h", 3700 -> "1h 1m", 42 -> "42s": the two biggest units.
+  function duration(sec) {
+    var d = Math.floor(sec / 86400);
+    var h = Math.floor((sec % 86400) / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return d + 'd ' + h + 'h';
+    if (h > 0) return h + 'h ' + m + 'm';
+    if (m > 0) return m + 'm ' + Math.floor(sec % 60) + 's';
+    return Math.floor(sec) + 's';
+  }
+
+  function num(n) {
+    return n.toLocaleString === undefined ? String(n) : n.toLocaleString('en-US');
+  }
+
+  // The words of the node stats line, as [label, value] pairs.
+  function nodeStatPairs(d) {
+    var pairs = [];
+    if (d.interfaces.clients !== null) pairs.push(['Clients', num(d.interfaces.clients)]);
+    pairs.push(['Interfaces', d.interfaces.online + '/' + d.interfaces.total + ' online']);
+    pairs.push(['Traffic', '↓ ' + bytes(d.interfaces.rxBytes) + ' ↑ ' + bytes(d.interfaces.txBytes)]);
+    pairs.push(['Peers heard', num(d.peersHeard.total)]);
+    pairs.push(['Announces', num(d.announcesLastMinute) + '/min']);
+    pairs.push(['Node up', duration(d.uptimeSeconds)]);
+    return pairs;
+  }
+
+  // Null when the host has no stats URL, so nothing is drawn for it.
+  function nodeStats(st) {
+    if (!st) return null;
+    var line = el('div', 'stats node-stats');
+    if (!st.data) {
+      line.classList.add('unavailable');
+      line.appendChild(el('span', null, 'Stats unavailable'));
+      return line;
+    }
+    nodeStatPairs(st.data).forEach(function (p) { line.appendChild(stat(p[0], p[1])); });
+    if (st.stale) {
+      line.classList.add('stale-stats');
+      var note = el('span', 'muted', 'Stale, from ');
+      note.appendChild(agoTime(st.fetchedAt));
+      line.appendChild(note);
+    }
+    return line;
+  }
+
   function hostItem(h) {
     var li = el('li', 'host');
     var head = el('div', 'host-head');
@@ -73,6 +130,8 @@
     stats.appendChild(stat('Checked', agoTime(h.lastChecked)));
     if (h.error) stats.appendChild(stat('Error', h.error));
     li.appendChild(stats);
+    var node = nodeStats(h.stats);
+    if (node) li.appendChild(node);
 
     var bar = el('div', 'bar');
     bar.setAttribute('role', 'img');
@@ -169,7 +228,7 @@
 
   if (typeof document === 'undefined') {
     // Loaded by the tests: expose the pure parts only.
-    globalThis.statusLogic = { ago: ago, barLabel: barLabel };
+    globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs };
     return;
   }
   load();

@@ -148,6 +148,8 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 .pill.down { background: var(--red-bg); }
 .stats { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0; color: var(--dim); font-size: 13px; }
 .stats b { color: var(--text); font-weight: 500; }
+.node-stats { margin-top: -2px; }
+.node-stats.unavailable, .node-stats .muted { font-style: italic; }
 .bar { display: flex; gap: 2px; height: 24px; background: var(--sunken); border-radius: 6px; padding: 3px; overflow: hidden; }
 .bar span { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--border); align-self: center; height: 40%; }
 /* Down checks are taller than up checks, so they show without colour. */
