@@ -126,6 +126,10 @@ test('sniffLogo: the four kinds, and the look-alikes', () => {
   assert.equal(sniffLogo(Buffer.from('﻿<!-- hi --><svg viewBox="0 0 1 1"></svg>')), 'image/svg+xml');
   assert.equal(sniffLogo(Buffer.from('<svg><SCRIPT>1</SCRIPT></svg>')), null);
   assert.equal(sniffLogo(Buffer.from('<svg><foreignObject/></svg>')), null);
+  for (const risky of ['<svg onload="x()"/>', '<svg/onload=x()/>', `<svg a='1'onclick='x()'/>`, '<svg><a href="javascript:x()"/></svg>', '<svg><use href="#a"/></svg>', '<svg><animate attributeName="x"/></svg>', '<svg><set attributeName="x"/></svg>']) {
+    assert.equal(sniffLogo(Buffer.from(risky)), null, risky);
+  }
+  assert.equal(sniffLogo(Buffer.from('<svg><path d="M0 0h1" fill="red"/><text>one = 1</text></svg>')), 'image/svg+xml');
   assert.equal(sniffLogo(Buffer.from('GIF89a')), null);
   assert.equal(sniffLogo(Buffer.alloc(0)), null);
 });
