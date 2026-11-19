@@ -403,3 +403,23 @@ test('group storage is split into the message store and the disk', () => {
   assert.equal(groupDiskPairs({ data: {} }).length, 0);
   assert.equal(groupDiskPairs(null).length, 0);
 });
+
+test('locked sections: which a row offers a login for, and the words for them', () => {
+  const { rowLocks, lockText, detailsLocked } = sandbox.statusLogic;
+  const all = ['details', 'storage', 'peers', 'disk', 'versions'];
+  assert.deepEqual([...rowLocks({ locked: all, stats: { ok: true } })], ['storage', 'peers', 'disk', 'versions']);
+  assert.deepEqual([...rowLocks({ locked: all, stats: null, group: null })], [], 'nothing to see without stats');
+  assert.deepEqual([...rowLocks({ locked: all, stats: null, group: { nodes: 2 } })], ['storage', 'peers', 'disk', 'versions']);
+  assert.deepEqual([...rowLocks({ locked: [], stats: { ok: true } })], []);
+  assert.deepEqual([...rowLocks({ stats: { ok: true } })], [], 'no users: no locks');
+  assert.equal(lockText(['storage', 'peers', 'disk', 'versions']), 'Message store, peered nodes, disk and versions need a login.');
+  assert.equal(lockText(['details', 'disk']), 'Disk needs a login.');
+  assert.equal(lockText(['storage']), 'Message store needs a login.');
+  assert.equal(lockText(['versions']), 'Versions need a login.');
+  assert.equal(lockText(['peers', 'disk']), 'Peered nodes and disk need a login.');
+  assert.equal(lockText(['details']), null);
+  assert.equal(lockText(undefined), null);
+  assert.equal(detailsLocked({ locked: ['details'] }), true);
+  assert.equal(detailsLocked({ locked: ['disk'] }), false);
+  assert.equal(detailsLocked({}), false);
+});

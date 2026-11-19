@@ -31,6 +31,11 @@
     <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
     <p id="banner-live" class="sr-only" role="status"></p>
   </div>
+  <div id="account" class="account" hidden>
+    <p id="account-text" class="account-text"></p>
+    <button id="account-btn" type="button" class="account-btn"></button>
+    <p id="account-live" class="sr-only" role="status"></p>
+  </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
   <p class="note">Each entry point is checked with a TCP connection every 30 seconds. Use More on a row for details, or Full details for graphs.</p>
@@ -58,6 +63,21 @@
       </div>
     </div>
     <div id="detail-body" class="detail-body" role="tabpanel" tabindex="0"></div>
+  </dialog>
+  <dialog id="login" class="login" aria-labelledby="login-title">
+    <form id="login-form" class="login-form" method="post" action="/login" novalidate>
+      <h2 id="login-title">Log in</h2>
+      <p class="note login-why">Some numbers on this page are only shown to people with an account.</p>
+      <p id="login-error" class="login-error" role="alert"></p>
+      <label for="login-name">Name</label>
+      <input id="login-name" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required aria-describedby="login-error">
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="login-error">
+      <div class="login-actions">
+        <button id="login-submit" type="submit" class="primary">Log in</button>
+        <button id="login-cancel" type="button">Cancel</button>
+      </div>
+    </form>
   </dialog>
 </main>
 <footer>

@@ -25,8 +25,8 @@ test('loadConfig reads nodes, names, stats URLs and proxies', () => {
   const c = loadConfig(ok);
   assert.deepEqual(c.targets, [{ host: 'a.test', port: 4242 }, { host: 'b.test', port: 4242 }, { host: 'c.test', port: 4242 }]);
   assert.deepEqual([...c.statsUrls], [['a.test:4242', 'https://a.test/stats.json'], ['b.test:4242', 'http://127.0.0.1:9/s.json']]);
-  assert.deepEqual(c.nodes.get('a.test:4242'), { name: 'Front door', proxyFor: ['b.test:4242', 'c.test:4242'], proxiedBy: null, countOwn: true, publicDetails: true, publicDiskFigures: false });
-  assert.deepEqual(c.nodes.get('b.test:4242'), { name: null, proxyFor: [], proxiedBy: 'a.test:4242', countOwn: false, publicDetails: true, publicDiskFigures: false });
+  assert.deepEqual(c.nodes.get('a.test:4242'), { name: 'Front door', proxyFor: ['b.test:4242', 'c.test:4242'], proxiedBy: null, countOwn: true, publicDetails: true, publicDiskFigures: false, requireLogin: [] });
+  assert.deepEqual(c.nodes.get('b.test:4242'), { name: null, proxyFor: [], proxiedBy: 'a.test:4242', countOwn: false, publicDetails: true, publicDiskFigures: false, requireLogin: [] });
   assert.equal(c.nodes.get('c.test:4242').name, 'C');
 });
 

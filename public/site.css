@@ -327,3 +327,33 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .hero .hub .copied { color: var(--green); margin-left: 6px; }
 .detail-head h2 .host-addr { margin-left: 10px; }
 dialog.detail > .detail-controls { margin: 0; padding: 10px 12px 0; }
+
+/* Login: the account line, the locked parts of a row and the login dialog */
+.account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0 0; color: var(--dim); font-size: 13px; }
+.account[hidden] { display: none; }
+.account-text { margin: 0; }
+.account-btn, .login-btn { font-size: 13px; min-height: 40px; }
+.lock-box { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 6px; background: var(--sunken); }
+.lock-text { margin: 0 0 6px; color: var(--dim); font-size: 13px; }
+dialog.login {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 16px; width: min(360px, calc(100% - 16px));
+}
+dialog.login::backdrop { background: rgba(0, 0, 0, 0.6); }
+.login-form { display: grid; gap: 6px; }
+.login-form h2 { margin: 0 0 4px; font-size: 16px; }
+.login-why { margin: 0 0 4px; }
+.login-form label { margin-top: 6px; font-weight: 500; }
+.login-form input {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%;
+}
+.login-form input:hover { border-color: var(--accent); }
+.login-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
+.login-error { margin: 0; color: var(--red); font-weight: 500; }
+.login-error:empty { display: none; }
+.login-error::before { content: "\2715  "; }
+.login-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.login-actions button { min-height: 40px; padding: 4px 16px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button:disabled { opacity: 0.7; cursor: progress; }
