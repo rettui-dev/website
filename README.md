@@ -2,7 +2,7 @@
 
 The website for [rettui](https://github.com/rettui-dev/rettui): a home page and a
 status page that checks the project's Reticulum entry points. It has the same look
-as rettui's web UI (colours, Fira Code Nerd Font, dark and light themes).
+as rettui's web UI (colours, Fira Sans and Fira Code, dark and light themes).
 
 It is plain HTML, CSS and JavaScript, served by a small Node.js server
 (`server.js`) with no dependencies and no build step. The server also probes the
@@ -456,4 +456,6 @@ Security: use `https` URLs. Plain `http` is accepted only for loopback and priva
 website fetches only the URLs set by the operator in `STATS_URLS`, never anything a
 visitor sends. What a node answers is treated as untrusted and is shown as text only.
 
-The fonts are Fira Code Nerd Font under the SIL Open Font License (`public/fonts/OFL.txt`).
+Words are set in Fira Sans and values (numbers with their units, versions, times, addresses) in Fira Code Nerd Font. Both are self-hosted
+woff2 files in `public/fonts/`, under the SIL Open Font License (`OFL-FiraSans.txt` and `OFL.txt`); the page loads no font from another site.
+Values carry the class `num` in the markup and in `status.js`.

@@ -19,6 +19,28 @@
     return e;
   }
 
+  // A number with its unit stays one run in the value font (Fira Code); the words around it stay in the text font.
+  var NUM_RE = /\d+(?:[,.:]\d+)*(?:\/\d+)?(?:[\u00a0 ]?(?:[KMGTP]iB|B|ms|s|m|h|d)(?:\/s)?(?![A-Za-z])|%|\/min)?/g;
+
+  // Appends `text` to `parent`, each number-and-unit run in span.num. Only text nodes are made, never HTML.
+  function addRuns(parent, text) {
+    var s = String(text);
+    var at = 0;
+    var m;
+    NUM_RE.lastIndex = 0;
+    while ((m = NUM_RE.exec(s)) !== null) {
+      if (m.index > at) parent.appendChild(document.createTextNode(s.slice(at, m.index)));
+      parent.appendChild(el('span', 'num', m[0]));
+      at = m.index + m[0].length;
+    }
+    if (at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
+    return parent;
+  }
+
+  function elRuns(tag, cls, text) {
+    return addRuns(el(tag, cls), text);
+  }
+
   function ago(iso) {
     if (!iso) return 'never';
     var s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -41,7 +63,8 @@
 
   // A time that the timer keeps current: "12s ago" counts up between fetches.
   function agoTime(iso) {
-    var t = el('time', null, ago(iso));
+    var t = el('time');
+    setAgo(t, ago(iso));
     if (iso) {
       t.setAttribute('datetime', iso);
       t.setAttribute('data-ago', iso);
@@ -50,9 +73,15 @@
     return t;
   }
 
+  // "29s ago": the figure in the value font, "ago" in words.
+  function setAgo(t, text) {
+    t.replaceChildren();
+    addRuns(t, text);
+  }
+
   function stat(label, value) {
     var s = el('span', null, label + ' ');
-    s.appendChild(typeof value === 'string' ? el('b', null, value) : value);
+    s.appendChild(typeof value === 'string' ? elRuns('span', 'val', value) : value);
     return s;
   }
 
@@ -300,7 +329,7 @@
       var g = glyph(w.kind);
       g.setAttribute('aria-hidden', 'true');
       p.appendChild(g);
-      p.appendChild(document.createTextNode(w.text));
+      addRuns(p, w.text);
       box.appendChild(p);
     });
     return box;
@@ -312,6 +341,11 @@
     return line;
   }
 
+  // The value of a fact. A version is one run of code; the rest has its numbers picked out.
+  function factsValue(pair) {
+    return pair[0] === 'Running' ? el('dd', 'id', pair[1]) : elRuns('dd', null, pair[1]);
+  }
+
   function factsList(title, pairs, extra) {
     if (!pairs.length && !extra) return null;
     var sec = el('section', 'more-sec');
@@ -319,7 +353,7 @@
     var dl = el('dl', 'facts');
     pairs.forEach(function (p) {
       dl.appendChild(el('dt', null, p[0]));
-      dl.appendChild(el('dd', null, p[1]));
+      dl.appendChild(factsValue(p));
     });
     sec.appendChild(dl);
     if (extra) sec.appendChild(extra);
@@ -465,7 +499,7 @@
 
     var st = h.stats;
     if (!opts.itself && h.status === 'down') {
-      li.appendChild(el('p', 'summary down-text', downText(h)));
+      li.appendChild(elRuns('p', 'summary down-text', downText(h)));
     } else if (!opts.itself && h.status === 'unknown') {
       li.appendChild(el('p', 'summary', 'Not checked yet.'));
     } else {
@@ -487,7 +521,7 @@
       li.appendChild(un);
     }
     var note = staleNote(st);
-    if (note) li.appendChild(el('p', 'note stale-note', note));
+    if (note) li.appendChild(elRuns('p', 'note stale-note', note));
     var w = warnings(h);
     if (w.length) li.appendChild(warnLines(w));
     if (!opts.itself) li.appendChild(checkBar(h));
@@ -515,7 +549,7 @@
     var badge = el('span', 'badge proxy', 'Proxy');
     badge.title = badgeTitle(h, allHosts);
     title.appendChild(badge);
-    title.appendChild(el('span', 'passes', 'passes visitors to ' + g.nodes + (g.nodes === 1 ? ' node' : ' nodes')));
+    title.appendChild(elRuns('span', 'passes', 'passes visitors to ' + g.nodes + (g.nodes === 1 ? ' node' : ' nodes')));
     head.appendChild(title);
     head.appendChild(statusPill(h));
     li.appendChild(head);
@@ -526,7 +560,7 @@
     var line = el('div', 'summary');
     var peers = g.data && g.data.peersHeard;
     groupFacts(h, members).forEach(function (f) {
-      var span = el('span', null, f);
+      var span = elRuns('span', null, f);
       line.appendChild(span);
       // The explanation sits with the number it explains, on the same line.
       if (peers && / peers heard$/.test(f)) {
@@ -541,7 +575,7 @@
           help.setAttribute('aria-controls', helpId);
           help.setAttribute('data-host', hostKey(h));
           help.setAttribute('data-role', 'help');
-          para = el('p', 'note help-text', peerNote(peers));
+          para = elRuns('p', 'note help-text', peerNote(peers));
           para.id = helpId;
           para.hidden = !helpOpen[hostKey(h)];
           help.addEventListener('click', function () {
@@ -571,7 +605,7 @@
       var gl = glyph('high');
       gl.setAttribute('aria-hidden', 'true');
       p.appendChild(gl);
-      p.appendChild(document.createTextNode(pn));
+      addRuns(p, pn);
       li.appendChild(p);
     }
     li.appendChild(checkBar(h));
@@ -1238,7 +1272,7 @@
   function emptyState(d, ser) {
     var empty = el('p', 'empty', 'Collecting data, graphs fill in over time.');
     var what = d.view === 'combined' ? 'complete' : '';
-    empty.appendChild(el('span', 'muted', ' ' + ser.sampleCount + (what ? ' ' + what : '') + (ser.sampleCount === 1 ? ' sample' : ' samples') + ' so far in the ' + RANGE_WORDS[d.range] + '; one is taken about every ' + intervalWords(d.sampleIntervalSeconds) + '.'));
+    empty.appendChild(elRuns('span', 'muted', ' ' + ser.sampleCount + (what ? ' ' + what : '') + (ser.sampleCount === 1 ? ' sample' : ' samples') + ' so far in the ' + RANGE_WORDS[d.range] + '; one is taken about every ' + intervalWords(d.sampleIntervalSeconds) + '.'));
     return empty;
   }
 
@@ -1246,7 +1280,7 @@
     var dl = el('dl', 'facts');
     pairs.forEach(function (p) {
       dl.appendChild(el('dt', null, p[0]));
-      dl.appendChild(el('dd', null, p[1]));
+      dl.appendChild(factsValue(p));
     });
     return dl;
   }
@@ -1267,7 +1301,7 @@
     if (!list.length && !note) return null;
     var s = section('Needs attention');
     s.appendChild(warnLines(list));
-    if (note) s.appendChild(el('p', 'note', note));
+    if (note) s.appendChild(elRuns('p', 'note', note));
     return s;
   }
 
@@ -1285,7 +1319,7 @@
     }
     s.appendChild(factsBlock(pairs));
     var stale = staleNote(d.stats);
-    if (stale) s.appendChild(el('p', 'note', stale));
+    if (stale) s.appendChild(elRuns('p', 'note', stale));
     return s;
   }
 
@@ -1294,8 +1328,10 @@
     var s = section('Versions seen');
     var ul = el('ul', 'versions');
     d.version.history.slice().reverse().forEach(function (v) {
-      var li = el('li', null, v.version);
-      li.appendChild(el('span', 'muted', ' since ' + when(v.firstSeen)));
+      var li = el('li');
+      li.appendChild(el('span', 'num', v.version));
+      li.appendChild(el('span', 'muted', ' since '));
+      li.appendChild(el('span', 'muted num', when(v.firstSeen)));
       ul.appendChild(li);
     });
     s.appendChild(ul);
@@ -1310,7 +1346,7 @@
     var g = d.group;
     var names = {};
     d.members.forEach(function (m) { names[m.host] = m.name || m.host; });
-    if (g) s.appendChild(el('p', 'total', groupCoverage(g, names) + '.'));
+    if (g) s.appendChild(elRuns('p', 'total', groupCoverage(g, names) + '.'));
     var ul = el('ul', 'versions');
     d.members.forEach(function (m) {
       var li = el('li', null, m.name || m.host);
@@ -1319,7 +1355,7 @@
       if (!noVersion) facts.push(m.version ? 'runs ' + m.version : 'version unknown');
       if (m.uptimeSeconds !== null) facts.push('running ' + duration(m.uptimeSeconds));
       if (!m.hasHistory) facts.push('no stats URL so not in the graphs');
-      if (facts.length) li.appendChild(el('span', 'muted', ' ' + facts.join(', ')));
+      if (facts.length) li.appendChild(elRuns('span', 'muted', ' ' + facts.join(', ')));
       ul.appendChild(li);
     });
     s.appendChild(ul);
@@ -1367,7 +1403,7 @@
       li.appendChild(sw);
       li.appendChild(el('span', 'share-label', r.label));
       li.appendChild(el('b', null, texts ? texts[i] : num(r.count)));
-      li.appendChild(el('span', 'muted', r.percent + '%'));
+      li.appendChild(el('span', 'muted num', r.percent + '%'));
       ul.appendChild(li);
     });
     box.appendChild(ul);
@@ -1380,13 +1416,13 @@
     var g = d.group && d.group.data ? d.group.data.peersHeard : null;
     var cur = combined ? g : d.stats && d.stats.data ? d.stats.data.peersHeard : null;
     if (cur && !combined) {
-      s.appendChild(el('p', 'total', num(cur.total) + ' peers heard now'));
+      s.appendChild(elRuns('p', 'total', num(cur.total) + ' peers heard now'));
       s.appendChild(peerBreakdown(peerShares(cur), cur.total, width));
     } else if (cur) {
       var rows = peerRangeRows(cur);
-      s.appendChild(el('p', 'total', (cur.exact ? num(cur.union.total) + ' peers heard now (de-duplicated)' : peerRange(cur.max.total, cur.sum.total) + ' peers heard now')));
+      s.appendChild(elRuns('p', 'total', (cur.exact ? num(cur.union.total) + ' peers heard now (de-duplicated)' : peerRange(cur.max.total, cur.sum.total) + ' peers heard now')));
       s.appendChild(peerBreakdown(rows.map(function (r) { return { key: r.key, label: r.label, count: r.count, percent: r.percent }; }), cur.exact ? cur.union.total : cur.sum.total, width, rows.map(function (r) { return r.text; })));
-      s.appendChild(el('p', 'note', peerNote(cur) + (cur.exact ? ' The graph below is still a range: past values were not de-duplicated.' : ' The bar and percentages use the sum.')));
+      s.appendChild(elRuns('p', 'note', peerNote(cur) + (cur.exact ? ' The graph below is still a range: past values were not de-duplicated.' : ' The bar and percentages use the sum.')));
     } else {
       s.appendChild(el('p', 'note', combined ? 'No node of this group has reported stats.' : 'Stats unavailable.'));
     }
@@ -1457,7 +1493,7 @@
     var pairs = d.view === 'combined' ? groupPropagationPairs(d.group) : propagationPairs(d.stats && d.stats.data ? d.stats.data.propagation : null);
     if (pairs.length) facts.appendChild(factsBlock(pairs));
     if (d.view !== 'combined' && d.stats && d.stats.peerSummary) {
-      facts.appendChild(el('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
+      facts.appendChild(elRuns('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages unhandled by them).'));
     }
     out.push(facts);
     var p = ser.propagation;
@@ -1890,7 +1926,8 @@
     }
     var up = lastData.hosts.filter(function (h) { return h.status === 'up'; }).length;
     var banner = document.getElementById('banner-sub');
-    banner.replaceChildren(document.createTextNode(up + ' of ' + lastData.hosts.length + ' up. '));
+    banner.replaceChildren();
+    addRuns(banner, up + ' of ' + lastData.hosts.length + ' up. ');
     if (failed) {
       banner.appendChild(document.createTextNode('Showing data from '));
       banner.appendChild(agoTime(new Date(lastOk).toISOString()));
@@ -1985,7 +2022,7 @@
     var times = document.querySelectorAll('time[data-ago]');
     for (var i = 0; i < times.length; i++) {
       var text = ago(times[i].getAttribute('data-ago'));
-      if (times[i].textContent !== text) times[i].textContent = text;
+      if (times[i].textContent !== text) setAgo(times[i], text);
     }
   }
 
