@@ -95,7 +95,7 @@
   }
 
   // A small bar for the share of the disk in use: its fill and a text label.
-  function meter(usedPercent, label) {
+  function meter(usedPercent, label, level) {
     var m = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     m.setAttribute('class', 'meter');
     m.setAttribute('width', '70');
@@ -110,7 +110,7 @@
     bg.setAttribute('rx', '3');
     m.appendChild(bg);
     var fill = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    fill.setAttribute('class', 'meter-fill' + (usedPercent >= 90 ? ' full' : usedPercent >= 75 ? ' high' : ''));
+    fill.setAttribute('class', 'meter-fill' + (level === 'full' ? ' full' : level === 'high' ? ' high' : ''));
     fill.setAttribute('width', String((70 * usedPercent) / 100));
     fill.setAttribute('height', '8');
     fill.setAttribute('rx', '3');
@@ -129,6 +129,8 @@
       out.push(['Peers heard', num(d.peersHeard.total)]);
     }
     if (h.uptimePercent !== null && h.uptimePercent !== undefined) out.push(['Up', h.uptimePercent + '% over 24 h']);
+    // Without stats the connect time is all there would be to open, so it is said here.
+    if (!d && h.latencyMs !== null && h.latencyMs !== undefined) out.push(['Connect time', h.latencyMs + ' ms']);
     return out;
   }
 
@@ -149,6 +151,8 @@
     return st && st.stale && st.fetchedAt ? 'Stats from ' + ago(st.fetchedAt) + ' (last fetch failed)' : null;
   }
 
+  var UNHANDLED = 'Messages the node has received and not processed yet.';
+
   // Things worth a line in the collapsed row, as {kind, text}; nothing when all is well.
   // Disk uses the level the server worked out, so words and numbers agree.
   function warnings(h) {
@@ -157,18 +161,23 @@
     if (!st || !st.data || st.stale) return out;
     var d = st.data;
     if (d.disk && d.disk.usedPercent !== null && d.disk.usedPercent !== undefined) {
-      if (d.disk.level === 'full') out.push({ kind: 'full', text: 'Disk ' + d.disk.usedPercent + '% used, almost full' });
-      else if (d.disk.level === 'high') out.push({ kind: 'high', text: 'Disk ' + d.disk.usedPercent + '% used' });
+      // "about" unless the exact figures are published: the number is rounded to 5.
+      var disk = 'Disk ' + (known(d.disk.fsFreeBytes) ? '' : 'about ') + d.disk.usedPercent + '% used';
+      if (d.disk.level === 'full') out.push({ kind: 'full', text: disk + ', almost full' });
+      else if (d.disk.level === 'high') out.push({ kind: 'high', text: disk });
     }
     var p = d.propagation;
     if (p && known(p.peersAlive) && known(p.peersTotal) && p.peersTotal > 0 && p.peersAlive * 2 < p.peersTotal) {
       out.push({ kind: 'high', text: 'Peered ' + num(p.peersAlive) + '/' + num(p.peersTotal) + ' alive' });
     }
     if (p && known(p.unhandledMessages) && p.unhandledMessages > 0) {
-      out.push({ kind: 'high', text: 'Unhandled ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') });
+      out.push({ kind: 'high', title: UNHANDLED, text: 'Unhandled ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') });
     }
     return out;
   }
+
+  // Keeps a number and its unit on one line.
+  function nb(text) { return String(text).replace(/ /g, '\u00a0'); }
 
   // The facts of the expanded row, in three groups. A group with nothing in it is not drawn.
   function networkFacts(h) {
@@ -176,11 +185,11 @@
     var d = h.stats && h.stats.data;
     if (d) {
       out.push(['Interfaces', d.interfaces.online + '/' + d.interfaces.total + ' online']);
-      out.push(['Traffic since start', '↓ ' + bytes(d.interfaces.rxBytes) + ' ↑ ' + bytes(d.interfaces.txBytes)]);
+      out.push(['Traffic since start', 'In\u00a0' + nb(bytes(d.interfaces.rxBytes)) + ', out\u00a0' + nb(bytes(d.interfaces.txBytes))]);
       out.push(['Announces', num(d.announcesLastMinute) + '/min']);
       out.push(['Node running', duration(d.uptimeSeconds)]);
     }
-    if (h.latencyMs !== null && h.latencyMs !== undefined) out.push(['Connect', h.latencyMs + ' ms']);
+    if (d && h.latencyMs !== null && h.latencyMs !== undefined) out.push(['Connect time', h.latencyMs + ' ms']);
     return out;
   }
 
@@ -197,7 +206,7 @@
       out.push(['Stored', s]);
     }
     if (known(p.peersAlive) && known(p.peersTotal)) out.push(['Peered', num(p.peersAlive) + ' of ' + num(p.peersTotal) + ' alive']);
-    if (known(p.unhandledMessages)) out.push(['Unhandled', num(p.unhandledMessages)]);
+    if (known(p.unhandledMessages)) out.push(['Unhandled', num(p.unhandledMessages) + (p.unhandledMessages > 0 ? ' (not processed yet)' : '')]);
     return out;
   }
 
@@ -246,12 +255,12 @@
     if (d.lowestFree && d.lowestFree.node === d.worst.node) {
       return { kind: d.worst.level, text: 'Least disk free: ' + bytes(d.lowestFree.freeBytes) + ' of ' + bytes(d.lowestFree.totalBytes) + ' (' + d.lowestFree.percent + '%) on ' + who };
     }
-    return { kind: d.worst.level, text: 'Fullest disk: ' + who + ' ' + d.worst.usedPercent + '% used' + (d.worst.level === 'full' ? ', almost full' : '') };
+    return { kind: d.worst.level, text: 'Fullest disk: ' + who + ' about ' + d.worst.usedPercent + '% used' + (d.worst.level === 'full' ? ', almost full' : '') };
   }
 
   // ---- Rows: drawing ----
 
-  var lastHostsJson = '';
+  var rowCache = {};
   var allHosts = [];
   // Open rows, by host (and "#self" for the proxy's own numbers), kept across refreshes.
   var openRows = {};
@@ -267,6 +276,7 @@
     var box = el('div', 'warnings');
     list.forEach(function (w) {
       var p = el('p', 'warn ' + w.kind);
+      if (w.title) p.title = w.title;
       var g = glyph(w.kind);
       g.setAttribute('aria-hidden', 'true');
       p.appendChild(g);
@@ -306,7 +316,7 @@
     if (opts.group && d && !(h.group && h.group.countOwn)) {
       // The numbers of the proxy itself are in its own row below; keep only what is not repeated.
       d = null;
-      net = h.latencyMs !== null && h.latencyMs !== undefined ? [['Connect', h.latencyMs + ' ms']] : [];
+      net = h.latencyMs !== null && h.latencyMs !== undefined ? [['Connect time', h.latencyMs + ' ms']] : [];
     }
     parts.push(factsList('Network' + label, net));
     parts.push(factsList('Message store' + label, storeFacts(d && d.propagation)));
@@ -314,11 +324,12 @@
     var bar = null;
     if (known(used)) {
       bar = el('div', 'meter-wrap');
-      bar.appendChild(meter(used, 'Disk ' + used + '% in use'));
+      bar.appendChild(meter(used, (d.disk.fsFreeBytes === null || d.disk.fsFreeBytes === undefined ? 'About ' : '') + used + '% of the disk in use', d.disk.level));
     }
     parts.push(factsList('Disk' + label, diskFacts(d && d.disk), bar));
     parts.forEach(function (x) { if (x) body.appendChild(x); });
-    if (h.hasDetail) {
+    // The proxy's own row has no button of its own: the group's More has it.
+    if (h.hasDetail && !opts.itself) {
       var full = el('button', 'detail-btn', 'Full details');
       full.type = 'button';
       full.setAttribute('data-host', hostKey(h));
@@ -341,13 +352,18 @@
     body.id = id;
     var open = openRows[key] === true;
     body.hidden = !open;
-    var b = el('button', 'more-btn', open ? 'Less' : 'More');
+    var who = opts.itself ? displayName(h) + ' itself' : displayName(h);
+    var b = el('button', 'more-btn', 'More ');
+    var chev = el('span', 'chev', open ? '\u25B4' : '\u25BE');
+    chev.setAttribute('aria-hidden', 'true');
+    b.appendChild(chev);
     b.type = 'button';
+    // One name, "More about X": the state is in aria-expanded.
+    b.setAttribute('aria-label', 'More about ' + who);
     b.setAttribute('aria-expanded', open ? 'true' : 'false');
     b.setAttribute('aria-controls', id);
     b.setAttribute('data-host', key);
     b.setAttribute('data-role', 'more');
-    b.setAttribute('aria-label', (open ? 'Less' : 'More') + ' about ' + (opts.itself ? displayName(h) + ' itself' : displayName(h)));
     b.addEventListener('click', function () {
       var now = body.hidden;
       if (now && groupKeys) {
@@ -355,16 +371,13 @@
         groupKeys.forEach(function (k) { if (k !== key) openRows[k] = false; });
         var others = document.querySelectorAll('[data-group="' + groupKeys.groupId + '"] .more-btn');
         for (var i = 0; i < others.length; i++) {
-          if (others[i] !== b && others[i].getAttribute('aria-expanded') === 'true') {
-            others[i].click();
-          }
+          if (others[i] !== b && others[i].getAttribute('aria-expanded') === 'true') others[i].click();
         }
       }
       body.hidden = !now;
       openRows[key] = now;
       b.setAttribute('aria-expanded', now ? 'true' : 'false');
-      b.textContent = now ? 'Less' : 'More';
-      b.setAttribute('aria-label', (now ? 'Less' : 'More') + ' about ' + (opts.itself ? displayName(h) + ' itself' : displayName(h)));
+      chev.textContent = now ? '\u25B4' : '\u25BE';
     });
     return { button: b, body: body };
   }
@@ -418,7 +431,11 @@
     } else {
       var facts = opts.itself ? summaryFacts({ stats: st, uptimePercent: null }) : summaryFacts(h);
       var line = factsLine(facts);
-      if (!opts.itself) line.appendChild(stat('checked', agoTime(h.lastChecked)));
+      if (!opts.itself) {
+        var when = agoTime(h.lastChecked);
+        when.setAttribute('data-for', hostKey(h));
+        line.appendChild(stat('checked', when));
+      }
       li.appendChild(line);
     }
     if (st && !st.data) {
@@ -463,44 +480,50 @@
     head.appendChild(statusPill(h));
     li.appendChild(head);
 
+    var para = null;
     var names = {};
     allHosts.forEach(function (x) { names[hostKey(x)] = displayName(x); });
     var line = el('div', 'summary');
-    groupFacts(h, members).forEach(function (f, i) {
-      if (i) line.appendChild(document.createTextNode(' · '));
-      line.appendChild(document.createTextNode(f));
-    });
     var peers = g.data && g.data.peersHeard;
-    if (peers && peers.exact) {
-      line.appendChild(el('span', 'hint', ' (de-duplicated)'));
-    } else if (peers) {
-      var helpId = idOf('help', hostKey(h));
-      var help = el('button', 'help-btn', '?');
-      help.type = 'button';
-      help.setAttribute('aria-label', 'Why peers heard is a range');
-      help.setAttribute('aria-expanded', helpOpen[hostKey(h)] ? 'true' : 'false');
-      help.setAttribute('aria-controls', helpId);
-      help.setAttribute('aria-describedby', helpId);
-      help.setAttribute('data-host', hostKey(h));
-      help.setAttribute('data-role', 'help');
-      var para = el('p', 'note help-text', peerNote(peers));
-      para.id = helpId;
-      para.hidden = !helpOpen[hostKey(h)];
-      help.addEventListener('click', function () {
-        para.hidden = !para.hidden;
-        helpOpen[hostKey(h)] = !para.hidden;
-        help.setAttribute('aria-expanded', para.hidden ? 'false' : 'true');
-      });
-      line.appendChild(document.createTextNode(' '));
-      line.appendChild(help);
-      li.appendChild(line);
-      li.appendChild(para);
-    }
-    if (!li.contains(line)) li.appendChild(line);
+    groupFacts(h, members).forEach(function (f) {
+      var span = el('span', null, f);
+      line.appendChild(span);
+      // The explanation sits with the number it explains, on the same line.
+      if (peers && / peers heard$/.test(f)) {
+        if (peers.exact) {
+          span.appendChild(el('span', 'hint', ' (de-duplicated)'));
+        } else {
+          var helpId = idOf('help', hostKey(h));
+          var help = el('button', 'help-btn', '?');
+          help.type = 'button';
+          help.setAttribute('aria-label', 'Why peers heard is a range');
+          help.setAttribute('aria-expanded', helpOpen[hostKey(h)] ? 'true' : 'false');
+          help.setAttribute('aria-controls', helpId);
+          help.setAttribute('data-host', hostKey(h));
+          help.setAttribute('data-role', 'help');
+          para = el('p', 'note help-text', peerNote(peers));
+          para.id = helpId;
+          para.hidden = !helpOpen[hostKey(h)];
+          help.addEventListener('click', function () {
+            para.hidden = !para.hidden;
+            helpOpen[hostKey(h)] = !para.hidden;
+            help.setAttribute('aria-expanded', para.hidden ? 'false' : 'true');
+          });
+          span.appendChild(document.createTextNode(' '));
+          span.appendChild(help);
+        }
+      }
+    });
+    li.appendChild(line);
+    if (para) li.appendChild(para);
 
     var warn = [];
     var gw = groupWarning(g, names);
-    if (gw) warn.push(gw);
+    // When the fullest disk is in a row below that already says so, once is enough.
+    var shown = gw && members.some(function (m) {
+      return hostKey(m) === g.data.disk.worst.node && warnings(m).some(function (w) { return w.text.indexOf('Disk') === 0; });
+    });
+    if (gw && !shown) warn.push(gw);
     if (warn.length) li.appendChild(warnLines(warn));
     var pn = partialNote(g, names);
     if (pn) {
@@ -662,7 +685,7 @@
 
   // "3 to 9" for a lower and an upper bound; one number when they agree.
   function peerRange(low, high) {
-    return low === high ? num(low) : num(low) + '–' + num(high);
+    return low === high ? num(low) : num(low) + '\u00a0to\u00a0' + num(high);
   }
 
   // How many members reported, and which did not.
@@ -1151,18 +1174,9 @@
   var detailRange = '24h';
   var detailData = null;
   var detailSeq = 0;
+  var detailKey = '';
   var detailTimer = null;
   var resizeTimer = null;
-
-  function detailButton(h) {
-    var key = h.host + ':' + h.port;
-    var b = el('button', 'detail-btn', 'Details');
-    b.type = 'button';
-    b.setAttribute('data-host', key);
-    b.setAttribute('aria-label', 'Details for ' + key);
-    b.addEventListener('click', function () { openDetail(key); });
-    return b;
-  }
 
   function section(title) {
     var s = el('section', 'detail-section');
@@ -1494,12 +1508,14 @@
       else if (detailTab === 'storage') parts = parts.concat(storageTab(d, ser, width, collecting));
       else if (detailTab === 'disk') parts = parts.concat(diskTab(d, ser, width, collecting));
     }
-    var active = document.activeElement;
-    var refocus = inPlace && active && body.contains(active) && active.className === 'toggle-btn';
+    // The redraw replaces the charts: remember which focusable thing had the focus.
+    var stops = body.querySelectorAll('[tabindex="0"], button');
+    var at = -1;
+    for (var i = 0; i < stops.length; i++) if (stops[i] === document.activeElement) at = i;
     body.replaceChildren.apply(body, parts);
-    if (refocus) {
-      var again = body.querySelector('.toggle-btn');
-      if (again) again.focus();
+    if (at >= 0) {
+      var again = body.querySelectorAll('[tabindex="0"], button');
+      if (again[at]) again[at].focus();
     }
   }
 
@@ -1515,6 +1531,7 @@
     var seq = ++detailSeq;
     if (showLoading) {
       detailData = null;
+      detailKey = '';
       var wait = el('p', 'note', 'Loading...');
       wait.setAttribute('role', 'status');
       body.replaceChildren(wait);
@@ -1528,8 +1545,12 @@
       })
       .then(function (data) {
         if (seq !== detailSeq) return;
+        // The same numbers again (only the time of the answer differs): leave the page as it is.
+        var key = JSON.stringify(data, function (k, v) { return k === 'generatedAt' ? undefined : v; });
+        var same = detailData !== null && key === detailKey;
+        detailKey = key;
         detailData = data;
-        renderDetail();
+        if (!same) renderDetail();
       })
       .catch(function () {
         if (seq !== detailSeq || detailData) return;
@@ -1601,23 +1622,34 @@
     dlg.addEventListener('close', function () {
       clearInterval(detailTimer);
       detailSeq++;
-      // The list is rebuilt on every refresh, so find the button again.
-      var buttons = document.querySelectorAll('.detail-btn');
+      // The row may have been rebuilt: find its button again, among the visible ones.
+      var buttons = document.querySelectorAll('.detail-btn, .more-btn');
       for (var i = 0; i < buttons.length; i++) {
-        if (buttons[i].getAttribute('data-host') === detailHost) {
-          buttons[i].focus();
+        var b = buttons[i];
+        if (b.getAttribute('data-host') === detailHost && b.offsetParent !== null && b.getAttribute('data-role') === 'details') {
+          b.focus();
           return;
         }
       }
-      // The row was closed meanwhile: its More button is the next best place.
-      var more = document.querySelectorAll('.more-btn');
-      for (var j = 0; j < more.length; j++) if (more[j].getAttribute('data-host') === detailHost) { more[j].focus(); return; }
+      for (var j = 0; j < buttons.length; j++) {
+        if (buttons[j].getAttribute('data-host') === detailHost && buttons[j].offsetParent !== null) { buttons[j].focus(); return; }
+      }
     });
     document.getElementById('detail-view').addEventListener('change', function (e) {
       detailChoice = e.target.value;
       detailTab = 'overview';
       loadDetail(true);
     });
+    // On a phone the view and range scroll with the page; the header keeps only what is needed to move.
+    var controls = dlg.querySelector('.detail-controls');
+    var top = dlg.querySelector('.detail-top');
+    var phone = window.matchMedia ? window.matchMedia('(max-width: 600px)') : null;
+    function place() {
+      if (phone && phone.matches) dlg.insertBefore(controls, document.getElementById('detail-body'));
+      else top.insertBefore(controls, document.getElementById('detail-tabs'));
+    }
+    place();
+    if (phone && phone.addEventListener) phone.addEventListener('change', place);
     document.getElementById('detail-section').addEventListener('change', function (e) { selectTab(e.target.value, false); });
     document.getElementById('detail-range').addEventListener('click', function (e) {
       var r = e.target && e.target.getAttribute && e.target.getAttribute('data-range');
@@ -1671,18 +1703,49 @@
     document.getElementById('banner').className = 'banner ' + data.overall;
     setText('banner-title', TITLE[data.overall] || TITLE.unknown);
     sub();
+    // The spoken version changes only when the verdict or the count does.
+    var upNow = data.hosts.filter(function (h) { return h.status === 'up'; }).length;
+    setText('banner-live', (TITLE[data.overall] || TITLE.unknown) + '. ' + upNow + ' of ' + data.hosts.length + ' up.');
     var list = document.getElementById('hosts');
-    var json = JSON.stringify(data.hosts);
-    if (json !== lastHostsJson) {
-      lastHostsJson = json;
-      allHosts = data.hosts;
-      // Keep the keyboard focus on the same button across the rebuild.
-      var active = document.activeElement;
-      var fHost = active && list.contains(active) ? active.getAttribute('data-host') : null;
-      var fRole = fHost ? active.getAttribute('data-role') : null;
-      list.replaceChildren.apply(list, groupHosts(data.hosts).map(function (g) {
-        return g.h.group ? groupCard(g.h, g.members) : hostItem(g.h, {});
-      }));
+    allHosts = data.hosts;
+    // Keep the keyboard focus on the same button if its row is rebuilt.
+    var active = document.activeElement;
+    var fHost = active && list.contains(active) ? active.getAttribute('data-host') : null;
+    var fRole = fHost ? active.getAttribute('data-role') : null;
+    var next = {};
+    var items = groupHosts(data.hosts).map(function (g) {
+      var key = hostKey(g.h);
+      // A row whose data did not change is left alone, with its open state and focus.
+      var sig = JSON.stringify([g.h, g.members], function (k, v) {
+        if (k === 'lastChecked') return undefined;
+        if (k === 'fetchedAt' && !(this && this.stale)) return undefined;
+        return v;
+      });
+      var old = rowCache[key];
+      if (old && old.sig === sig && old.li.parentNode === list) {
+        next[key] = old;
+        [g.h].concat(g.members).forEach(function (m) {
+          var t = old.li.querySelector('time[data-for="' + hostKey(m) + '"]');
+          if (t && m.lastChecked) {
+            t.setAttribute('data-ago', m.lastChecked);
+            t.setAttribute('datetime', m.lastChecked);
+          }
+        });
+        return old.li;
+      }
+      var li = g.h.group ? groupCard(g.h, g.members) : hostItem(g.h, {});
+      next[key] = { sig: sig, li: li };
+      return li;
+    });
+    rowCache = next;
+    var same = items.length === list.children.length && items.every(function (li, i) { return list.children[i] === li; });
+    if (!same) {
+      if (items.length === list.children.length) {
+        // Only the rows that changed are swapped.
+        for (var n = 0; n < items.length; n++) if (list.children[n] !== items[n]) list.children[n].replaceWith(items[n]);
+      } else {
+        list.replaceChildren.apply(list, items);
+      }
       if (fHost && fRole) {
         var btns = list.querySelectorAll('button[data-role="' + fRole + '"]');
         for (var i = 0; i < btns.length; i++) {
@@ -1690,6 +1753,7 @@
         }
       }
     }
+    tick();
     if (data.hosts.length > 0) list.setAttribute('aria-label', 'Entry points');
     else list.removeAttribute('aria-label');
   }
@@ -1697,11 +1761,13 @@
   function fail() {
     failed = true;
     if (lastData) {
-      // Keep the old numbers, dimmed, and say how old they are.
+      // Keep the old numbers and say how old they are.
       document.body.classList.add('stale');
+      setText('banner-live', 'Could not reach the status service. Showing older data.');
     } else {
       document.getElementById('banner').className = 'banner unknown';
       setText('banner-title', 'Status unavailable');
+      setText('banner-live', 'Status unavailable. Could not reach the status service.');
     }
     sub();
   }

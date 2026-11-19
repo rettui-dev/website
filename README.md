@@ -267,7 +267,7 @@ Privacy and limits:
 - A node with a `name` shows it, with the address beside it; a node without one shows its
   address as the name. Only proxies have a badge ("Proxy").
 - A proxy and the nodes behind it are one card: `Front door [Proxy] passes visitors to 3
-  nodes`, then one line (`3 of 3 nodes up · 34 clients · 1,300-3,300 peers heard · 33
+  nodes`, then one line (`3 of 3 nodes up · 34 clients · 1,300 to 3,300 peers heard · 33
   announces/min`). Peers heard is a range, and the "?" button explains why; when every node
   sent its peer list the number is exact and marked "de-duplicated". Nodes that did not report
   are named in a warning line. The nodes are nested in the card, and one can be open at a time.

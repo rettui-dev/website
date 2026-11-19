@@ -27,12 +27,13 @@
 </header>
 <main class="wrap">
   <div id="banner" class="banner unknown">
-    <h1 id="banner-title" role="status" aria-live="polite">Checking...</h1>
+    <h1 id="banner-title">Checking...</h1>
     <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
+    <p id="banner-live" class="sr-only" role="status"></p>
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
-  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. Open a row for more, or Full details for graphs.</p>
+  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. Use More on a row for details, or Full details for graphs.</p>
   <dialog id="detail" class="detail" aria-labelledby="detail-title">
     <div class="detail-top">
       <div class="detail-head">
@@ -56,7 +57,7 @@
         <select id="detail-section"></select>
       </div>
     </div>
-    <div id="detail-body" class="detail-body" role="tabpanel" tabindex="-1"></div>
+    <div id="detail-body" class="detail-body" role="tabpanel" tabindex="0"></div>
   </dialog>
 </main>
 <footer>

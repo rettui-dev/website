@@ -229,7 +229,9 @@ test('summaryFacts is at most four short facts and leaves out the unknown', () =
   assert.deepEqual([...summaryFacts(R())].map((f) => [...f]), [['Clients', '23'], ['Peers heard', '1,300'], ['Up', '100% over 24 h']]);
   const noClients = R({ uptimePercent: null, stats: { data: D({ interfaces: { total: 1, online: 1, clients: null, rxBytes: 0, txBytes: 0 } }) } });
   assert.deepEqual([...summaryFacts(noClients)].map((f) => [...f]), [['Peers heard', '1,300']]);
-  assert.equal(summaryFacts(R({ stats: null, uptimePercent: null })).length, 0);
+  // Without stats the connect time is in the line, as there is nothing else to open.
+  assert.deepEqual([...summaryFacts(R({ stats: null, uptimePercent: null }))].map((f) => [...f]), [['Connect time', '12 ms']]);
+  assert.equal(summaryFacts(R({ stats: null, uptimePercent: null, latencyMs: null })).length, 0);
 });
 
 test('warnings say nothing when all is well and name the level when not', () => {
@@ -237,13 +239,15 @@ test('warnings say nothing when all is well and name the level when not', () => 
   assert.equal(warnings(R({ stats: null })).length, 0);
   const w = (disk, propagation, stale = false) => [...warnings(R({ stats: { stale, data: D({ disk, propagation }) } }))].map((x) => ({ ...x }));
   assert.deepEqual(w({ level: 'ok', usedPercent: 50 }, null), []);
-  assert.deepEqual(w({ level: 'high', usedPercent: 85 }, null), [{ kind: 'high', text: 'Disk 85% used' }]);
-  assert.deepEqual(w({ level: 'full', usedPercent: 95 }, null), [{ kind: 'full', text: 'Disk 95% used, almost full' }]);
+  assert.deepEqual(w({ level: 'high', usedPercent: 85 }, null), [{ kind: 'high', text: 'Disk about 85% used' }]);
+  assert.deepEqual(w({ level: 'full', usedPercent: 95 }, null), [{ kind: 'full', text: 'Disk about 95% used, almost full' }]);
   // Exactly half alive is fine; fewer is not.
   assert.deepEqual(w(null, { peersAlive: 4, peersTotal: 8, unhandledMessages: 0 }), []);
   assert.deepEqual(w(null, { peersAlive: 3, peersTotal: 8, unhandledMessages: 0 }), [{ kind: 'high', text: 'Peered 3/8 alive' }]);
-  assert.deepEqual(w(null, { peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', text: 'Unhandled 1 message' }]);
-  assert.deepEqual(w(null, { unhandledMessages: 28 }), [{ kind: 'high', text: 'Unhandled 28 messages' }]);
+  assert.deepEqual(w(null, { peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', title: 'Messages the node has received and not processed yet.', text: 'Unhandled 1 message' }]);
+  assert.deepEqual(w(null, { unhandledMessages: 28 }), [{ kind: 'high', title: 'Messages the node has received and not processed yet.', text: 'Unhandled 28 messages' }]);
+  // Exact figures need no "about".
+  assert.deepEqual(w({ level: 'high', usedPercent: 81, fsFreeBytes: 19, fsTotalBytes: 100 }, null), [{ kind: 'high', text: 'Disk 81% used' }]);
   // Old numbers are not warned about.
   assert.deepEqual(w({ level: 'full', usedPercent: 95 }, null, true), []);
 });
@@ -261,11 +265,14 @@ test('downText, staleNote and lastUp', () => {
 
 test('networkFacts, storeFacts and diskFacts leave out what is not known', () => {
   const n = [...networkFacts(R())].map((f) => [...f]);
-  assert.deepEqual(n.map((f) => f[0]), ['Interfaces', 'Traffic since start', 'Announces', 'Node running', 'Connect']);
+  assert.deepEqual(n.map((f) => f[0]), ['Interfaces', 'Traffic since start', 'Announces', 'Node running', 'Connect time']);
   assert.deepEqual([...networkFacts(R({ stats: null, latencyMs: null }))], []);
+  // The number and its unit never part at a line break.
+  assert.equal(n[1][1], 'In\u00a02\u00a0KiB, out\u00a010\u00a0B');
+  assert.deepEqual([...networkFacts(R({ stats: null }))], []);
   assert.deepEqual([...storeFacts(null)], []);
   assert.deepEqual([...storeFacts(PROP)].map((f) => [...f]), [
-    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Unhandled', '7'],
+    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Unhandled', '7 (not processed yet)'],
   ]);
   assert.deepEqual([...diskFacts(null)], []);
   assert.deepEqual([...diskFacts({ usedPercent: 85, level: 'high' })].map((f) => [...f]), [['Disk', 'about 85% used']]);
@@ -277,13 +284,13 @@ test('groupFacts, partialNote and groupWarning', () => {
   const ms = [R(), R({ host: 'm.test', status: 'down' })];
   const g = { nodes: 2, reporting: 1, partial: true, missing: ['m.test:4242'], data: { interfaces: { clients: 34 }, announcesLastMinute: 33,
     peersHeard: { exact: false, sum: { total: 3300 }, max: { total: 1300 } }, disk: { worst: { level: 'high', usedPercent: 80, node: 'm.test:4242' }, lowestFree: null } } };
-  assert.deepEqual([...groupFacts({ group: g }, ms)], ['1 of 2 nodes up', '34 clients', '1,300\u20133,300 peers heard', '33 announces/min']);
+  assert.deepEqual([...groupFacts({ group: g }, ms)], ['1 of 2 nodes up', '34 clients', '1,300\u00a0to\u00a03,300 peers heard', '33 announces/min']);
   g.data.peersHeard = { exact: true, union: { total: 2000 } };
   assert.equal(groupFacts({ group: g }, ms)[2], '2,000 peers heard');
   assert.deepEqual([...groupFacts({ group: null }, ms)], ['1 of 2 nodes up']);
   assert.equal(partialNote(g, { 'm.test:4242': 'Mine' }), '1 of 2 nodes reporting. Not reporting: Mine');
   assert.equal(partialNote({ partial: false }, {}), null);
-  assert.deepEqual({ ...groupWarning(g, { 'm.test:4242': 'Mine' }) }, { kind: 'high', text: 'Fullest disk: Mine 80% used' });
+  assert.deepEqual({ ...groupWarning(g, { 'm.test:4242': 'Mine' }) }, { kind: 'high', text: 'Fullest disk: Mine about 80% used' });
   g.data.disk.worst.level = 'ok';
   assert.equal(groupWarning(g, {}), null);
   assert.equal(groupWarning(null, {}), null);
@@ -301,21 +308,21 @@ test('groupHosts nests members under their proxy, in the proxy order', () => {
 
 test('peerRange, groupCoverage and groupPairs', () => {
   assert.equal(peerRange(5, 5), '5');
-  assert.equal(peerRange(1200, 3400), '1,200\u20133,400');
+  assert.equal(peerRange(1200, 3400), '1,200\u00a0to\u00a03,400');
   assert.equal(groupCoverage({ reporting: 3, nodes: 3, partial: false, missing: [] }), '3 of 3 nodes reporting');
   assert.equal(groupCoverage({ reporting: 1, nodes: 3, partial: true, missing: ['a:1', 'b:1'] }, { 'a:1': 'Alpha' }), '1 of 3 nodes reporting (not: Alpha, b:1)');
   assert.equal(groupPairs(null).length, 0);
   assert.equal(groupPairs({ data: null }).length, 0);
   const g = { data: { interfaces: { total: 5, online: 4, clients: 15, rxBytes: 2048, txBytes: 10 }, announcesLastMinute: 12, peersHeard: { sum: { total: 350 }, max: { total: 250 } } } };
   const pairs = [...groupPairs(g)].map((p) => [...p]);
-  assert.deepEqual(pairs, [['Clients', '15'], ['Interfaces', '4/5 online'], ['Traffic', '\u2193 2 KiB \u2191 10 B'], ['Peers heard', '250\u2013350'], ['Announces', '12/min']]);
+  assert.deepEqual(pairs, [['Clients', '15'], ['Interfaces', '4/5 online'], ['Traffic', '\u2193 2 KiB \u2191 10 B'], ['Peers heard', '250\u00a0to\u00a0350'], ['Announces', '12/min']]);
   g.data.interfaces.clients = null;
   assert.equal(groupPairs(g).some((p) => p[0] === 'Clients'), false);
 });
 
 test('peerRangeRows give ranges per kind and the rest as Other', () => {
   const rows = [...peerRangeRows({ sum: { total: 100, lxmf: 60, nomad: 30, propagation: 5 }, max: { total: 70, lxmf: 40, nomad: 30, propagation: 5 } })].map((r) => ({ ...r }));
-  assert.deepEqual(rows.map((r) => [r.label, r.text, r.count, r.percent]), [['LXMF', '40\u201360', 60, 60], ['NomadNet', '30', 30, 30], ['Propagation', '5', 5, 5], ['Other', '5', 5, 5]]);
+  assert.deepEqual(rows.map((r) => [r.label, r.text, r.count, r.percent]), [['LXMF', '40\u00a0to\u00a060', 60, 60], ['NomadNet', '30', 30, 30], ['Propagation', '5', 5, 5], ['Other', '5', 5, 5]]);
   const zero = [...peerRangeRows({ sum: { total: 0, lxmf: 0, nomad: 0, propagation: 0 }, max: { total: 0, lxmf: 0, nomad: 0, propagation: 0 } })];
   assert.equal(zero.length, 3);
   assert.ok(zero.every((r) => r.percent === 0));
