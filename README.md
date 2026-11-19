@@ -77,13 +77,13 @@ unavailable". The production values are:
 On the same 30 second cycle as the probes, the server fetches each URL (5 second
 timeout, at most 64 KiB, redirects are not followed). Each failure is independent and
 never affects the up or down check. The answer is checked and rebuilt in a fixed shape:
-numbers are clamped to whole non-negative numbers, text and lists are cut to length and
-unknown keys are dropped; anything that does not fit counts as unavailable. The last good
+numbers are clamped to whole non-negative numbers, text is cut to length and
+unknown keys are dropped (the per-interface list is not kept, only the totals); anything that does not fit counts as unavailable. The last good
 stats are kept in memory and marked stale after three missed cycles. They are not saved
 to `history.json`. `/api/status` has a `stats` field on each host: `null` when no URL is
 set, else `{ok, fetchedAt, stale, error?, data?}`.
 
-Security: a node exposes only aggregate numbers (no peer or identity details), and the
+Security: use `https` URLs. Plain `http` is accepted only for loopback and private addresses (`localhost`, `127/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`). URLs cannot carry a user name or password, and start-up errors never print the URL. A node exposes only aggregate numbers (no peer or identity details), and the
 website fetches only the URLs set by the operator in `STATS_URLS`, never anything a
 visitor sends. What a node answers is treated as untrusted and is shown as text only.
 

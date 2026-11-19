@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseStatsUrls, sanitizeStats, fetchStats, MAX_INTERFACES } from '../lib/stats.js';
+import { parseStatsUrls, sanitizeStats, fetchStats } from '../lib/stats.js';
 import { Monitor, PROBE_INTERVAL_MS } from '../lib/monitor.js';
 
 const targets = [
@@ -41,6 +41,18 @@ test('parseStatsUrls accepts pairs for monitored hosts', () => {
   assert.equal(m.get('b.test:4242'), 'http://127.0.0.1:9/s.json');
 });
 
+test('parseStatsUrls allows plain http only for loopback and private hosts', () => {
+  for (const h of ['localhost', '127.0.0.1', '127.9.9.9', '10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.1.1', '[::1]']) {
+    assert.equal(parseStatsUrls(`a.test:4242=http://${h}:8/s`, targets).size, 1, h);
+  }
+});
+
+test('parseStatsUrls errors never repeat the URL', () => {
+  for (const bad of ['a.test:4242=https://user:SECRET@a.test/s', 'a.test:4242=http://a.test/s?token=SECRET', 'https://x.test/?t=SECRET', 'zzz.test:1=https://a.test/?t=SECRET', 'a.test:4242=ftp://a.test/?t=SECRET']) {
+    assert.throws(() => parseStatsUrls(bad, targets), (e) => !e.message.includes('SECRET'), bad);
+  }
+});
+
 test('parseStatsUrls rejects bad input', () => {
   for (const bad of [
     'a.test:4242',
@@ -54,6 +66,10 @@ test('parseStatsUrls rejects bad input', () => {
     'other.test:4242=https://a.test/s',
     'a.test:1=https://a.test/s',
     'a.test:4242=https://a.test/s,a.test:4242=https://a.test/t',
+    'a.test:4242=http://a.test/s',
+    'a.test:4242=http://8.8.8.8/s',
+    'a.test:4242=http://172.32.0.1/s',
+    'a.test:4242=http://10.0.0.1.evil.test/s',
   ]) {
     assert.throws(() => parseStatsUrls(bad, targets), Error, bad);
   }
@@ -71,41 +87,34 @@ test('sanitizeStats gives the fixed shape', () => {
       clients: 17,
       rxBytes: 123,
       txBytes: 456,
-      list: [{ name: 'TCP Server', online: true, clients: null, rxBytes: 1, txBytes: 2 }],
     },
     peersHeard: { total: 100, lxmf: 60, nomad: 30, propagation: 10 },
     announcesLastMinute: 12,
   });
 });
 
-test('sanitizeStats clamps numbers and caps strings and lists', () => {
+test('sanitizeStats clamps numbers and caps strings', () => {
   const p = good();
   p.uptime_seconds = 1e300;
   p.announces_last_minute = -5;
   p.peers_heard.total = 12.9;
   p.interfaces.clients = undefined;
   p.rettui_version = 'v'.repeat(500) + '\u0000\u001b';
-  p.interfaces.list = Array.from({ length: 500 }, () => ({ name: '<img src=x onerror=1>\n' + 'n'.repeat(500), online: 'yes', rx_bytes: 1, tx_bytes: 2 }));
   const d = sanitizeStats(p);
   assert.equal(d.uptimeSeconds, Number.MAX_SAFE_INTEGER);
   assert.equal(d.announcesLastMinute, 0);
   assert.equal(d.peersHeard.total, 12);
   assert.equal(d.interfaces.clients, null);
   assert.equal(d.rettuiVersion.length, 32);
-  assert.equal(d.interfaces.list.length, MAX_INTERFACES);
-  assert.ok(d.interfaces.list[0].name.length <= 64);
-  assert.ok(!d.interfaces.list[0].name.includes('\n'));
-  assert.equal(d.interfaces.list[0].online, false);
 });
 
 test('sanitizeStats drops unknown keys', () => {
   const p = { ...good(), extra: 1, __proto__: { x: 1 } };
   p.interfaces.secret = 'x';
-  p.interfaces.list[0].token = 'x';
   const d = sanitizeStats(p);
   assert.deepEqual(Object.keys(d).sort(), ['announcesLastMinute', 'generatedAt', 'interfaces', 'peersHeard', 'rettuiVersion', 'uptimeSeconds']);
   assert.ok(!('secret' in d.interfaces));
-  assert.ok(!('token' in d.interfaces.list[0]));
+  assert.ok(!('list' in d.interfaces));
 });
 
 test('sanitizeStats rejects hostile payloads', () => {
@@ -118,8 +127,6 @@ test('sanitizeStats rejects hostile payloads', () => {
     'null number': { ...good(), uptime_seconds: null },
     'missing interfaces': { ...good(), interfaces: undefined },
     'interfaces array': { ...good(), interfaces: [] },
-    'list not array': { ...good(), interfaces: { ...good().interfaces, list: {} } },
-    'list entry not object': { ...good(), interfaces: { ...good().interfaces, list: [1] } },
     'bad clients type': { ...good(), interfaces: { ...good().interfaces, clients: 'many' } },
     'missing peers': { ...good(), peers_heard: undefined },
   };
@@ -196,7 +203,7 @@ test('monitor: no stats URLs means stats is null and nothing is fetched', async 
 });
 
 test('monitor: stats are per host, and failures stay independent', async () => {
-  const statsUrls = parseStatsUrls('a.test:4242=http://a.test/s', targets);
+  const statsUrls = parseStatsUrls('a.test:4242=https://a.test/s', targets);
   let ok = true;
   let t = 1_000_000;
   const m = new Monitor({
@@ -239,7 +246,7 @@ test('monitor: stats that never worked have no data, and a throwing fetch is con
     targets,
     dataDir: await tmp(),
     probeFn: up,
-    statsUrls: parseStatsUrls('a.test:4242=http://a.test/s', targets),
+    statsUrls: parseStatsUrls('a.test:4242=https://a.test/s', targets),
     statsFn: async () => {
       throw new Error('boom');
     },
@@ -258,7 +265,7 @@ test('monitor: stats are never saved to history.json', async () => {
     targets,
     dataDir: dir,
     probeFn: up,
-    statsUrls: parseStatsUrls('a.test:4242=http://a.test/s', targets),
+    statsUrls: parseStatsUrls('a.test:4242=https://a.test/s', targets),
     statsFn: async () => ({ ok: true, data: sanitizeStats(good()) }),
   });
   await m.checkAll();

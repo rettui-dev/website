@@ -154,7 +154,7 @@ test('/api/status carries the stats of a configured host', async () => {
     targets: [{ host: 'a.test', port: 4242 }],
     dataDir,
     probeFn: async () => ({ up: true, ms: 9 }),
-    statsUrls: new Map([['a.test:4242', 'http://a.test/stats.json']]),
+    statsUrls: new Map([['a.test:4242', 'https://a.test/stats.json']]),
     statsFn: async () => ({ ok: false, error: 'http 503' }),
   });
   await monitor.checkAll();
