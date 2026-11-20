@@ -45,6 +45,8 @@ their node stats.
   (`null` if nobody), and `mustChangePassword: true` while their password is one an admin set.
   The Sign in button on every page asks it. GET and HEAD only, never cached.
 - `/users` and `/api/users` are the Users page and its API, for admins only (see "Managing users").
+- `/manage` and `/api/manage` are the Manage page and its API, for the `manage` and `admin` roles
+  only, to change a few settings of rettui nodes and restart their Reticulum (see "Managing nodes").
 
 ## Join page
 
@@ -116,7 +118,9 @@ themes, touch targets of 24 pixels or more (40 on phones), no sideways scrolling
 200% zoom, and no animation when the system asks for less motion. With no saved choice the theme
 follows the system (`prefers-color-scheme`), also when it changes while the page is open; the theme
 button saves a choice. `test/a11y.test.js` checks the files for these and the theme colours for
-contrast; it is not a replacement for running axe in a browser.
+contrast; it is not a replacement for running axe in a browser. The Account, Users and Manage pages
+are built the same way and are in those file checks too; run axe on `/manage` (signed in as a
+`manage` user, with a node set up) before a release that changes it.
 
 ## Link previews (Open Graph)
 
@@ -1137,7 +1141,8 @@ or the two-step sign-in of an **admin** is refused and written as `admin-reset-r
 to give another admin a lower role is refused and written as `admin-demote-refused`, and a try to
 delete another admin as `admin-delete-refused`, both with the `actor` and the `target` admin; see
 "Managing users". Each line has the time, the user and the address. No password, secret, code or
-device id is ever in it. `device-added` is only written for a user's first new browser in 24
+device id is ever in it. Changes asked of a node on the Manage page add `manage-settings`,
+`manage-restart` and `manage-rollback` (see "Managing nodes"). `device-added` is only written for a user's first new browser in 24
 hours, or when the new browser pushes out a known device older than that (`pushedOut`: how
 many); the other new browsers are summed up in `failures.log`, so that an account signing in from
 new browsers over and over cannot push the other events out of `audit.log`.
@@ -1470,6 +1475,130 @@ without two-step sign-in and without known devices, and must set it up again on 
 page. The old record stays, unused (the command line mentions it), and would be used again only
 if the name went back into the config file; reset it there first (`reset-2fa` with `--config`)
 if you want it gone.
+
+## Managing nodes
+
+Users with the role `manage` or `admin` can change a few settings of a rettui node, and restart its
+Reticulum, on the **Manage** page, `/manage`. The Account page shows a "Manage nodes" link to them.
+For everyone else (signed out, `viewer`, or someone who still has to change a password an admin
+set) `/manage` answers 404 and `/api/manage` 401 or 403, and every way of writing the page's address
+(`/manage.html`, `/manage.html/`, `/%6Danage.html`, other cases) goes through the same check.
+
+This works only with nodes started as `rettui node` with a management listener (see below). The
+node decides what can be changed: the page shows the settings it lists, and nothing else. Keys,
+identities, interfaces, programs the node runs and the Reticulum config are not among them.
+
+**What the page shows.** A list to pick the node; then, for that node:
+
+- a status line: the rettui version, whether Reticulum is running and how many interfaces are
+  online, and whether the node's clock agrees with the website's. From one minute off it says
+  "This node's clock is N minutes off from the website's, so signed requests can't be trusted; fix
+  the node's time." From five minutes off the node refuses every request with the same words.
+- the settings form, grouped, with the help text of each setting and its current value. **Save
+  changes** sends only the settings you changed. If someone changed the settings meanwhile (in
+  the terminal, or another user), the node refuses, the page loads the form again and says so.
+- services the website may only turn off (propagation node, node, hub, Git host and its pages):
+  a **Turn off** button, greyed out while the service is off, with "Turn on in the terminal on
+  the node". The website can never turn a service on.
+- **Restart Reticulum**: the node restarts its network (on a shared `rnsd` it only reconnects).
+  The page then asks the node every 3 seconds, for up to 2 minutes, whether every interface that
+  was online is online again, and says how it went. The node allows one restart every 5 minutes.
+- the last settings change, with a **Roll back** button. A roll back sets the values back through
+  the same rules, so it cannot turn a service back on; the node refuses one when a setting of it was
+  changed again since.
+- the node's own list of changes, newest first, with who made them, the old and new values and how
+  it went; **Older entries** loads more.
+
+Everything a node sends is shown as text. On a phone the list of changes becomes one card per
+change, and every control can be reached with the keyboard.
+
+**Set it up.**
+
+1. Make a secret for each node, 32 to 256 printable characters without spaces, quotes or
+   backslashes, in a file only the owner can read:
+
+       openssl rand -hex 32 > secrets/hilltop.manage && chmod 600 secrets/hilltop.manage
+
+2. Give the node the same file and a listen address on a private network (loopback, 10/8,
+   172.16/12, 192.168/16, 100.64/10, fc00::/7 or fe80::/10; the node refuses a public address):
+
+       rettui node --manage-listen 10.200.0.2:8750 --manage-secret-file /path/to/hilltop.manage ...
+
+   In the rettui Docker image, set `MANAGE_LISTEN=10.200.0.2:8750` and
+   `MANAGE_SECRET_FILE=/run/secrets/hilltop.manage` (they only work with the `node` command).
+
+3. Add the listener to the node in the website's config file, and restart the website:
+
+       nodes:
+         - address: hilltop.example.org:4242
+           name: Hilltop
+           manage_url: http://10.200.0.2:8750
+           manage_secret_file: secrets/hilltop.manage
+           # manage_confirm_seconds: 300
+
+4. Give the people who manage nodes the role `manage` (on the Users page), and have them turn on
+   two-step sign-in on their Account page.
+
+The config keys, in the config file only (there are no variables for them):
+
+- `manage_url`: the address of the node's listener, an origin only (`http://host:port`, no path,
+  query or fragment). Plain `http` is allowed for loopback and private addresses only, as for
+  `stats_url`.
+- `manage_secret_file`: the file with the node's secret, relative to the config file. Each node
+  needs its own secret: two nodes with the same one stop the server at start, and so does a secret
+  that is also a stats token (of any node). `manage_url` without a secret file, or the reverse,
+  stops it too.
+- `manage_confirm_seconds`: 60 to 900, default 300. How long a node will wait for the website to
+  confirm a change of the Reticulum config; for a later version, it does nothing yet.
+
+The secret is read once at start and kept in memory only: it is never in `users.db`, a log line,
+an error, an answer of the API or the page.
+
+**Threat model, in plain words.** Every request to a node is signed with that node's secret, with
+the time and a number used once, so nobody on the way can change it; the node signs its answer, so
+nobody on the way can fake an "ok". The node refuses a request it has already seen since it
+started, and one whose time is more than 5 minutes off its clock. A request held back on the way
+can still arrive late, within those 5 minutes, and be carried out then, so keep the link between
+the website and the node private. The listener is not part of Reticulum, so a broken network does
+not lock you out. Anyone who holds a node's secret can change what the website can change on that
+node; anyone who takes over the website server can do so on every node set up here. That is why
+the list of settings is small, a service can only be turned off, and each node has its own secret
+(different from its stats token too: the server does not start if one is the same). To take the
+website's access away from a node, remove `--manage-listen` (or `MANAGE_LISTEN`) there and restart
+it.
+
+**Firewall the manage port.** Only the website server may be able to connect to the node's manage
+port: block it for everyone else, with a firewall on the node or a private network. Anyone who can
+reach the port can lock the website out of that node, for as long as they keep sending it bad
+requests. A reverse proxy in front of the listener is fine only if it lets in the website server
+and nobody else, and passes the request path and query on exactly as they came: the node checks
+the signature over them, so a proxy that rewrites them makes every request fail.
+
+**Safeguards.** Looking needs a session with the role `manage` or `admin`, asked again on every
+request. Each user may read each node 120 times an hour (the state and the list of changes,
+polling during a restart included); then 429 with `Retry-After`. Every change needs, all at once:
+the role; a sign in from the last 15 minutes (else the page asks for the password again); two-step
+sign-in turned on for the account (without it the answer is 403 with `code:
+"second-factor-required"`, and the page only shows); the password and the passkey, a code from the
+app or a recovery code in the request itself, asked for in the step-up dialog; and the request
+header, same origin and JSON, at most 16 KiB (`POST /api/manage/settings`, `/restart`,
+`/rollback`). Each user may ask 30 changes an hour of all nodes together, wrong passwords and codes
+included; a change the node was too busy for (503) does not count. Right before the node is asked,
+the server checks again that the session is there and still has the role: if not, the answer is
+401 and nothing is sent. The node limits changes too (10 a minute, one restart every 5 minutes).
+
+What the node refuses is said in fixed sentences (it changed elsewhere, it is busy, the clock is
+off, it could not be reached, its answer was not signed); only its words for a value it does not
+accept, or a change it does not allow, are passed on, cut to 300 characters. When a node does not
+answer in time the page says so, and nothing is taken as done: reload the page to see what the node
+did.
+
+**Audit.** Each change asked of a node is a line in `audit.log`: `manage-settings`,
+`manage-restart` or `manage-rollback`, with the user (`actor`), the node (`host`), the setting
+names (`keys`), the node's change id (`id`, `null` when it refused), `result` (`ok`, or what went
+wrong, like `stale_revision`, `not_allowed`, `timeout` or `unsigned`), how the change was confirmed
+(`with`) and the address; a roll back also has the id it rolled back (`of`). The values are never
+in it: the node keeps them, in its own list of changes, which the page shows.
 
 ## The user store
 

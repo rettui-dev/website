@@ -226,6 +226,8 @@
     $('acct-last').textContent = when(data.lastLogin);
     $('acct-config-note').hidden = !data.managedByConfig;
     $('acct-users').hidden = data.canManageUsers !== true;
+    // The manage page checks the role again; this only shows the way there.
+    $('acct-manage').hidden = !((data.role === 'manage' || data.role === 'admin') && data.mustChangePassword !== true);
     // A password an admin set: the password change is all there is until a new one is chosen.
     $('acct-must-change').hidden = data.mustChangePassword !== true;
     Array.prototype.forEach.call(document.querySelectorAll('[data-after-password]'), function (x) { x.hidden = data.mustChangePassword === true; });

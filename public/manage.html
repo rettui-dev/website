@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manage - rettui</title>
+<meta name="description" content="Manage the rettui nodes of this site">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/passkey.js" defer></script>
+<script src="/account.js" defer></script>
+<script src="/step-up.js" defer></script>
+<script src="/manage-page.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status">Status</a>
+      <a href="/join">Join</a>
+      <a href="/downloads">Downloads</a>
+      <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
+  </div>
+</header>
+<main id="main" tabindex="-1" class="wrap acct-page manage-page">
+  <h1>Manage nodes</h1>
+  <noscript><p class="note">The manage page needs JavaScript.</p></noscript>
+  <p id="manage-status" class="note" role="status">Loading the nodes...</p>
+  <p id="manage-error" class="login-error" role="alert"></p>
+  <p><a href="/account">Back to your account</a></p>
+
+  <p id="manage-view-only" class="acct-card users-warning" hidden>You can look, but not change anything: turn on two-step sign-in on your <a href="/account">account page</a> first.</p>
+  <p id="manage-none" class="note" hidden>No node is set up to be managed from this site. Whoever runs the site adds <code>manage_url</code> and <code>manage_secret_file</code> to a node in the config file.</p>
+
+  <div id="manage" hidden>
+    <div class="acct-form manage-pick">
+      <label for="manage-node">Node</label>
+      <select id="manage-node" aria-describedby="manage-line"></select>
+    </div>
+
+    <section id="manage-card" class="acct-card" aria-labelledby="manage-node-h">
+      <h2 id="manage-node-h" tabindex="-1">Node</h2>
+      <p id="manage-line" class="manage-line"></p>
+      <p id="manage-clock" class="users-warning" role="alert" hidden></p>
+      <p id="manage-restart-state" class="note" hidden></p>
+    </section>
+
+    <section id="manage-settings" class="acct-card" aria-labelledby="manage-settings-h" hidden>
+      <h2 id="manage-settings-h" tabindex="-1">Settings</h2>
+      <p class="note">These are the settings the node lets the website change. A service can be turned off here, but only turned on again in the terminal on the node. Saving asks in a pop-up for your password and your passkey or a code from your app.</p>
+      <form id="manage-form" class="acct-form manage-form" novalidate>
+        <p id="manage-form-error" class="login-error" role="alert"></p>
+        <input id="manage-revision" type="hidden" aria-label="Settings revision" value="">
+        <div id="manage-fields"></div>
+        <div class="login-actions"><button id="manage-save" type="submit" class="primary">Save changes</button></div>
+      </form>
+    </section>
+
+    <section id="manage-restart-card" class="acct-card" aria-labelledby="manage-restart-h" hidden>
+      <h2 id="manage-restart-h">Restart Reticulum</h2>
+      <p class="note">Stops and starts the node's Reticulum network. Connections drop for a moment; the management listener stays up, so this page can still reach the node. The node allows one restart every 5 minutes.</p>
+      <p id="manage-restart-error" class="login-error" role="alert"></p>
+      <div class="login-actions"><button id="manage-restart" type="button" class="danger">Restart Reticulum</button></div>
+    </section>
+
+    <section id="manage-last-card" class="acct-card" aria-labelledby="manage-last-h" hidden>
+      <h2 id="manage-last-h">Last change</h2>
+      <p id="manage-last"></p>
+      <ul id="manage-last-list" class="manage-changes"></ul>
+      <p id="manage-rollback-error" class="login-error" role="alert"></p>
+      <div class="login-actions"><button id="manage-rollback" type="button" hidden>Roll back</button></div>
+    </section>
+
+    <section id="manage-audit-card" class="acct-card" aria-labelledby="manage-audit-h" hidden>
+      <h2 id="manage-audit-h">Changes on this node</h2>
+      <p class="note">The node keeps this list, with the old and new values. Newest first.</p>
+      <table class="users-table manage-audit">
+        <caption class="sr-only">What was changed on this node, by whom, and how it went</caption>
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Who</th>
+            <th scope="col">What</th>
+            <th scope="col">Changes</th>
+            <th scope="col">Result</th>
+          </tr>
+        </thead>
+        <tbody id="manage-audit-rows"></tbody>
+      </table>
+      <p id="manage-audit-empty" class="note" hidden>Nothing was changed yet.</p>
+      <div class="login-actions"><button id="manage-older" type="button" hidden>Older entries</button></div>
+    </section>
+  </div>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
+    <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>

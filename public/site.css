@@ -535,7 +535,21 @@ button.danger:hover { border-width: 1px; text-decoration: underline; }
   .users-table td.users-actions::before { display: block; margin-bottom: 4px; }
   .users-actions button { min-height: 40px; }
 }
+/* The manage page: one node at a time, its settings in groups; long values wrap */
+.manage-pick { margin: 8px 0 0; }
+.manage-line { margin: 0; overflow-wrap: anywhere; }
+.manage-form { max-width: 520px; }
+.manage-group { display: grid; gap: 6px; margin: 10px 0 0; }
+.manage-field { display: grid; gap: 4px; margin: 4px 0; overflow-wrap: anywhere; }
+.manage-field.users-radio { display: flex; flex-wrap: wrap; }
+.manage-field.users-radio .note { flex-basis: 100%; }
+.manage-field input[type=checkbox] { width: 20px; height: 20px; min-height: 0; margin: 0; }
+.manage-label { margin: 6px 0 0; font-weight: 500; font-size: 14px; }
+.manage-changes { padding-left: 20px; margin: 4px 0; overflow-wrap: anywhere; }
+.manage-audit td { overflow-wrap: anywhere; }
+.manage-field button, .manage-page .login-actions button { min-height: 40px; }
 @media (max-width: 560px) {
+  .manage-form { max-width: none; }
   .acct-codes { grid-template-columns: max-content; }
   .acct-card { padding: 10px 12px 14px; }
   .acct-form { max-width: none; }

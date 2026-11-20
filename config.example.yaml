@@ -105,6 +105,16 @@ nodes:
     name: Front
     stats_url: https://front.rns.rettui.dev/stats.json
     # stats_token_file: secrets/front.token
+    # Optional: manage this node from the website (settings and a Reticulum restart, for users with the
+    # manage or admin role), for a node started with --manage-listen and --manage-secret-file.
+    # manage_url is the address of that listener only (no path, query or fragment; http is allowed for
+    # loopback and private addresses, https otherwise). The secret is 32 to 256 printable ASCII characters
+    # without spaces, quotes or backslashes, in a file of its own, relative to this one and different
+    # for every node; the node reads the same file. A URL without a secret file, or the reverse, stops
+    # the server at start, and so do two nodes with the same secret.
+    # manage_url: http://10.200.0.2:8750
+    # manage_secret_file: secrets/front.manage
+    # manage_confirm_seconds: 300     # 60 to 900, default 300: how long a node waits for a confirmation
     # Optional: the external backbone peers this node connects out to, drawn as grey boxes on the
     # network map (up to 8 per node). The address is only shown: it is never checked.
     # upstreams:

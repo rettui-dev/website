@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Monitor } from './lib/monitor.js';
 import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
+import { createManageClient, forgetManageSecrets } from './lib/manage.js';
 import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
 import { NO_PASSKEYS, createPasskeys, passkeyOriginProblem } from './lib/passkeys.js';
@@ -122,7 +123,14 @@ for (const version of opened.addedKeys) await audit.write('key-added', { version
 // and users who have one sign in with their app code or a recovery code.
 const passkeys = site.url ? createPasskeys({ siteUrl: site.url, rpName: site.name ?? 'rettui status', store }) : NO_PASSKEYS;
 if ((users.length || store.hasLocalUsers()) && !passkeys.available) console.log(`passkeys: off, as ${passkeyOriginProblem(site.url)}`);
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site });
+// The nodes that can be managed from the website (manage_url and manage_secret_file in the config
+// file). Their secrets are kept by the client only, in memory: once it has copied them, they are
+// cleared from the config.
+const manageNodes = config.manage ?? new Map();
+const manage = manageNodes.size > 0 ? { client: createManageClient({ nodes: manageNodes }), nodes: [...manageNodes.keys()] } : null;
+forgetManageSecrets(manageNodes);
+if (manage && !(users.length || store.hasLocalUsers())) console.warn(`warning: ${manageNodes.size === 1 ? 'a node has' : `${manageNodes.size} nodes have`} a manage_url, but the site has no users, so nobody can manage ${manageNodes.size === 1 ? 'it' : 'them'} until a user with the manage or admin role is added`);
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site, manage });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
