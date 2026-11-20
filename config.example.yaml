@@ -29,7 +29,7 @@
 #   # The reverse proxy's address, so failed logins are counted per visitor, not per proxy.
 #   trusted_proxies: [172.18.0.1]
 # Optional: a message when a node goes down or comes back (see "Alerts" in README.md).
-# A webhook (https, or http for private addresses; "ntfy", "discord" and "slack" formats too) and/or
+# A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or
 # email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
 # a missing file stops the server at start. A node counts as down after 2 failed checks in a row.
 # alerts:
@@ -37,6 +37,11 @@
 #     - type: webhook
 #       url: https://hooks.example.org/rettui
 #       secret_file: secrets/hook.secret    # signs each request: X-Rettui-Signature: sha256=...
+#     # Telegram, Matrix, Pushover...: through an Apprise API container that holds their URLs
+#     # (a fixed private IP, because plain http is not allowed for a service name; no login in the URL).
+#     - type: webhook
+#       format: apprise
+#       url: http://172.28.0.20:8000/notify/rettui
 #     - type: email
 #       host: smtp.example.org
 #       security: starttls                  # or tls (SMTPS)

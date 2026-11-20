@@ -349,7 +349,7 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
       channels:
         - type: webhook
           url: https://hooks.example.org/rettui   # https, or http for loopback and private hosts
-          format: generic                         # generic (default), ntfy, discord or slack
+          format: generic                         # generic (default), ntfy, discord, slack or apprise
           secret_file: secrets/hook.secret        # optional, or secret: for the value itself
         - type: email
           host: smtp.example.org
@@ -399,7 +399,9 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
         req.headers['x-rettui-signature']?.length === want.length &&
         crypto.timingSafeEqual(Buffer.from(req.headers['x-rettui-signature']), Buffer.from(want));
  The other formats send what that service expects:
-  `ntfy` the text as the body, `slack` `{"text": ...}`, `discord` `{"content": ...}`.
+  `ntfy` the text as the body, `slack` `{"text": ...}`, `discord` `{"content": ...}`, and `apprise`
+  `{"title": ..., "body": ..., "type": ...}` (see below). The signature headers are also sent to
+  Apprise, which ignores them.
 - **Email:** a small built-in SMTP client (no dependency). The connection is always encrypted and
   the server's certificate is always checked: `tls` is SMTPS from the first byte, `starttls`
   upgrades the connection and refuses to go on if the server does not offer it, or if anything came
@@ -421,28 +423,80 @@ to the addresses you list, with a Reticulum entry point or a propagation node. I
 Dockerfile and a Compose snippet, and it is not part of the website image. Any other service that
 accepts a webhook can be reached the same way, with a bridge of your own.
 
-**Other services (Telegram, Matrix, Pushover and so on).** The
-[shoutrrr](https://github.com/nicholas-fedor/shoutrrr) fork `nicholas-fedor/shoutrrr` sends a
-message to many services from one notification URL. What is confirmed from its README and its
-Dockerfile: the image (`nickfedor/shoutrrr` on Docker Hub, `ghcr.io/nicholas-fedor/shoutrrr`) is a
-command line tool (`ENTRYPOINT ["/shoutrrr"]`, no shell) used as `shoutrrr send --url "<url>"
---message "<text>"`. What is **not** confirmed, and so not claimed: that it has an HTTP listener
-that could take this server's webhook. It does not look like it has one, so a webhook cannot
-point at the container directly. Use it to check a notification URL, or from a small bridge of
-your own that receives the webhook (checking `X-Rettui-Signature`) and runs `shoutrrr send`.
-The URL holds the service's secret, so keep it in a file or the environment, not in
-`compose.yaml`:
+**Other services (Telegram, Matrix, Pushover and so on): Apprise.** [Apprise](https://github.com/caronc/apprise)
+sends one message to many services, and its API container
+[`caronc/apprise-api`](https://github.com/caronc/apprise-api) takes it over HTTP, so it can be the
+target of a webhook channel with `format: apprise`. (shoutrrr is not an option: it is a command line
+sender with no HTTP listener, so nothing can post a webhook to it.) The container holds the
+notification URLs, which carry the services' secrets, so they never go in this config file. The
+channel's `url` is the container's `/notify/<key>` endpoint, where `<key>` is a name you choose
+when saving the URLs. What is sent, as the Apprise API documents it (README of `caronc/apprise-api`,
+read on its `master` branch): `POST /notify/<key>` with `Content-Type: application/json` and
+`{"title": ..., "body": ..., "type": ...}`, where `type` is one of `info`, `success`, `warning`,
+`failure`. Here `down` and `still_down` are `failure`, `recovered` and a cleared announce queue are
+`success`, and a full announce queue is `warning`; the title is `[rettui] Front is down` and the
+body is the same text as the other formats. Without a `tag` Apprise sends to every URL saved under
+the key.
 
-    # compose.yaml, next to the website service. Sends one test message and exits.
-    #   docker compose run --rm notify
-    notify:
-      image: nickfedor/shoutrrr:latest
-      profiles: ["tools"]
-      command: ["send", "--url", "${SHOUTRRR_URL}", "--message", "rettui test message"]
+    alerts:
+      channels:
+        - type: webhook
+          format: apprise
+          url: http://172.28.0.20:8000/notify/rettui   # the fixed IP of the apprise container, see below
 
-The services and the URL for each are listed in the shoutrrr documentation
-(<https://shoutrrr.nickfedor.com>). `${SHOUTRRR_URL}` is filled in by compose from a `.env` file next to `compose.yaml` (one line, `SHOUTRRR_URL=telegram://...`, `chmod 600`, and listed in `.gitignore`). This was not run here
-(no Docker in the build environment).
+A compose snippet, from the image's own documentation (the hardening options are the ones it
+lists for its "more hardened configuration"). It was not run here (no Docker in the build
+environment). The container listens on port 8000 and keeps what you save under `/config`:
+
+    services:
+      apprise:
+        image: caronc/apprise:latest
+        user: "1000:1000"             # the owner of ./apprise-config
+        read_only: true
+        security_opt: ["no-new-privileges:true"]
+        cap_drop: [ALL]
+        environment:
+          APPRISE_STATEFUL_MODE: simple
+          APPRISE_WORKER_COUNT: "1"
+        volumes:
+          - ./apprise-config:/config
+        tmpfs: [/tmp]
+        networks:
+          alerts:
+            ipv4_address: 172.28.0.20   # a private address: the website accepts http for it
+        # No "ports:": only the website, on the same network, can reach it.
+      # ... the website service, with `networks: [alerts]`
+    networks:
+      alerts:
+        ipam:
+          config:
+            - subnet: 172.28.0.0/24
+
+To save a set of notification URLs under the key `rettui`, open the container's page (from the
+host, for example by temporarily publishing the port on `127.0.0.1` or with `docker compose exec`)
+and add them in its configuration manager, or post them to its API:
+
+    curl -X POST -d 'urls=tgram://BOT_TOKEN/CHAT_ID,matrixs://...' http://172.28.0.20:8000/add/rettui
+
+The URL forms for each service are in the Apprise documentation (<https://appriseit.com>). To try it:
+`curl -X POST -H 'Content-Type: application/json' -d '{"title":"test","body":"hello","type":"info"}' http://172.28.0.20:8000/notify/rettui`.
+
+- **Plain http needs an IP.** The website allows `http` only for loopback and private IP
+  addresses, and a compose service name such as `apprise` is neither, so give the container a
+  fixed address on a compose network, as for the [LXMF bridge](bridges/lxmf/README.md), or put it
+  behind `https`. The rule is not relaxed for single-word host names: a name can be resolved to
+  anything by whoever controls the network's DNS, while a fixed private address is only that.
+- **No login in the URL.** The URL may not hold a user name or password, and this server sends no
+  `Authorization` header. The Apprise API has no login unless you turn it on
+  (`APPRISE_AUTH_REQUIRED`), so leave it off and keep the container on a private network with no
+  published port, as above. The key in the URL is then the only thing that selects the URLs; it is
+  treated as a secret like any URL path (never logged). If the container must be reachable from
+  elsewhere, put an `https` reverse proxy with its own access control in front.
+- **Not verified here:** only the request shape above was checked against the documentation. No
+  Apprise container was run, so the compose snippet and the delivery to any service are untested.
+
+LXMF has its own bridge, so a webhook channel for Apprise and one for the
+[LXMF bridge](bridges/lxmf/README.md) can be listed side by side: an alert goes to every channel.
 
 **Announce queue.** Off unless `announce_queue` is listed in `events` (the default stays
 `[down, recovered]`). A rettui node reports the announces waiting to go out in `stats.json`

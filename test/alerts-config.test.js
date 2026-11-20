@@ -277,7 +277,8 @@ test('the alerts example in config.example.yaml is valid when uncommented', asyn
   const block = [];
   for (let i = at; i < lines.length && /^# ( |alerts:)/.test(lines[i]); i++) block.push(lines[i].slice(2));
   const c = loadConfig(`${nodes}${block.join('\n')}\n`);
-  assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'email']);
+  assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'webhook', 'email']);
+  assert.equal(c.alerts.channels[1].format, 'apprise');
   assert.equal(c.alerts.cooldownMinutes, 15);
 });
 
