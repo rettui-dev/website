@@ -1,0 +1,32 @@
+# The LXMF bridge's settings. Paths are relative to this file.
+
+# Where the website's webhook is received. In a container this is 0.0.0.0:8742, and the port is
+# not published: only the website's container reaches it.
+listen = "127.0.0.1:8742"
+
+# The alert secret, the same as the website's alerts.channels[].secret_file. 16 to 256 printable
+# characters. Keep the file readable by the bridge's user only (chmod 600).
+secret_file = "secrets/hook.secret"
+
+# The bridge's LXMF identity. Made on the first start (mode 600) and kept: it is the address the
+# messages come from, so keep it in a volume. Reticulum's files go in a "reticulum" folder next to it.
+identity_file = "/data/identity"
+
+# The name shown for the bridge's address (1 to 64 characters).
+display_name = "rettui alerts"
+
+# Who gets each alert: up to 16 LXMF addresses (32 hex digits), as your LXMF app shows them.
+recipients = ["00000000000000000000000000000000"]
+
+# Reticulum TCP servers to connect to, host:port (1 to 8). The default is shown.
+entry_points = ["rns.rettui.dev:4242"]
+
+# Optional: a propagation node's address. When a message cannot be delivered directly it is left
+# there for the recipient to fetch later.
+# propagation_node = "00000000000000000000000000000000"
+
+# A request whose time is more than this many seconds old (or over 60 seconds ahead) is refused.
+max_age_seconds = 300
+
+# The most a request body may hold.
+max_body_bytes = 16384
