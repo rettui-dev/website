@@ -33,7 +33,7 @@ const statsData = () => ({
 // Things only a logged-in visitor (or nobody) may see, as they appear in JSON.
 const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '4949', '9.8.7', 'peerSummary', 'fsFreeBytes', 'fsTotalBytes', 'dataBytes', TOKEN, os.tmpdir(), 'stats_url', 'https://'];
 
-async function setup({ top = '', users = false, nodes, createOptions = {}, statsFn } = {}) {
+async function setup({ top = '', users = false, nodes, createOptions = {}, statsFn, downHosts = ['c.test'] } = {}) {
   const hash = users ? await hashPassword('correct horse battery', undefined, fakeHasher) : null;
   const config = loadConfig(`${users ? `users:\n  - name: Alice\n    password_hash: '${hash}'\n` : ''}${top}
 nodes:
@@ -52,7 +52,7 @@ ${nodes ?? `  - address: p.test:1
     targets: config.targets, nodes: config.nodes, statsUrls: config.statsUrls, dataDir: await fs.mkdtemp(path.join(os.tmpdir(), 'website-pub-')),
     publicDetails: config.defaults.publicDetails, publicDiskFigures: config.defaults.publicDiskFigures, requireLogin: config.defaults.requireLogin,
     tokens: new Map([['a.test:1', TOKEN]]),
-    probeFn: async (host) => ({ up: host !== 'c.test', ms: 5 }),
+    probeFn: async (host) => ({ up: !downHosts.includes(host), ms: 5 }),
     statsFn: statsFn ?? (async () => ({ ok: true, data: statsData(), propagationPeers: { listed: 3, alive: 2, static: 0, unhandled: 0, truncated: false } })),
     now: () => clock,
     sampleIntervalMs: 1000,
@@ -132,15 +132,69 @@ test('stats: fields, versions and headers', async () => {
     assert.deepEqual(p.group.peersHeard.total, { min: 3, max: 6 });
     assert.equal(p.group.peersHeard.exact, false);
     assert.equal(p.group.propagation.storedMessages, 8484);
-    // Network totals count the group once, and the node outside it.
-    assert.equal(body.network.nodes, 4);
+    // Network totals count the group once, and the node outside it. The proxy is not a node.
+    assert.equal(body.network.nodes, 3);
+    assert.equal(body.network.up, 2);
     assert.equal(body.network.down, 1);
+    assert.equal(body.network.unknown, 0);
+    assert.equal(body.network.reporting, 2);
+    assert.equal(body.network.proxies, 1);
+    assert.equal(body.network.proxiesUp, 1);
+    assert.equal(body.network.proxiesDown, 0);
+    assert.deepEqual(body.nodes.map((n) => n.role), ['proxy', 'node', 'node', 'node']);
     assert.equal(body.network.overall, 'degraded');
     assert.equal(body.network.clients, 8);
     assert.equal(body.network.peersHeardSum.total, 6);
     assert.deepEqual(body.network.interfaces, { total: 4, online: 2 });
   } finally {
     await s.close();
+  }
+});
+
+test('stats: a proxy is not a node, its own numbers count once, and a down proxy is still an outage', async () => {
+  const layout = (own, down) => `  - address: p.test:1
+    stats_url: https://p.test/s
+    proxy_for: [a.test:1, b.test:1]
+    count_own: ${own}
+  - address: a.test:1
+    stats_url: https://a.test/s
+  - address: b.test:1
+    stats_url: https://b.test/s
+  - address: c.test:1
+    stats_url: https://c.test/s
+`;
+  const off = await setup({ nodes: layout(false) });
+  const on = await setup({ nodes: layout(true) });
+  try {
+    const a = (await request(off.port, { path: '/api/public/stats' })).json().network;
+    // a and b through the group (8 clients), c on its own (4): the proxy's own 4 are not added.
+    assert.equal(a.nodes, 3);
+    assert.equal(a.reporting, 3);
+    assert.equal(a.clients, 12);
+    assert.equal(a.peersHeardSum.total, 9);
+    assert.equal(a.proxies, 1);
+    // With count_own the proxy's numbers are in its group, once.
+    const b = (await request(on.port, { path: '/api/public/stats' })).json().network;
+    assert.equal(b.nodes, 3);
+    assert.equal(b.clients, 16);
+    assert.equal(b.peersHeardSum.total, 12);
+  } finally {
+    await off.close();
+    await on.close();
+  }
+  // The proxy is down and the nodes are up: an outage, but no node is down.
+  const shut = await setup({ nodes: layout(false), downHosts: ['p.test'] });
+  try {
+    const n = (await request(shut.port, { path: '/api/public/stats' })).json().network;
+    assert.equal(n.overall, 'degraded');
+    assert.equal(n.nodes, 3);
+    assert.equal(n.up, 3);
+    assert.equal(n.down, 0);
+    assert.equal(n.proxies, 1);
+    assert.equal(n.proxiesUp, 0);
+    assert.equal(n.proxiesDown, 1);
+  } finally {
+    await shut.close();
   }
 });
 
