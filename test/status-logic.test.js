@@ -11,7 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
-  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, backlogAbnormal, backlogPairs, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
+  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, backlogAbnormal, backlogPairs, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, bannerCounts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
@@ -589,4 +589,25 @@ test('an older node shows fewer columns, and the cells say what is missing', () 
   assert.equal(peerCell(prow({ unhandled: null }), 'waiting'), '-');
   assert.equal(peerCell(prow({ syncFailures: 2 }), 'failures'), '2');
   assert.equal(peerCell(prow(), 'name'), 'Harbor');
+});
+
+test('bannerCounts counts nodes and proxies apart, and never a proxy as a node', () => {
+  const n = (status, extra) => ({ host: 'x', port: 1, status, role: 'node', ...extra });
+  const p = (status) => n(status, { role: 'proxy', proxy: { for: ['a:1'] } });
+  assert.equal(bannerCounts([p('up'), n('up'), n('up'), n('up')]), '3 nodes up, 1 proxy up.');
+  assert.equal(bannerCounts([p('up'), n('up'), n('down'), n('up')]), '2 of 3 nodes up, 1 proxy up.');
+  // A down proxy is said, and the nodes behind it are still counted.
+  assert.equal(bannerCounts([p('down'), n('up'), n('up')]), '2 nodes up, proxy down.');
+  assert.equal(bannerCounts([p('unknown'), n('unknown')]), 'node not checked yet, proxy not checked yet.');
+  assert.equal(bannerCounts([p('up'), p('down'), n('up')]), '1 node up, 1 of 2 proxies up.');
+  // No proxy: as before, nodes only. One node alone.
+  assert.equal(bannerCounts([n('up'), n('down')]), '1 of 2 nodes up.');
+  assert.equal(bannerCounts([n('up')]), '1 node up.');
+  assert.equal(bannerCounts([n('down')]), 'node down.');
+  // Only a proxy: no node is counted.
+  assert.equal(bannerCounts([p('up')]), '1 proxy up.');
+  assert.equal(bannerCounts([]), 'No nodes.');
+  assert.equal(bannerCounts(undefined), 'No nodes.');
+  // A host with no role (older data) is a node.
+  assert.equal(bannerCounts([{ status: 'up' }, { status: 'up' }]), '2 nodes up.');
 });

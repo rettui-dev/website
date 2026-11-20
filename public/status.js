@@ -12,6 +12,25 @@
     unknown: 'Waiting for the first check'
   };
 
+  // The count line of the banner. A proxy is the front door, not a node: nodes and proxies are
+  // counted apart ("3 nodes up, 1 proxy up", "2 of 3 nodes up, proxy down"). The headline above
+  // it still follows every entry point, the proxy included.
+  function bannerCounts(hosts) {
+    var list = Array.isArray(hosts) ? hosts : [];
+    var proxies = list.filter(function (h) { return h.role === 'proxy'; });
+    var nodes = list.filter(function (h) { return h.role !== 'proxy'; });
+    function part(group, one, many) {
+      var up = group.filter(function (h) { return h.status === 'up'; }).length;
+      if (group.length === 1 && up === 0) return one + (group[0].status === 'down' ? ' down' : ' not checked yet');
+      if (up === group.length) return up + ' ' + (up === 1 ? one : many) + ' up';
+      return up + ' of ' + group.length + ' ' + many + ' up';
+    }
+    var out = [];
+    if (nodes.length) out.push(part(nodes, 'node', 'nodes'));
+    if (proxies.length) out.push(part(proxies, 'proxy', 'proxies'));
+    return out.length ? out.join(', ') + '.' : 'No nodes.';
+  }
+
   function el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -2249,10 +2268,9 @@
       setText('banner-sub', text);
       return;
     }
-    var up = lastData.hosts.filter(function (h) { return h.status === 'up'; }).length;
     var banner = document.getElementById('banner-sub');
     banner.replaceChildren();
-    addRuns(banner, up + ' of ' + lastData.hosts.length + ' up. ');
+    addRuns(banner, bannerCounts(lastData.hosts) + ' ');
     if (failed) {
       banner.appendChild(document.createTextNode('Showing data from '));
       banner.appendChild(agoTime(new Date(lastOk).toISOString()));
@@ -2274,8 +2292,7 @@
     setText('banner-title', TITLE[data.overall] || TITLE.unknown);
     sub();
     // The spoken version changes only when the verdict or the count does.
-    var upNow = data.hosts.filter(function (h) { return h.status === 'up'; }).length;
-    setText('banner-live', (TITLE[data.overall] || TITLE.unknown) + '. ' + upNow + ' of ' + data.hosts.length + ' up.');
+    setText('banner-live', (TITLE[data.overall] || TITLE.unknown) + '. ' + bannerCounts(data.hosts));
     var list = document.getElementById('hosts');
     allHosts = data.hosts;
     if (globalThis.netmapView) globalThis.netmapView.update(data.hosts);
@@ -2371,7 +2388,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, backlogPairs: backlogPairs, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, backlogPairs: backlogPairs, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts, bannerCounts: bannerCounts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
       peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
       peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
