@@ -25,7 +25,12 @@ entry_points = ["rns.rettui.dev:4242"]
 # there for the recipient to fetch later.
 # propagation_node = "00000000000000000000000000000000"
 
+# Optional: only these IP addresses (exact, no ranges) may connect; any other is closed on at once.
+# Set it to the website's address. Empty or left out: any address.
+# allow_from = ["172.28.0.5"]
+
 # A request whose time is more than this many seconds old (or over 60 seconds ahead) is refused.
+# Replay memory is lost on a restart, so a small value limits what a captured request can do.
 max_age_seconds = 300
 
 # The most a request body may hold.

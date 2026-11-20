@@ -21,9 +21,10 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
 2. **Make a secret** (16 to 256 printable characters, no spaces) and keep it in two files, one for
    the website and one for the bridge, each readable by its own user only:
 
-       openssl rand -hex 32 > secrets/hook.secret
-       cp secrets/hook.secret secrets/bridge.secret
-       sudo chown 65532 secrets/bridge.secret && chmod 600 secrets/bridge.secret
+       mkdir -p -m 700 secrets
+       (umask 077; openssl rand -hex 32 > secrets/hook.secret; cp secrets/hook.secret secrets/bridge.secret)
+       chmod 600 secrets/hook.secret secrets/bridge.secret
+       sudo chown 65532 secrets/bridge.secret
 
    (65532 is the user the bridge's image runs as. A secret file that other users can read gets a
    warning at start.)
@@ -40,7 +41,8 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
    | `recipients` | | 1 to 16 LXMF addresses (32 hex digits) |
    | `entry_points` | `["rns.rettui.dev:4242"]` | 1 to 8 Reticulum TCP servers, `host:port` |
    | `propagation_node` | none | a propagation node's address, for store and forward |
-   | `max_age_seconds` | `300` | how old a request's time may be (1 to 3600) |
+   | `allow_from` | none | up to 16 exact IP addresses (no ranges) that may connect; others are closed on at once. Empty means any |
+   | `max_age_seconds` | `300` | how old a request's time may be (1 to 3600); keep it small (see the limits) |
    | `max_body_bytes` | `16384` | the biggest request body (256 to 1048576) |
 
 4. **Run it** (below), and **point the website at it**, in the website's config file:
@@ -111,10 +113,18 @@ Without Docker: `cargo build --release --locked` in this folder, then
   no more than `max_age_seconds` old and no more than 60 seconds ahead, and the signature (the
   HMAC-SHA256 of `<timestamp>.<body>`, compared in constant time) must match, before the body is
   read as JSON. A signed request seen before (same time and signature) is refused with 409, so a
-  captured request cannot be replayed within its time window.
+  captured request cannot be replayed within its time window. **That memory is in the bridge's
+  RAM and is lost when it restarts**: someone who captured a request can send it once more, within
+  `max_age_seconds` of its time, after a restart. Keep `max_age_seconds` small (60 is enough if the
+  two clocks are in step; the website's own retries sign each try afresh).
 - **Limits.** Headers up to 8 KiB, bodies up to `max_body_bytes` (checked from `Content-Length`
-  before the body is read), 10 seconds to send the headers and 10 more for the body, 64 connections
-  at once, one request per connection (the connection is closed after the answer). Only
+  before the body is read), 3 seconds to send the headers and 5 more for the body, 64 connections
+  at once, one request per connection (the connection is closed after the answer). A request with
+  a stale or future time, or a signature header that is not `sha256=` and 64 hex digits, is
+  refused as soon as its headers are in, without waiting for the body. These need no secret, so
+  anyone who can reach the port can hold connections for a few seconds each: set `allow_from` to
+  the website's address (under Compose its address on the compose network, which you can fix as
+  above), or keep the port on a private network. Only
   `POST /alert` and `GET /healthz` exist; anything else gets a 4xx with no body.
 - **Answers.** 202 taken, 400 not an alert, 401 not authentic (a missing, wrong, stale or future
   signature or time all look alike), 409 replayed, 413 too big, 503 the queue (100 alerts) is full
@@ -154,13 +164,20 @@ Without Docker: `cargo build --release --locked` in this folder, then
 
 ## Trying it
 
-Sign a request by hand with the secret (the signature is over `<timestamp>.<body>`):
+Sign a request by hand with the secret (the signature is over `<timestamp>.<body>`). The secret is
+read from its file by a small script, so it is never on a command line, in the shell history or in
+the process list:
 
-    body='{"event":"down","message":"Front (front.rns.rettui.dev:4242) is down since 12:03 UTC."}'
+    printf '%s' '{"event":"down","message":"Front (front.rns.rettui.dev:4242) is down since 12:03 UTC."}' > body.json
     ts=$(date +%s)
-    sig=$(printf '%s.%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$(cat secrets/hook.secret)" -hex | sed 's/^.* //')
+    sig=$(node -e '
+      const c = require("node:crypto"), fs = require("node:fs");
+      const [ts, keyFile, bodyFile] = process.argv.slice(1);
+      const key = fs.readFileSync(keyFile, "utf8").trim();
+      console.log(c.createHmac("sha256", key).update(ts + ".").update(fs.readFileSync(bodyFile)).digest("hex"));
+    ' "$ts" secrets/hook.secret body.json)
     curl -i -X POST http://127.0.0.1:8742/alert -H "X-Rettui-Timestamp: $ts" \
-      -H "X-Rettui-Signature: sha256=$sig" --data-binary "$body"
+      -H "X-Rettui-Signature: sha256=$sig" --data-binary @body.json
 
 A `202` means it was queued; the log then says `alert sent to <address>` or why it was not.
 
