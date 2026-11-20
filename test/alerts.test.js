@@ -61,12 +61,12 @@ test('the text shows the date only when the time is not on the day of the alerte
   const texts = [];
   const mk = (now) => new Alerter({ channels: [{ type: 'webhook', url: 'https://x.test/h', format: 'generic' }], now: () => now, fetchFn: async (_u, init) => (texts.push(JSON.parse(init.body).message), new Response('')), log: () => {} });
   const sameDay = mk(T0 + 30_000);
-  sameDay.notify({ ...down(), name: 'Front' });
+  sameDay.notify(down());
   await sameDay.idle();
   const nextDay = mk(T0 + 24 * 60 * MIN);
-  nextDay.notify({ ...down(), name: 'Front' });
+  nextDay.notify(down());
   await nextDay.idle();
-  assert.deepEqual(texts, ['Front (front.test:4242) is down since 12:03 UTC.', 'Front (front.test:4242) is down since 2026-11-19 12:03 UTC.']);
+  assert.deepEqual(texts, ['front.test:4242 is down since 12:03 UTC.', 'front.test:4242 is down since 2026-11-19 12:03 UTC.']);
   // Midnight UTC is the edge between the two.
   const midnight = Date.UTC(2026, 10, 20);
   assert.equal(utcTime(midnight - 1, midnight), '2026-11-19 23:59 UTC');
