@@ -65,7 +65,16 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
 
 ## Run it with Docker Compose
 
-The image is built from this folder, with the two submodules checked out:
+A ready-made image is published to GitHub's container registry as `ghcr.io/rettui-dev/lxmf-bridge`
+(for `linux/amd64` and `linux/arm64`). Its tags: `dev` (the `dev` branch), `main` and `latest` (the
+`main` branch and the newest release), and `1.2.3` and `1.2` (release `v1.2.3`). It is rebuilt when
+anything under `bridges/` changes and for every release. To fetch it:
+
+    docker pull ghcr.io/rettui-dev/lxmf-bridge:dev
+
+(If the pull is refused, the package is still private: its owner has to make it public in the
+package settings on GitHub.) To build it yourself instead, check out the two submodules and use
+the `build:` line in the snippet below:
 
     git submodule update --init --recursive
     docker compose build lxmf-bridge
@@ -74,8 +83,10 @@ Next to the website service in `compose.yaml`:
 
     services:
       lxmf-bridge:
-        build: ./bridges/lxmf
-        image: lxmf-bridge
+        image: ghcr.io/rettui-dev/lxmf-bridge:dev
+        # To build it from this folder instead of pulling it, use these two lines:
+        # build: ./bridges/lxmf
+        # image: lxmf-bridge
         restart: unless-stopped
         read_only: true                  # nothing is written outside /data (and /tmp)
         tmpfs: [/tmp]
@@ -159,8 +170,8 @@ Without Docker: `cargo build --release --locked` in this folder, then
 - **Plain HTTP.** The bridge speaks HTTP only, for a private network. Do not publish its port to the
   internet; if the webhook has to cross one, put TLS in front of it. The signature protects what is
   sent, but not from being read.
-- **Not tested** against a real propagation node (see the tests below), and the Docker image has to
-  be built where the git submodules are present.
+- **Not tested** against a real propagation node (see the tests below), and building the Docker image
+  yourself needs the git submodules to be present (the published image does not).
 
 ## Trying it
 

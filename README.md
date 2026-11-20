@@ -420,7 +420,9 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
 [`bridges/lxmf`](bridges/lxmf/README.md) is a small bridge that does: it receives this webhook
 (checking `X-Rettui-Signature` and the timestamp), and sends the `message` field as an LXMF message
 to the addresses you list, with a Reticulum entry point or a propagation node. It has its own
-Dockerfile and a Compose snippet, and it is not part of the website image. Any other service that
+Dockerfile and a Compose snippet, and it is not part of the website image; a built image is published
+as `ghcr.io/rettui-dev/lxmf-bridge` (tags `dev`, `latest` and release versions), so you can pull it
+instead of building it. Any other service that
 accepts a webhook can be reached the same way, with a bridge of your own.
 
 **Other services (Telegram, Matrix, Pushover and so on): Apprise.** [Apprise](https://github.com/caronc/apprise)
