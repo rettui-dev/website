@@ -427,6 +427,21 @@ test('X-Forwarded-For from a local proxy that is not trusted is warned about onc
   }
 });
 
+test('X-Forwarded-For from a trusted proxy that is not an address is warned about once; with a port it is read', async () => {
+  const warnings = [];
+  const s = await setup({ top: 'login:\n  trusted_proxies: ["127.0.0.0/8"]\n', warn: (m) => warnings.push(m) });
+  try {
+    await request(s.port, { path: '/api/status', headers: { 'X-Forwarded-For': '203.0.113.7:5678, [2001:db8::1]:443' } });
+    assert.deepEqual(warnings, [], 'a port is read, not warned about');
+    for (let i = 0; i < 3; i++) await request(s.port, { path: '/api/status', headers: { 'X-Forwarded-For': 'client.example' } });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /^WARNING: login: the trusted proxy 127\.0\.0\.1 sent an X-Forwarded-For entry that is not an IP address/);
+    assert.equal(warnings[0].includes('client.example'), false, 'the header is not repeated');
+  } finally {
+    await s.close();
+  }
+});
+
 test('X-Forwarded-For from a trusted proxy, or without users, is not warned about', async () => {
   const warnings = [];
   const warn = (m) => warnings.push(m);

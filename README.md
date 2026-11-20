@@ -172,7 +172,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
-| `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses of the reverse proxies in front of the site (at most 16), for users in `users.json` without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in `users.json`, it is not used and the server says so at start. |
+| `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses or networks in CIDR notation (like `172.22.0.0/16`) of the reverse proxies in front of the site (at most 16), for users in `users.json` without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in `users.json`, it is not used and the server says so at start. |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
 server at start with a message.
@@ -818,11 +818,30 @@ do not send `Sec-Fetch-Site`. Without trusted proxies every request seems to com
 proxy, so all visitors share one address for the failed-login waits. List the proxy's address in
 `login.trusted_proxies` in the config file, or, with users in `users.json` and no config file, in
 the environment variable `LOGIN_TRUSTED_PROXIES` (comma separated, for example
-`LOGIN_TRUSTED_PROXIES=127.0.0.1,::1`). IP addresses only, at most 16. The client address is then
-taken from `X-Forwarded-For`, from the right, skipping trusted proxies. An IPv6 address may be
-written in any form (`0:0:0:0:0:0:0:1` is `::1`). Never list an address that clients can connect
-from directly. If a request with `X-Forwarded-For` comes from a loopback or private address that
-is not listed, the server logs one warning that starts with `WARNING:` and names both settings.
+`LOGIN_TRUSTED_PROXIES=127.0.0.1,::1`). At most 16 entries, each an IP address or a network in
+CIDR notation, mixed as needed: `172.22.0.0/16`, `10.0.0.0/8`, `fd00:1::/32`. Use a network when
+the proxy's address changes, as a container's does on a Docker network. The client address is
+then taken from `X-Forwarded-For`, from the right, skipping trusted proxies, whether listed as an
+address or inside a listed network. An IPv6 address may be written in any form
+(`0:0:0:0:0:0:0:1` is `::1`), and an IPv4-mapped one (`::ffff:172.22.0.5`) counts as IPv4, so it
+falls in `172.22.0.0/16`. Bits after the prefix are cleared (`172.22.9.5/16` is `172.22.0.0/16`),
+and `/32` or `/128` is the single address. A wrong entry (a prefix over 32 or 128, a space, a
+host name) stops the server at start with a message naming the entry.
+
+Only list addresses and networks that nothing untrusted can connect from: anything inside a
+trusted network can write its own `X-Forwarded-For` and choose the address its failed logins
+are counted against. `/0` trusts every address and is refused. A network shorter than `/8` for
+IPv4 or `/16` for IPv6 (so `fd00::/8` too) is allowed, but the server warns at start with a line
+that starts with `WARNING:`; prefer the proxy's own subnet. IPv4 addresses are matched as
+IPv4-mapped IPv6 (`::ffff:a.b.c.d`), so an IPv6 network that holds all of `::ffff:0:0/96`, such
+as `::/64` or `::/80`, would trust every IPv4 client and is refused like `/0`.
+
+A hop in `X-Forwarded-For` with a port, `192.0.2.1:5678` or `[2001:db8::1]:443`, is read as the
+address alone; `[2001:db8::1]` without a port too. Any other hop that is not an IP address makes
+the server take the proxy's own address for that request, and it logs one warning that starts
+with `WARNING:`: set the proxy to send plain client addresses. If a request with `X-Forwarded-For`
+comes from a loopback or private address that is not listed, the server logs one warning that
+starts with `WARNING:` and names both settings.
 
 **Limits.** Everything is in one process and in memory: sessions end when the server restarts
 (everyone has to log in again), and running several copies behind a load balancer does not

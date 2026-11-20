@@ -34,7 +34,8 @@
 #   idle_timeout_minutes: 60
 #   max_age_hours: 12
 #   max_sessions: 1000
-#   # The reverse proxy's address, so failed logins are counted per visitor, not per proxy.
+#   # The reverse proxy's address or network (CIDR, like 172.18.0.0/16), so failed logins are
+#   # counted per visitor, not per proxy. List only networks nothing untrusted connects from.
 #   trusted_proxies: [172.18.0.1]
 # Optional: a message when a node goes down or comes back (see "Alerts" in README.md).
 # A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or

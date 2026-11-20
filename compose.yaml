@@ -33,8 +33,9 @@ services:
       # SITE_MODE: "status"
       # Logins (users, require_login) need CONFIG_FILE. The cookie is Secure, so serve the
       # site over HTTPS through a reverse proxy; see "Logins" in the README.
-      # With users only in users.json and no CONFIG_FILE, the reverse proxy's address, so failed
-      # logins are counted per visitor, not per proxy (in the file: login.trusted_proxies):
+      # With users only in users.json and no CONFIG_FILE, the reverse proxy's address or network
+      # (CIDR, like 172.18.0.0/16, only one nothing untrusted connects from), so failed logins are
+      # counted per visitor, not per proxy (in the file: login.trusted_proxies):
       # LOGIN_TRUSTED_PROXIES: "172.18.0.1"
     volumes:
       - status-data:/data

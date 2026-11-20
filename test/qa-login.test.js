@@ -397,6 +397,19 @@ test('qa: a trusted_proxies IPv6 address in long form still matches the peer the
   }
 });
 
+test('qa: trusted_proxies networks from the config file are what the login trusts', async () => {
+  const s = await setup({ top: 'login:\n  trusted_proxies: ["172.22.0.0/16", "fd00::/16", "127.0.0.1"]\n' });
+  try {
+    const req = (peer, xff = '203.0.113.7') => ({ socket: { remoteAddress: peer }, headers: { 'x-forwarded-for': xff } });
+    assert.equal(clientIp(req('::ffff:172.22.255.255'), s.login.trusted), '203.0.113.7');
+    assert.equal(clientIp(req('fd00:0:1::2', '203.0.113.7, 172.22.0.3'), s.login.trusted), '203.0.113.7');
+    assert.equal(clientIp(req('172.23.0.1'), s.login.trusted), '172.23.0.1');
+    assert.equal(clientIp(req('fd01::1'), s.login.trusted), 'fd01::1');
+  } finally {
+    await s.close();
+  }
+});
+
 // ---------- sessions ----------
 
 test('qa: idle timeout slides with use on /api/status polls, max age does not', async () => {
@@ -745,7 +758,7 @@ test('qa: login settings: bounds, types and unknown keys', () => {
   for (const b of [
     '  idle_timeout_minutes: 0\n', '  idle_timeout_minutes: -1\n', '  idle_timeout_minutes: 1.5\n', '  idle_timeout_minutes: "5"\n', '  idle_timeout_minutes: 10081\n', '  idle_timeout_minutes: .inf\n', '  idle_timeout_minutes: .nan\n',
     '  max_age_hours: 0\n', '  max_age_hours: 2161\n', '  max_sessions: 0\n', '  max_sessions: 100001\n', '  idle_timeout_minutes: 121\n  max_age_hours: 2\n', '  idle_timeout_minutes: 70\n  max_age_hours: 1\n',
-    '  idle: 5\n', '  trusted_proxies: 10.0.0.1\n', '  trusted_proxies: [not-an-ip]\n', '  trusted_proxies: ["10.0.0.1/8"]\n', '  trusted_proxies: [10.0.0.1, 10.0.0.1, 1, 2]\n',
+    '  idle: 5\n', '  trusted_proxies: 10.0.0.1\n', '  trusted_proxies: [not-an-ip]\n', '  trusted_proxies: ["10.0.0.1/33"]\n', '  trusted_proxies: ["0.0.0.0/0"]\n', '  trusted_proxies: [10.0.0.1, 10.0.0.1, 1, 2]\n',
   ]) {
     if (b.includes('10.0.0.1, 10.0.0.1, 1')) continue;
     rejects(L(b), b);
