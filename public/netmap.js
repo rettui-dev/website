@@ -5,7 +5,10 @@
   var WORD = { up: 'Up', down: 'Down', unknown: 'Unknown', external: 'External' };
   var GLYPH = { up: '●', down: '✕', unknown: '?', external: '↗' };
   var BOX_H = 76;
+  // The proxy is wider and taller than a node: it has one more line (its tag) and a double border.
+  var PROXY_H = 96;
   var MAX_BOX_W = 176;
+  var MAX_PROXY_W = 208;
   var MIN_BOX_W = 90;
   var PAD = 8;
   var GAP_X = 8;
@@ -19,6 +22,8 @@
   function hostKey(h) { return h.host + ':' + h.port; }
   function displayName(h) { return h.name || hostKey(h); }
   function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+  function boxH(n) { return n.kind === 'proxy' ? PROXY_H : BOX_H; }
+  function maxW(n) { return n.kind === 'proxy' ? MAX_PROXY_W : MAX_BOX_W; }
 
   function num(n) {
     return n.toLocaleString === undefined ? String(n) : n.toLocaleString('en-US');
@@ -109,7 +114,8 @@
 
   // One node in words, for the title, the accessible name and the list.
   function describe(n) {
-    var out = [n.name + ': ' + (n.kind === 'external' ? 'external backbone peer, not monitored' : WORD[n.state].toLowerCase())];
+    var out = [n.kind === 'proxy' ? 'Proxy ' + n.name + ', ' + WORD[n.state].toLowerCase()
+      : n.name + ': ' + (n.kind === 'external' ? 'external backbone peer, not monitored' : WORD[n.state].toLowerCase())];
     if (n.kind === 'proxy') out.push('passes visitors to ' + plural(n.members, 'node', 'nodes'));
     if (n.kind === 'external' && n.address) out.push('address ' + n.address + ' (not checked)');
     if (n.kind === 'external' && n.usedBy.length) out.push('used by ' + n.usedBy.join(', '));
@@ -126,6 +132,21 @@
     else if (n.kind === 'external') out.push('not checked');
     else if (n.state === 'up' && n.ms !== null) out.push(n.ms + ' ms');
     return out;
+  }
+
+  // The line above the state in the box, for what the box is, in words: only a proxy has one.
+  function tag(n) { return n.kind === 'proxy' ? 'Proxy' : null; }
+
+  // The count in the heading of the map: the proxy, the nodes and the links, each said apart.
+  function summaryText(model) {
+    var c = { proxy: 0, node: 0, external: 0 };
+    model.nodes.forEach(function (n) { c[n.kind]++; });
+    var out = [];
+    if (c.proxy) out.push(plural(c.proxy, 'proxy', 'proxies'));
+    if (c.node) out.push(plural(c.node, 'node', 'nodes'));
+    if (c.external) out.push(plural(c.external, 'external peer', 'external peers'));
+    out.push(plural(model.edges.length, 'link', 'links'));
+    return out.join(', ');
   }
 
   // Splits count items over rows of at most perRow, as even as it can.
@@ -147,34 +168,43 @@
     model.nodes.forEach(function (n) { (tiers[n.tier] = tiers[n.tier] || []).push(n); });
     tiers = tiers.filter(Boolean);
     var T = tiers.length;
-    var columns = T * MAX_BOX_W + (T - 1) * COLUMN_GAP + 2 * PAD <= W;
+    var tierW = tiers.map(function (t) { return Math.max.apply(null, t.map(maxW)); });
+    var columns = tierW.reduce(function (a, b) { return a + b; }, 0) + (T - 1) * COLUMN_GAP + 2 * PAD <= W;
     var pos = {};
     var height;
-    var boxW;
     if (columns) {
-      boxW = MAX_BOX_W;
-      var tall = 0;
-      tiers.forEach(function (t) { tall = Math.max(tall, t.length); });
-      height = 2 * PAD + tall * BOX_H + (tall - 1) * GAP_Y;
-      var gapX = T > 1 ? (W - 2 * PAD - T * boxW) / (T - 1) : 0;
+      var colH = tiers.map(function (t) { return t.reduce(function (a, n) { return a + boxH(n); }, 0) + (t.length - 1) * GAP_Y; });
+      height = 2 * PAD + Math.max.apply(null, colH);
+      var gapX = T > 1 ? (W - 2 * PAD - tierW.reduce(function (a, b) { return a + b; }, 0)) / (T - 1) : 0;
+      var left = PAD;
       tiers.forEach(function (t, ti) {
-        var top = PAD + (height - 2 * PAD - (t.length * BOX_H + (t.length - 1) * GAP_Y)) / 2;
-        t.forEach(function (n, i) {
-          pos[n.id] = { x: T > 1 ? PAD + ti * (boxW + gapX) : (W - boxW) / 2, y: top + i * (BOX_H + GAP_Y), w: boxW };
+        var y = PAD + (height - 2 * PAD - colH[ti]) / 2;
+        t.forEach(function (n) {
+          var w = maxW(n);
+          pos[n.id] = { x: T > 1 ? left + (tierW[ti] - w) / 2 : (W - w) / 2, y: y, w: w, h: boxH(n) };
+          y += boxH(n) + GAP_Y;
         });
+        left += tierW[ti] + gapX;
       });
     } else {
       var perRow = Math.max(1, Math.floor((W - 2 * PAD + GAP_X) / (MIN_BOX_W + GAP_X)));
       var y = PAD;
-      boxW = MIN_BOX_W;
       tiers.forEach(function (t) {
         var at = 0;
         rowsOf(t.length, perRow).forEach(function (count) {
-          var w = Math.min(MAX_BOX_W, Math.floor((W - 2 * PAD - (count - 1) * GAP_X) / count));
-          var left = (W - (count * w + (count - 1) * GAP_X)) / 2;
-          for (var i = 0; i < count; i++) pos[t[at + i].id] = { x: left + i * (w + GAP_X), y: y, w: w };
+          var row = t.slice(at, at + count);
+          var share = Math.floor((W - 2 * PAD - (count - 1) * GAP_X) / count);
+          var widths = row.map(function (n) { return Math.min(maxW(n), share); });
+          var total = widths.reduce(function (a, b) { return a + b; }, 0) + (count - 1) * GAP_X;
+          var x = (W - total) / 2;
+          var rowH = 0;
+          row.forEach(function (n, i) {
+            pos[n.id] = { x: x, y: y, w: widths[i], h: boxH(n) };
+            x += widths[i] + GAP_X;
+            rowH = Math.max(rowH, boxH(n));
+          });
           at += count;
-          y += BOX_H + GAP_Y;
+          y += rowH + GAP_Y;
         });
         y += TIER_GAP - GAP_Y;
       });
@@ -185,10 +215,15 @@
       var max = Math.max(4, Math.floor((p.w - 10) / CHAR_W));
       var names = wrap(n.name, max, 2);
       var texts = facts(n).map(function (f) { return clip(f, max); });
-      var top = (BOX_H - (names.length + texts.length) * LINE_H) / 2 + 11;
-      var lines = names.map(function (t, i) { return { text: t, y: top + i * LINE_H, cls: 'nm-name' }; });
-      texts.forEach(function (t, i) { lines.push({ text: t, y: top + (names.length + i) * LINE_H, cls: i === 0 ? 'nm-state' : 'nm-fact' }); });
-      return { id: n.id, kind: n.kind, state: n.state, x: Math.round(p.x), y: Math.round(p.y), w: p.w, h: BOX_H, lines: lines, label: describe(n) };
+      var label = tag(n);
+      var count = (label ? 1 : 0) + names.length + texts.length;
+      var top = (p.h - count * LINE_H) / 2 + 11;
+      var lines = [];
+      if (label) lines.push({ text: label, y: top, cls: 'nm-tag' });
+      var first = label ? 1 : 0;
+      names.forEach(function (t, i) { lines.push({ text: t, y: top + (first + i) * LINE_H, cls: 'nm-name' }); });
+      texts.forEach(function (t, i) { lines.push({ text: t, y: top + (first + names.length + i) * LINE_H, cls: i === 0 ? 'nm-state' : 'nm-fact' }); });
+      return { id: n.id, kind: n.kind, state: n.state, x: Math.round(p.x), y: Math.round(p.y), w: p.w, h: p.h, lines: lines, label: describe(n) };
     });
     var at = {};
     nodes.forEach(function (n) { at[n.id] = n; });
@@ -230,7 +265,7 @@
 
   if (typeof document === 'undefined') {
     // Loaded by the tests: expose the pure parts only.
-    globalThis.netmapLogic = { buildModel: buildModel, layout: layout, describe: describe, listItems: listItems, wrap: wrap, clip: clip, rowsOf: rowsOf };
+    globalThis.netmapLogic = { buildModel: buildModel, layout: layout, describe: describe, summaryText: summaryText, listItems: listItems, wrap: wrap, clip: clip, rowsOf: rowsOf };
     return;
   }
 
@@ -274,6 +309,8 @@
       var g = el('g', { 'class': 'nm-node ' + n.kind + ' ' + n.state, tabindex: '0', role: 'img', 'aria-label': n.label, 'data-id': n.id, transform: 'translate(' + n.x + ' ' + n.y + ')' }, svg);
       el('title', {}, g).textContent = n.label;
       el('rect', { 'class': 'nm-box', width: n.w, height: n.h, rx: 10, ry: 10 }, g);
+      // The double border of a proxy: a second, thinner line inside the first.
+      if (n.kind === 'proxy') el('rect', { 'class': 'nm-box-inner', x: 5, y: 5, width: n.w - 10, height: n.h - 10, rx: 6, ry: 6 }, g);
       n.lines.forEach(function (l) {
         el('text', { 'class': l.cls, x: n.w / 2, y: l.y, 'text-anchor': 'middle' }, g).textContent = l.text;
       });
@@ -291,7 +328,7 @@
         if (again[i].getAttribute('data-id') === focusId) { again[i].focus(); break; }
       }
     }
-    summary.textContent = model.nodes.length + ' nodes, ' + model.edges.length + ' links';
+    summary.textContent = summaryText(model);
   }
 
   // The page hands over each fresh /api/status here. Whether the section is open stays as the

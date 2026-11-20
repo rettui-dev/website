@@ -471,9 +471,12 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .nm-node.unknown .nm-box { stroke: var(--yellow); }
 .nm-node.external .nm-box { stroke: var(--dim); stroke-dasharray: 6 4; fill: var(--sunken); }
 .nm-node.proxy .nm-box { stroke-width: 3; }
+.nm-box-inner { fill: none; stroke: var(--accent); stroke-width: 1.5; pointer-events: none; }
+.nm-tag { fill: var(--accent); font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 .nm-node:focus { outline: none; }
 .nm-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .nm-node:focus-visible .nm-box { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; }
+.nm-node:focus-visible .nm-box-inner { stroke: var(--text); }
 .nm-name { fill: var(--text); font-weight: 600; }
 .nm-state { fill: var(--text); }
 .nm-fact { fill: var(--dim); }

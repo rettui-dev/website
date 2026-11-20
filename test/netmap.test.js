@@ -20,7 +20,7 @@ const publicDir = path.join(root, 'public');
 const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(path.join(publicDir, 'netmap.js'), 'utf8'), sandbox);
-const { buildModel, layout, describe, listItems, wrap, clip, rowsOf } = sandbox.netmapLogic;
+const { buildModel, layout, describe, summaryText, listItems, wrap, clip, rowsOf } = sandbox.netmapLogic;
 
 const one = (extra) => `nodes:\n  - address: a.test:1\n${extra}`;
 const bad = (text, pattern) => assert.throws(() => loadConfig(text), (e) => e instanceof Error && pattern.test(e.message), text);
@@ -229,7 +229,7 @@ test('buildModel: clients only from fresh stats of a node that is not down', () 
 test('describe: the same words for the title, the name and the list', () => {
   const m = buildModel([door, front, back]);
   const by = Object.fromEntries(m.nodes.map((x) => [x.id, x]));
-  assert.equal(describe(by['h:1']), 'Front door: up, passes visitors to 2 nodes, 3 clients, connect time 5 ms, uptime 99.5% over 90 days.');
+  assert.equal(describe(by['h:1']), 'Proxy Front door, up, passes visitors to 2 nodes, 3 clients, connect time 5 ms, uptime 99.5% over 90 days.');
   assert.equal(describe(by['h:3']), 'Back: down, uptime 99.5% over 90 days.');
   assert.equal(describe(by['ext:edge|e.test:1']), 'Edge: external backbone peer, not monitored, address e.test:1 (not checked), used by Front door, Front.');
   assert.match(listItems(m)[0], /Connects to Front, Back, Edge\.$/);
@@ -291,7 +291,60 @@ test('state is in words as well as colour, on every node', () => {
   assert.equal(state('h:1'), '● Up');
   assert.equal(state('h:3'), '✕ Down');
   assert.match(state('ext:edge|e.test:1'), /External$/);
-  assert.equal(layout(buildModel([host(1, { status: 'unknown', role: 'proxy', proxy: { for: [] } })]), 800).nodes[0].lines[1].text, '? Unknown');
+  assert.equal(layout(buildModel([host(1, { status: 'unknown', role: 'proxy', proxy: { for: [] } })]), 800).nodes[0].lines.find((t) => t.cls === 'nm-state').text, '? Unknown');
+});
+
+test('a proxy is a different kind of box: wider, taller, tagged, and still has its state', () => {
+  const m = buildModel([door, front, back]);
+  assert.deepEqual([...m.nodes.filter((n) => n.kind !== 'external').map((n) => `${n.id}=${n.kind}`)], ['h:1=proxy', 'h:2=node', 'h:3=node']);
+  for (const w of [1000, 360]) {
+    const l = layout(m, w);
+    const by = Object.fromEntries(l.nodes.map((n) => [n.id, n]));
+    assert.ok(by['h:1'].w > by['h:2'].w || w < 400, `${w}: wider`);
+    assert.ok(by['h:1'].h > by['h:2'].h, `${w}: taller`);
+    // The tag is text, first in the box; the state word and glyph stay.
+    assert.deepEqual([...by['h:1'].lines.filter((t) => t.cls === 'nm-tag').map((t) => t.text)], ['Proxy']);
+    assert.equal(by['h:1'].lines[0].cls, 'nm-tag');
+    assert.equal(by['h:1'].lines.find((t) => t.cls === 'nm-state').text, '● Up');
+    assert.equal(by['h:2'].lines.some((t) => t.cls === 'nm-tag'), false);
+    assert.equal(by['ext:edge|e.test:1'].lines.some((t) => t.cls === 'nm-tag'), false);
+    // Every line is inside its box, and the lines do not collide.
+    for (const n of l.nodes) {
+      const ys = n.lines.map((t) => t.y);
+      assert.ok(ys.every((y, i) => y > 0 && y < n.h && (i === 0 || y - ys[i - 1] >= 15)), `${w}: ${n.id}`);
+    }
+  }
+  // Wide mode: the proxy keeps its centre in line with the nodes, and links start at its right edge.
+  const l = layout(m, 1000);
+  const door1 = l.nodes.find((n) => n.id === 'h:1');
+  assert.ok(l.edges.filter((e) => e.kind === 'proxy').every((e) => e.d.startsWith('M' + (door1.x + door1.w) + ' ')));
+  // The same words in the list.
+  assert.match(listItems(m)[0], /^Proxy Front door, up, /);
+  assert.doesNotMatch(listItems(m)[1], /^Proxy/);
+});
+
+test('a proxy with no nodes behind it, and a proxy that is down, are still drawn as a proxy', () => {
+  const l = layout(buildModel([host(1, { name: 'Door', role: 'proxy', proxy: { for: [] }, status: 'down', latencyMs: null })]), 800);
+  assert.equal(l.nodes[0].kind, 'proxy');
+  assert.equal(l.nodes[0].state, 'down');
+  assert.equal(l.nodes[0].label, 'Proxy Door, down, passes visitors to 0 nodes, uptime 99.5% over 90 days.');
+  assert.deepEqual([...l.nodes[0].lines.map((t) => t.text)], ['Proxy', 'Door', '✕ Down']);
+});
+
+test('summaryText says proxies, nodes, external peers and links apart', () => {
+  assert.equal(summaryText(buildModel([door, front, back])), '1 proxy, 2 nodes, 2 external peers, 5 links');
+  assert.equal(summaryText(buildModel([host(1, { role: 'proxy', proxy: { for: [] } })])), '1 proxy, 0 links');
+  assert.equal(summaryText(buildModel([host(1, { upstreams: [{ name: 'A' }, { name: 'B' }] })])), '1 node, 2 external peers, 2 links');
+});
+
+test('the page says what the proxy box looks like, and the styles keep its accent and state', () => {
+  const html = fs.readFileSync(path.join(publicDir, 'status.html'), 'utf8');
+  assert.match(html, /double border and the tag Proxy/);
+  const css = fs.readFileSync(path.join(publicDir, 'site.css'), 'utf8');
+  assert.match(css, /\.nm-box-inner \{[^}]*stroke: var\(--accent\)/);
+  assert.match(css, /\.nm-tag \{[^}]*fill: var\(--accent\)/);
+  // State colours stay on the outer box.
+  assert.match(css, /\.nm-node\.down \.nm-box \{ stroke: var\(--red\)/);
 });
 
 test('wrap, clip and rowsOf', () => {
