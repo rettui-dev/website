@@ -414,11 +414,12 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
   too-long strings and bad addresses stop the server with a message. Alerts are sent to the
   addresses in this file only.
 
-**LXMF and other messengers.** The website server has no Reticulum stack, so it cannot send an
-LXMF message itself. Point a webhook at a small bridge that does, for example a program that
-runs next to a Reticulum node, listens on a private address (so `http` is allowed), checks the
-`X-Rettui-Signature` header against the shared `secret`, and forwards the `message` field as an
-LXMF message to your address. The same works for any other service that accepts a webhook.
+**LXMF.** The website server has no Reticulum stack, so it cannot send an LXMF message itself.
+[`bridges/lxmf`](bridges/lxmf/README.md) is a small bridge that does: it receives this webhook
+(checking `X-Rettui-Signature` and the timestamp), and sends the `message` field as an LXMF message
+to the addresses you list, with a Reticulum entry point or a propagation node. It has its own
+Dockerfile and a Compose snippet, and it is not part of the website image. Any other service that
+accepts a webhook can be reached the same way, with a bridge of your own.
 
 **Other services (Telegram, Matrix, Pushover and so on).** The
 [shoutrrr](https://github.com/nicholas-fedor/shoutrrr) fork `nicholas-fedor/shoutrrr` sends a
