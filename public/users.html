@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Users - rettui</title>
+<meta name="description" content="Manage the users of this site">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/account.js" defer></script>
+<script src="/step-up.js" defer></script>
+<script src="/users-page.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status">Status</a>
+      <a href="/join">Join</a>
+      <a href="/downloads">Downloads</a>
+      <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
+  </div>
+</header>
+<main id="main" tabindex="-1" class="wrap acct-page users-page">
+  <h1>Users</h1>
+  <noscript><p class="note">The users page needs JavaScript.</p></noscript>
+  <p id="users-status" class="note" role="status">Loading the users...</p>
+  <p><a href="/account">Back to your account</a></p>
+
+  <div id="users-otp" class="acct-card users-otp" role="region" aria-labelledby="users-otp-h" tabindex="-1" hidden>
+    <h2 id="users-otp-h">One-time password</h2>
+    <p id="users-otp-for"></p>
+    <p class="users-warning">It is shown only now, and never again. Give it to them in a safe way (in person, or in an end-to-end encrypted message). They must choose a new password when they sign in with it.</p>
+    <p><code id="users-otp-value" class="acct-key"></code></p>
+    <div class="login-actions">
+      <button id="users-otp-copy" type="button">Copy</button>
+      <button id="users-otp-done" type="button" class="primary">I have passed it on</button>
+    </div>
+  </div>
+
+  <div id="users" hidden>
+    <section class="acct-card" aria-labelledby="users-list-h">
+      <h2 id="users-list-h" tabindex="-1">All users</h2>
+      <p class="note">Users from the config file are managed there: only their two-step sign-in can be reset here. The last admin cannot be removed or given another role.</p>
+      <table class="users-table">
+        <caption class="sr-only">Every user who can sign in</caption>
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Role</th>
+            <th scope="col">Source</th>
+            <th scope="col">Two-step sign-in</th>
+            <th scope="col">Devices</th>
+            <th scope="col">Last sign in</th>
+            <th scope="col">Created</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="users-rows"></tbody>
+      </table>
+    </section>
+
+    <section class="acct-card" aria-labelledby="users-new-h">
+      <h2 id="users-new-h">Add a user</h2>
+      <form id="new-form" class="acct-form" novalidate>
+        <p id="new-error" class="login-error" role="alert"></p>
+        <label for="new-name">Name</label>
+        <input id="new-name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" required aria-describedby="new-name-help new-error">
+        <p id="new-name-help" class="note">1 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit.</p>
+        <label for="new-role">Role</label>
+        <select id="new-role" aria-describedby="new-error">
+          <option value="viewer">viewer</option>
+          <option value="manage">manage</option>
+          <option value="admin">admin</option>
+        </select>
+        <fieldset class="users-choice">
+          <legend>First password</legend>
+          <div class="users-radio"><input type="radio" name="new-pw-kind" id="new-pw-generate" value="generate" checked> <label for="new-pw-generate">Make a one-time password, shown once</label></div>
+          <div class="users-radio"><input type="radio" name="new-pw-kind" id="new-pw-type" value="type"> <label for="new-pw-type">Type one</label></div>
+        </fieldset>
+        <label for="new-password" id="new-password-label" hidden>Their first password</label>
+        <input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" hidden aria-describedby="new-password-help new-error">
+        <p id="new-password-help" class="note">At least 12 characters, and not one of the most common passwords. Either way, they must choose their own password when they first sign in.</p>
+        <p id="new-confirm-help" class="note">Every change on this page asks in a pop-up for your password, and for a code from your app if your two-step sign-in is on.</p>
+        <div class="login-actions"><button id="new-submit" type="submit" class="primary">Add user</button></div>
+      </form>
+    </section>
+  </div>
+
+  <dialog id="act" class="login" aria-labelledby="act-title" aria-describedby="act-why">
+    <form id="act-form" class="login-form" novalidate>
+      <h2 id="act-title">Change</h2>
+      <p id="act-why" class="note login-why"></p>
+      <p id="act-error" class="login-error" role="alert"></p>
+      <label for="act-role" id="act-role-label" hidden>New role</label>
+      <select id="act-role" hidden>
+        <option value="viewer">viewer</option>
+        <option value="manage">manage</option>
+        <option value="admin">admin</option>
+      </select>
+      <fieldset id="act-pw" class="users-choice" hidden>
+        <legend>New password</legend>
+        <div class="users-radio"><input type="radio" name="act-pw-kind" id="act-pw-generate" value="generate" checked> <label for="act-pw-generate">Make a one-time password, shown once</label></div>
+        <div class="users-radio" id="act-pw-type-row"><input type="radio" name="act-pw-kind" id="act-pw-type" value="type"> <label for="act-pw-type">Type one</label></div>
+        <p id="act-pw-admin" class="note" hidden>An admin's password can only be reset to a one-time password, so that no other admin knows it.</p>
+      </fieldset>
+      <label for="act-password" id="act-password-label" hidden>Their new password</label>
+      <input id="act-password" type="password" autocomplete="new-password" maxlength="1024" hidden aria-describedby="act-error">
+      <div class="login-actions">
+        <button id="act-go" type="submit" class="primary">Next</button>
+        <button id="act-cancel" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
+    <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>

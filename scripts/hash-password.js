@@ -21,7 +21,7 @@ The password cannot be given as an argument.
   --parallelism N    lanes (default ${DEFAULTS.parallelism})
 `;
 
-class UsageError extends Error {}
+export class UsageError extends Error {}
 
 // Parses the arguments into {name, costs}. Throws UsageError on anything else,
 // and in particular on a bare word, which could be a password.
@@ -64,7 +64,7 @@ export function fromPipe(text) {
   return text.replace(/\r?\n$/, '');
 }
 
-async function readPipe(stream) {
+export async function readPipe(stream) {
   const chunks = [];
   let size = 0;
   for await (const c of stream) {
@@ -76,7 +76,7 @@ async function readPipe(stream) {
 }
 
 // Asks for a line on the terminal without showing it.
-function ask(prompt, input, output) {
+export function ask(prompt, input, output) {
   return new Promise((resolve, reject) => {
     output.write(prompt);
     let text = '';

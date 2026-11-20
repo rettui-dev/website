@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test \"test/*.test.js\"",
-    "hash-password": "node scripts/hash-password.js"
+    "hash-password": "node scripts/hash-password.js",
+    "users": "node scripts/users.js"
   },
   "dependencies": {
     "yaml": "2.9.1"

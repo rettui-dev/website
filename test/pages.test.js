@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { Monitor } from '../lib/monitor.js';
 import { createApp, resolveStatic } from '../lib/app.js';
@@ -159,7 +160,7 @@ test('copy buttons are buttons, point at real elements, and have a status region
 
 test('no page has inline script or style, and every file it loads exists', async () => {
   const pages = (await fs.readdir(publicDir)).filter((n) => n.endsWith('.html'));
-  assert.deepEqual(pages.sort(), ['account.html', 'downloads.html', 'index.html', 'join.html', 'status.html']);
+  assert.deepEqual(pages.sort(), ['account.html', 'downloads.html', 'index.html', 'join.html', 'status.html', 'users.html']);
   for (const name of pages) {
     const html = await read(name);
     assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)/i, `${name}: inline script`);
@@ -169,7 +170,7 @@ test('no page has inline script or style, and every file it loads exists', async
     assert.doesNotMatch(html, /\son[a-z]+\s*=/i, `${name}: event handler attribute`);
     assert.doesNotMatch(html, /javascript:/i, `${name}: javascript: link`);
     for (const [, url] of html.matchAll(/(?:src|href)="(\/[^"#?]*)"/g)) {
-      if (url === '/' || ['/status', '/join', '/downloads', '/account', '/join-qr.svg', '/feed.xml'].includes(url)) continue;
+      if (url === '/' || ['/status', '/join', '/downloads', '/account', '/users', '/join-qr.svg', '/feed.xml'].includes(url)) continue;
       await fs.access(path.join(publicDir, url)).catch(() => assert.fail(`${name} loads ${url}, which does not exist`));
     }
     // Same-origin only: no third party scripts, styles or images.
@@ -248,7 +249,7 @@ test('the Docker image copies every folder the new files are in', async () => {
 });
 
 test('every page has the sign in button in the header, after the theme button, and loads account.js', async () => {
-  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html']) {
+  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html', 'users.html']) {
     const html = await read(name);
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)[1];
     // Hidden until account.js has heard that the site has users; the words are in the file.
@@ -290,14 +291,139 @@ test('the account scripts only set text, send the request header, and the sign i
   assert.match(js, /post\('\/login\/code', /);
   assert.match(js, /post\('\/logout', /);
   assert.doesNotMatch(js, /fetch\('\/(login|logout)/);
-  // The page asks for the password for set up and new codes, and can sign out other sessions.
-  assert.match(page, /send\('\/api\/account\/totp\/setup', \{ password: password \}\)/);
-  assert.match(page, /send\('\/api\/account\/recovery-codes', body\)/);
+  // The sensitive changes go through the step-up dialog; set up asks it for the password only.
+  assert.match(page, /confirmed\('\/api\/account\/totp\/setup', \{\}, \{[^}]*passwordOnly: true \}\)/);
+  for (const p of ['/api/account/password', '/api/account/recovery-codes', '/api/account/totp/disable']) assert.match(page, new RegExp(`confirmed\\('${p.replace(/\//g, '\\/')}'`), p);
   assert.match(page, /\/api\/account\/sign-out-others/);
   const html = await read('account.html');
-  assert.match(html, /<input id="totp-setup-password" type="password" autocomplete="current-password"/);
+  // No inline box for the current password or a code: the pop-up asks, and the page says so.
+  assert.doesNotMatch(html, /id="(pw-current|totp-setup-password|codes-new-secret|totp-disable-code)"/);
+  assert.match(html, /a pop-up asks for your current password, and for a code from your app if two-step sign-in is on/);
+  assert.match(html, /<script src="\/step-up\.js" defer><\/script>\s*<script src="\/account-page\.js" defer><\/script>/);
   assert.match(html, /<button id="sessions-end" type="button">Sign out other sessions<\/button>/);
   assert.match(html, /<input id="totp-enable-code" type="text" inputmode="numeric" autocomplete="one-time-code"/);
   assert.match(html, /<input id="pw-next" type="password" autocomplete="new-password"/);
   assert.match(html, /<meta name="robots" content="noindex">/);
+});
+
+test('the users page script only sets text, sends the request header, and asks before destructive changes', async () => {
+  const js = await read('users-page.js');
+  assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+  assert.match(js, /'X-Rettui-Request': '1'/);
+  assert.match(js, /'Content-Type': 'application\/json'/);
+  for (const p of ['/api/users/create', '/api/users/role', '/api/users/delete', '/api/users/reset-password', '/api/users/reset-second-factor']) assert.ok(js.includes(`'${p}'`), p);
+  // Every change goes through the step-up dialog, which says what it does; choices come first.
+  assert.match(js, /window\.rettuiStepUp\.ask\(/);
+  assert.match(js, /\$\('act'\)\.showModal\(\)/);
+  assert.match(js, /navigator\.clipboard\.writeText\(\$\('users-otp-value'\)\.textContent\)/);
+  const html = await read('users.html');
+  assert.match(html, /<meta name="robots" content="noindex">/);
+  assert.match(html, /<table class="users-table">/);
+  assert.match(html, /<th scope="col">Actions<\/th>/);
+  assert.match(html, /shown only now, and never again/);
+  // The account page links to it, hidden until the server says this is an admin.
+  assert.match(await read('account.html'), /<p id="acct-users" hidden><a href="\/users">Manage users<\/a>/);
+  assert.match(await read('account-page.js'), /\$\('acct-users'\)\.hidden = data\.canManageUsers !== true/);
+});
+
+test('the step-up dialog asks for the password, and the code only with two-step sign-in on; it is built without markup', async () => {
+  const js = await read('step-up.js');
+  assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+  // A modal dialog with a title, the words of what happens, and an error that is read out.
+  assert.match(js, /el\('dialog', 'login'\)/);
+  assert.match(js, /dlg\.showModal\(\)/);
+  assert.match(js, /setAttribute\('aria-labelledby', 'stepup-title'\)/);
+  assert.match(js, /err\.setAttribute\('aria-live', 'assertive'\)/);
+  // The password, always.
+  assert.match(js, /el\('label', null, 'Your password'\)/);
+  assert.match(js, /pw\.type = 'password';\s*pw\.autocomplete = 'current-password';/);
+  // The code: a numeric one-time-code field that password managers leave alone, and a recovery code instead.
+  assert.match(js, /el\('label', null, 'Code from your app'\)/);
+  assert.match(js, /code\.setAttribute\('inputmode', 'numeric'\)/);
+  assert.match(js, /code\.pattern = '\[0-9\]\{6\}'/);
+  assert.match(js, /i\.autocomplete = id === 'stepup-code' \? 'one-time-code' : 'off'/);
+  assert.match(js, /\['data-bwignore', 'data-1p-ignore', 'data-lpignore'\]\.forEach/);
+  assert.match(js, /'Use a recovery code instead'/);
+  // Shown only with two-step sign-in on.
+  assert.match(js, /\$\('stepup-code'\)\.hidden = !second \|\| on/);
+  // Confirm and Cancel; Escape (cancel) and the backdrop close it; Tab stays inside; the focus goes back.
+  assert.match(js, /el\('button', 'primary', 'Confirm'\)/);
+  assert.match(js, /el\('button', null, 'Cancel'\)/);
+  assert.match(js, /addEventListener\('cancel'/);
+  assert.match(js, /e\.key !== 'Tab'/);
+  assert.match(js, /s\.back\.focus\(\)/);
+  // Loaded on both pages that use it, never inline.
+  for (const name of ['account.html', 'users.html']) assert.match(await read(name), /<script src="\/step-up\.js" defer><\/script>/, name);
+  // The users page confirms every change there, and asks for a code when the admin's two-step sign-in is on.
+  const users = await read('users-page.js');
+  assert.match(users, /secondFactor: Boolean\(data && data\.secondFactor\)/);
+  assert.doesNotMatch(await read('users.html'), /id="(new-confirm|act-confirm)"/);
+  // The code field of the sign in dialog keeps the password manager hints.
+  assert.match(await read('account.js'), /\['data-bwignore', 'data-1p-ignore', 'data-lpignore'\]\.forEach\(function \(a\) \{ code\.setAttribute\(a, 'true'\); \}\)/);
+});
+
+// A few elements, enough for users-page.js to run in node:vm.
+class FakeElement {
+  constructor(id = null) {
+    Object.assign(this, { id, hidden: false, value: '', checked: false, disabled: false, children: [], listeners: {}, attrs: {}, isConnected: true, text: '' });
+  }
+  get textContent() {
+    return this.text;
+  }
+  set textContent(v) {
+    this.text = String(v);
+    this.children = [];
+  }
+  get firstChild() {
+    return this.children[0] ?? null;
+  }
+  addEventListener(type, f) {
+    (this.listeners[type] ??= []).push(f);
+  }
+  fire(type, event = {}) {
+    for (const f of this.listeners[type] ?? []) f({ preventDefault() {}, ...event });
+  }
+  appendChild(c) {
+    this.children.push(c);
+    return c;
+  }
+  setAttribute(k, v) {
+    this.attrs[k] = v;
+  }
+  focus() {}
+  showModal() {}
+  close() {
+    this.fire('close');
+  }
+  all() {
+    return [this, ...this.children.flatMap((c) => c.all())];
+  }
+}
+
+test('the users page keeps its success message once the list is loaded again', async () => {
+  const js = await read('users-page.js');
+  const els = new Map();
+  const byId = (id) => {
+    if (!els.has(id)) els.set(id, new FakeElement(id));
+    return els.get(id);
+  };
+  const users = { me: 'alice', secondFactor: false, roles: ['admin', 'manage', 'viewer'], users: [{ name: 'alice', role: 'admin', source: 'config', secondFactor: false, devices: 0 }, { name: 'carol', role: 'viewer', source: 'store', secondFactor: false, devices: 0 }] };
+  const answer = (status, body) => Promise.resolve({ status, json: () => Promise.resolve(body) });
+  const context = {
+    document: { getElementById: byId, createElement: () => new FakeElement() },
+    window: { rettuiStepUp: { ask: (o) => o.send({ password: 'pw' }) } },
+    fetch: (url, opts) => (opts?.method === 'POST' ? answer(200, { ok: true }) : answer(200, users)),
+    navigator: {},
+    location: { assign() {} },
+  };
+  vm.runInNewContext(js, context);
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+  await settle();
+  const button = byId('users-rows').all().find((e) => e.attrs['aria-label'] === 'Change the role of carol');
+  button.fire('click');
+  byId('act-role').value = 'manage';
+  byId('act-form').fire('submit');
+  await settle();
+  assert.equal(byId('users-status').textContent, 'carol now has the role manage.');
+  assert.match(await read('users.html'), /<p id="users-status" class="note" role="status">/);
 });

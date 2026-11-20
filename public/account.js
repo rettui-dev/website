@@ -119,8 +119,16 @@
     setCodeError('');
   }
 
+  // A user whose password an admin set can only change it, on the account page: they are sent there.
+  function mustChange(flag) {
+    if (flag !== true || location.pathname === '/account' || location.pathname === '/account/') return false;
+    location.assign('/account');
+    return true;
+  }
+
   // A sign in that is complete: the dialog closes and whoever listens hears of it.
   function signedIn(body) {
+    if (mustChange(body.mustChangePassword)) return Promise.resolve();
     var pass = document.getElementById('login-password');
     pass.value = '';
     name = typeof body.name === 'string' ? body.name : null;
@@ -337,6 +345,9 @@
     code.type = 'text';
     code.setAttribute('inputmode', 'numeric');
     code.autocomplete = 'one-time-code';
+    // Password managers take a lone text field for a user name and fill it in: tell them not to.
+    // (Bitwarden still copies the code to the clipboard when it fills the password.)
+    ['data-bwignore', 'data-1p-ignore', 'data-lpignore'].forEach(function (a) { code.setAttribute(a, 'true'); });
     code.pattern = '[0-9]{6}';
     code.maxLength = 6;
     code.required = true;
@@ -350,6 +361,7 @@
     rec.name = 'recovery';
     rec.type = 'text';
     rec.autocomplete = 'off';
+    ['data-bwignore', 'data-1p-ignore', 'data-lpignore'].forEach(function (a) { rec.setAttribute(a, 'true'); });
     rec.maxLength = 32;
     rec.hidden = true;
     rec.spellcheck = false;
@@ -420,6 +432,7 @@
       if (!s || s.enabled !== true) return;
       enabled = true;
       name = typeof s.name === 'string' ? s.name : null;
+      if (mustChange(s.mustChangePassword)) return;
       build();
       paint();
       document.dispatchEvent(new CustomEvent('rettui:account'));

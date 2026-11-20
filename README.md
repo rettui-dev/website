@@ -41,7 +41,9 @@ hosts, keeps their history and can fetch their node stats.
 - `/healthz` answers `ok` (used by the Docker health check).
 - `/login` and `/logout` (POST only) exist only when the config file has users (see "Logins").
 - `/api/session` answers `{enabled, name}`: whether the site has users, and the name of whoever is signed in
-  (`null` if nobody). The Sign in button on every page asks it. GET and HEAD only, never cached.
+  (`null` if nobody), and `mustChangePassword: true` while their password is one an admin set.
+  The Sign in button on every page asks it. GET and HEAD only, never cached.
+- `/users` and `/api/users` are the Users page and its API, for admins only (see "Managing users").
 
 ## Join page
 
@@ -139,6 +141,7 @@ Needs Node.js 24.7 or later (the login uses its built-in Argon2id).
     npm start        # http://localhost:8080
     npm test
     npm run hash-password -- --name alice   # a password_hash for the config file (see "Logins")
+    npm run users -- list                   # the users in users.json (see "Managing users")
 
 ## Docker
 
@@ -890,17 +893,17 @@ second factor.
   they did. Their name, password and role are set in the config file only; the account page
   says "Managed by config" and has no password change. Each may have a `role`: `admin`,
   `manage` or `viewer` (the default when it is left out).
-- **The user store**, `users.json` in `DATA_DIR`, for users made on the website (the users page
-  that makes them comes in a later version; `lib/users.js` already has create, delete, set role
-  and reset second factor, and refuses to remove or demote the last admin; whatever calls them
-  must also end the user's sessions with `endUser` from `lib/login.js`). Each has a name, a
-  role, an Argon2id password hash like those in the config file, the times it was made and last
-  signed in, its second factor, and a list of credentials kept for passkeys later.
+- **The user store**, `users.json` in `DATA_DIR`, for users made on the website's Users page or
+  with `scripts/users.js` (see "Managing users"). Each has a name, a role, an Argon2id password
+  hash like those in the config file, the times it was made and last signed in, its second
+  factor, a list of credentials kept for passkeys later, and `mustChangePassword` while the
+  password is one an admin set.
 
 When a name is in both, the one in the config file is used and the server logs a warning at
 start; the one in the store cannot sign in, and is left as it is. A user in the config file can
 still turn on a second factor: it is kept in the store under the user's name (`configUsers` in the
-file), with nothing else. Roles are shown on the account page; nothing else depends on them yet.
+file), with nothing else. Roles are shown on the account page. `admin` opens the Users page (see
+"Managing users"); nothing else depends on the role yet.
 
 **The store file.** `users.json` is read once at start and written whole on every change: to a
 temporary file with mode 0600, synced to disk, then renamed over the old one, so a crash never
@@ -908,6 +911,28 @@ leaves half a file. A file that cannot be read (not JSON, an unknown or newer ve
 that makes no sense) stops the server at start with a message that says why, and the file is left
 as it is: a broken store never becomes an empty one, which would drop everyone's second factor.
 Fix or move the file and start again. A store that other users can read gets a warning at start.
+The file keeps its owner and group when it is written (so `scripts/users.js` run as root does not
+take it away from the server's user).
+
+The server reads a `users.json` of up to 8 MiB, with up to 500 website users (and as many records
+for users in the config file). That is above the largest file 500 users with everything filled
+in make (about 4.4 MiB, counting a record for 500 config users as well: the longest password hash,
+two-step sign-in, recovery codes and ten known devices each), and
+the server never writes a file it would not read back: a change that would make the file larger,
+or a user past the 500th, is refused (the Users page says "The user store is full", with 409 for
+the user count and 500 for the size) and nothing changes.
+
+**One writer at a time.** While the server runs it keeps `users.lock` in `DATA_DIR` (the time it
+started), touches it every 10 seconds and removes it when it stops cleanly; `scripts/users.js`
+refuses to change `users.json` while that file is younger than 30 seconds. The server also notes
+which `users.json` it read or wrote last (its inode, size and modification time) and looks again
+before every write: when the file was changed on disk meanwhile (by `scripts/users.js` with
+`--server-stopped`, or a copy put back), the server never writes over it. It logs
+`users.json changed on disk; restart the website to load it` (at most once a minute), writes
+nothing to the file from then on, and every change that needs a write answers 500 "The user store
+changed on disk": restart the website to load the file. Sign ins still work meanwhile, but their
+times and new devices are not saved.
+
 TOTP secrets are kept in the file as they are (base32), because the server needs them to check a
 code; recovery codes are kept only as SHA-256 hashes. Keep the data directory as private as the
 config file, and back it up with it.
@@ -918,8 +943,8 @@ is a new random 20-byte secret, and it is shown this once, to its owner: no late
 it, it is never in a URL and never logged. It is only turned on once the first code from the app
 is right; turning it on gives ten recovery codes, shown once too, with Copy and Download buttons.
 Each recovery code signs in once instead of a code from the app. New recovery codes replace all
-the old ones. Setting it up needs the password; new recovery codes and turning it off need a
-current code or the password (see "Changes need a recent sign in").
+the old ones. Setting it up needs the password; new recovery codes and turning it off need the
+password and a current code (or a recovery code) (see "Changes need a recent sign in").
 
 With it on, a right password no longer signs in by itself. `/login` answers 200 with
 `{"ok": false, "secondFactor": true, "pending": "..."}` and no cookie, and the sign in dialog asks
@@ -958,16 +983,30 @@ factor, making new recovery codes and signing out other sessions need a sign in 
 minutes. After that the page asks for the password again (`POST /api/account/reauth`) and then goes
 on. That can be done at most 10 times an hour from one session and 20 times an hour for one user,
 right and wrong passwords alike (a right one does not start the count again); past that the
-answer is 429 with `Retry-After`. Some need more in the request itself:
+answer is 429 with `Retry-After`. Some need more in the request itself, and the page asks for it
+in a pop-up (the step-up dialog) when the button is pressed, not in boxes on the page:
 
-- **Password change:** the current password. It is for website users only. The new one needs at
+- **Password change, new recovery codes, turning two-step sign-in off** (and every change on the
+  Users page): the password (`password`) **and**, when two-step sign-in is on, a current code
+  from the app (`code`) or an unused recovery code (`recovery`). Neither is enough alone: the
+  password alone is refused with 400 and `field: "code"`, a code alone with `field: "password"`.
+  A missing code is refused before the password is checked (no hash, no try counted); the code
+  is only checked once the password is right, so a wrong password never uses up a code. A code
+  counts like one at sign in: a wrong one counts in the same waits, and a code (and its 30
+  seconds) works once, so a request cannot be replayed. A recovery code used here is used up and
+  is an audit line, as at sign in. Users without two-step sign-in give the password only. The
+  dialog has "Your password", and with two-step sign-in on "Code from your app" (with "Use a
+  recovery code instead"); it keeps the keyboard focus inside, closes with Escape, gives the
+  focus back to the button, and shows a wrong password or code inside it. When the sign in is
+  older than 15 minutes, the password given there makes it recent again first.
+- **Password change:** the current password is the step-up's password (`password`; `current`,
+  the older name, is still read). It is for website users only. The new one needs at
   least 12 characters and at most 1024 bytes, must not be one of a built-in list of the most
   common passwords (any case), one character over and over, or the name with fewer than 8 other
   characters. Passwords in the config file are not checked: the server only has their hash, so
   pick them with the same care.
-- **Set up two-step sign-in:** the password (`password`).
-- **New recovery codes** and **turning two-step sign-in off:** a current code from the app
-  (`code`) or the password.
+- **Set up two-step sign-in:** the password (`password`), in the same dialog; then the first
+  code from the app, on the page, turns it on.
 
 A password asked for while signed in counts in a wait of that session (five free, then doubling),
 kept apart from every other count, so nobody outside can hold a signed-in user back by sending
@@ -998,8 +1037,9 @@ Setting up, turning on and off, new recovery codes and signing out other session
 at most 5 times an hour from one session and 10 times an hour for one user, wrong passwords and
 codes included; past that the answer is 429 with `Retry-After`.
 
-A change is written to `users.json` first and only then made: when the write fails (a full disk),
-the answer is 500, nothing has changed, and nobody was signed out.
+A change is written to `users.json` first and only then made: when the write fails (a full disk,
+a full user store, or a `users.json` changed on disk, see "One writer at a time"), the answer is
+500 and says which, nothing has changed, and nobody was signed out.
 
 **The account API.** `GET /api/account` says who is signed in, and never holds a secret. The
 changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enable`,
@@ -1010,11 +1050,20 @@ same-origin`, or `Origin` naming the host); a form on another site can send none
 Without a session the answer is 401. All answers carry `Cache-Control: no-store`.
 
 **Audit log.** `audit.log` in `DATA_DIR` gets one JSON line per security event, appended, mode
-0600: `password-changed`, `totp-enabled`, `totp-disabled` (`with`: `code` or `password`),
+0600: `password-changed` (`with`), `totp-enabled`, `totp-disabled` (`with`: `password`,
+`password+code` or `password+recovery`),
 `recovery-code-used` (with how many are `left`), `recovery-codes-regenerated` (`with`),
 `sessions-ended` (how many were `ended`), `device-added` (a sign in from a new browser),
 `device-removed` and `devices-removed` (how many were `removed`, and how many sessions that
-ended, `ended`). Each line has the time, the user and the address. No password, secret, code or
+ended, `ended`). Changes on the Users page add `user-created` (`role`, and `password`:
+`generated` or `typed`), `user-role-changed` (`from`, `to`), `user-deleted` (`role`),
+`user-password-reset` (`password`) and `user-second-factor-reset`; each of those has the admin
+who made it (`actor`), the `user` it was made to, how many of their sessions `ended`, and how
+the admin confirmed it (`with`). `user-role-changed` has the role the user had right before the
+change, also when another change came in between. Resetting the password or the two-step sign-in
+of another **admin** is `admin-reset-admin` instead, with the `actor`, the `target` admin, `what`
+was reset (`password` or `second-factor`), `ended` and `with`, so that one admin taking over
+another stands out. Each line has the time, the user and the address. No password, secret, code or
 device id is ever in it. `device-added` is only written for a user's first new browser in 24
 hours, or when the new browser pushes out a known device older than that (`pushedOut`: how
 many); the other new browsers are summed up in `failures.log`, so that an account signing in from
@@ -1033,6 +1082,128 @@ Both are bounded: a line that would take one past 5 MiB first moves it to `.1` (
 three files of each are kept, the oldest is dropped. So copy `audit.log` off the server as it
 grows (a log shipper, or a timer that copies it to another machine): a long enough run of events
 still pushes old lines out, and whoever takes over the server can change the copy that stays on it.
+
+## Managing users
+
+Admins (role `admin`) manage users on the **Users** page, `/users`. The Account page shows a
+"Manage users" link to admins only. For everyone else (signed out, `manage`, `viewer`, or an
+admin who still has to change a password an admin set) `/users` answers 404 and `/api/users`
+401 or 403: the server decides, not the page.
+
+**What the page shows.** Every user: name, role, where they come from (config file or website),
+whether two-step sign-in is on, how many known devices, last sign in and when they were made. No
+password, hash, secret or device id is ever sent. On a phone the table becomes one card per user.
+
+**What an admin can do.**
+
+- **Add a user** (website users only): a name (1 to 32 letters, digits, `.`, `-`, `_`), a role
+  (`admin`, `manage` or `viewer`), and a first password. Either the admin types one (12+
+  characters, the same rules as a password change), or the page makes a one-time password (20
+  random letters and digits) and shows it once, with a Copy button: it is never shown again, not
+  stored anywhere but as a hash, and not logged. Either way the new user must choose their own
+  password when they first sign in.
+- **Change the role** of a website user.
+- **Reset the password** of a website user: a one-time or typed password, as above, which they
+  must change at their next sign in. An admin changes their own password on the Account page.
+  The password of another admin can only be reset to a one-time password (a typed one is refused
+  with 400): an admin who chose another admin's password, and then reset their two-step sign-in,
+  could sign in as them. Both are audited as `admin-reset-admin`.
+- **Reset two-step sign-in**, for someone who lost their phone: it turns TOTP off, removes the
+  recovery codes and forgets every known device. This works for users in the config file too.
+  An admin turns their own off on the Account page.
+- **Delete** a website user.
+
+Every way of writing the page's address (`/users.html`, `/users.html/`, `/%75sers.html`,
+`/users%2ehtml`, other cases) goes through the same check as `/users`, and every way of writing
+`/account.html` is the account page.
+
+Each change to a user signs that user out everywhere, ends their open second steps and forgets
+their known devices. Destructive changes ask in a dialog first, saying what will happen.
+
+**Users in the config file** are read-only here, marked "Managed by config": their name,
+password and role are changed in the config file. Only their second factor can be reset.
+
+**The last admin.** The last admin (counting the config file's admins too) can never be deleted
+or given another role, also not by themselves. An admin may give themselves another role, or
+delete themselves, only while another admin exists; they are then signed out at once.
+
+**Safeguards.** Every change needs, all at once: an admin's session; a sign in from the last 15
+minutes; the admin's password in the request itself, and with their two-step sign-in on a
+current code from their app (or a recovery code) as well, asked for in the step-up dialog (see
+"Changes need a recent sign in"); the request header, same origin and JSON,
+as for the account API (`POST /api/users/create`, `/role`, `/delete`, `/reset-password`,
+`/reset-second-factor`, at most 4 KiB). Each admin may make 30 changes an hour, wrong passwords
+and codes included (then 429 with `Retry-After`); a request that is refused before any password
+is asked (an unknown user, a bad name) does not count, and neither does one answered 503 because
+too many passwords were being checked at once (the admin's own requests in parallel, say). After every step the server checks that
+the admin's session is still there and still an admin's, and the store checks it again right
+before it writes: an admin signed out or demoted meanwhile gets 401 and nothing changes. Each
+change is an audit line with the admin and the user (see "Audit log").
+
+**First sign in with a password an admin set.** The sign in works, and the answer says
+`mustChangePassword: true`; the header sends the user to the Account page, which shows only the
+password change. Until they choose a new password, the session can only change the password and
+sign out: the status page shows them what a visitor sees, and every other account or users change
+answers 403.
+
+**The first admin.** There is no "first user becomes admin". With no admin anywhere, the Users
+page does not exist. Make one in either way:
+
+- give a user in the config file `role: admin` and restart the server, or
+- stop the server, run `node scripts/users.js create NAME --role admin` (it asks for the
+  password twice without showing it, or reads it from stdin), and start the server again.
+  In Docker: `docker compose run --rm -it website node scripts/users.js create NAME --role admin`
+  (the container needs the same data volume). It runs as the image's `node` user, like the
+  server; run as root without a `users.json`, the command warns that the new file is root's
+  (mode 0600), which the server cannot read: `chown` it to the server's user.
+
+**The command line, `scripts/users.js`.** It works on `users.json` offline, with the same rules
+as the website (names, roles, password rules, the last admin), writing the file whole with mode
+0600; a `users.json` that cannot be read is left as it is and nothing is done.
+
+    node scripts/users.js [--data-dir DIR] [--config FILE] COMMAND
+      list
+      create NAME --role ROLE [--generate] [--must-change] [--server-stopped]
+      set-role NAME ROLE [--force] [--server-stopped]
+      reset-password NAME [--generate] [--must-change] [--server-stopped]
+      reset-2fa NAME [--server-stopped]
+      delete NAME [--force] [--server-stopped]
+
+`--data-dir` defaults to `DATA_DIR` (else `./data`), `--config` to `CONFIG_FILE`. With the config
+file its admins count for the last-admin rule, its names cannot be taken, and `reset-2fa` works
+for its users; without it, a note says so. `--generate` makes a one-time password, printed once,
+that must be changed at the next sign in (`--must-change` asks the same of a typed one). A
+password is never taken as an argument. `--force` lets the last admin be deleted or demoted, for
+recovery only. **Stop the server first and start it again afterwards:** the server reads
+`users.json` only when it starts and writes it whole from memory (the command says so after every
+change). A change is refused while `users.lock` says the server runs (touched in the last 30
+seconds); give `--server-stopped` only when you know it does not (it was killed, or the lock is on
+a copy of the data directory). A server that is still running anyway does not write over the
+change: it refuses every change until it is restarted (see "One writer at a time"). Restarting
+also ends every session. An unknown option or command is not repeated in the error, since a
+mistyped line may hold a password.
+
+**Recovery.**
+
+- *Lost the only admin password, or the admin left:* stop the server, then
+  `scripts/users.js reset-password NAME --generate` for a website admin, or
+  `create NEWNAME --role admin`; or give a config user `role: admin`. Start the server.
+- *An admin lost their phone:* another admin uses Reset two-step sign-in on the Users page. With
+  no other admin: stop the server, `scripts/users.js reset-2fa NAME` (add `--config` for a user
+  in the config file), start it. Recovery codes work too, if they still have them.
+
+**Moving users out of the config file.** Create each user in the store first (on the Users page
+or with `scripts/users.js`), with a name that is not in the config file, or with the same name
+in this order: remove them from `users:` in the config file, restart, then create them in the
+store (on the page or with the command line). While a name is in both, the config file wins:
+the server warns at start and the store user cannot sign in. Make sure an admin is left
+(another one in the store, or the user you are moving) before you take an admin out of the
+config file. A config user's two-step sign-in and devices are kept in `users.json` under
+`configUsers` and are **not** moved: a store user made with the same name starts without
+two-step sign-in and without known devices, and must set it up again on the Account page. The
+old record stays in `configUsers`, unused (the command line mentions it), and would be used again
+only if the name went back into the config file; reset it there first (`reset-2fa` with
+`--config`) if you want it gone.
 
 ## Node logs
 

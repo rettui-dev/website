@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { hashPassword, parsePhc } from '../lib/password.js';
-import { MAX_DEVICES, RECOVERY_CODES, STORE_FILE, StoreError, UserError, UserStore, hashRecoveryCode } from '../lib/users.js';
+import {
+  CHANGED_ON_DISK, LOCK_FILE, LOCK_FRESH_MS, MAX_DEVICES, MAX_STORE_BYTES, MAX_STORE_USERS, RECOVERY_CODES, STORE_FILE, StoreChangedError, StoreError, StoreFullError, UserError, UserStore,
+  hashRecoveryCode, serverHeartbeat, startHeartbeat, worstCaseStoreBytes, writeAtomic, writeRefusal,
+} from '../lib/users.js';
 import { base32Decode, hotp, stepAt } from '../lib/totp.js';
 import { FAILURES_FILE, createAudit, createFailureLog } from '../lib/audit.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
@@ -135,6 +139,7 @@ test('store: a corrupt, unknown or newer file stops the start with a message, an
     [JSON.stringify({ ...good, users: [{ ...good.users[0], totp: { secret: 'JBSWY3DPEHPK3PXP', enabled: 'yes', lastUsedStep: null } }] }), /enabled/],
     [JSON.stringify({ ...good, users: [{ ...good.users[0], recoveryCodes: ['abc'] }] }), /recoveryCodes/],
     [JSON.stringify({ ...good, users: [{ ...good.users[0], credentials: [{}] }] }), /credentials/],
+    [JSON.stringify({ ...good, users: [{ ...good.users[0], mustChangePassword: 'yes' }] }), /mustChangePassword/],
     [JSON.stringify({ ...good, users: [{ ...good.users[0], devices: [{ hash: 'abc', created: '2027-01-01T00:00:00.000Z', lastUsed: '2027-01-01T00:00:00.000Z' }] }] }), /devices/],
     [JSON.stringify({ ...good, users: [{ ...good.users[0], devices: Array.from({ length: 11 }, () => ({ hash: 'a'.repeat(64), created: '2027-01-01T00:00:00.000Z', lastUsed: '2027-01-01T00:00:00.000Z' })) }] }), /devices/],
     [JSON.stringify({ ...good, configUsers: [{ name: 'alice', devices: [{ hash: 'a'.repeat(64), created: 'yesterday', lastUsed: '2027-01-01T00:00:00.000Z' }] }] }), /devices/],
@@ -389,11 +394,11 @@ test('store: two changes at once to different users are both kept on disk', asyn
   assert.equal(again.totpPending('carol'), false);
 });
 
-test('store: lookup gives name, role and source without the hash', async () => {
+test('store: lookup gives name, role, source and whether the password must change, without the hash', async () => {
   const { store } = await open({ configUsers: [await configUser('Alice', 'admin')] });
   await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hash() });
-  assert.deepEqual(store.lookup('ALICE'), { name: 'Alice', role: 'admin', source: 'config' });
-  assert.deepEqual(store.lookup('bob'), { name: 'bob', role: 'manage', source: 'store' });
+  assert.deepEqual(store.lookup('ALICE'), { name: 'Alice', role: 'admin', source: 'config', mustChangePassword: false });
+  assert.deepEqual(store.lookup('bob'), { name: 'bob', role: 'manage', source: 'store', mustChangePassword: false });
   assert.equal(store.lookup('nobody'), null);
 });
 
@@ -598,4 +603,181 @@ test('audit: flush resolves once every line asked for is written', async () => {
   const lines = (await fs.readFile(audit.file, 'utf8')).trim().split('\n');
   assert.equal(lines.length, 5);
   assert.equal(JSON.parse(lines[4]).ended, 4);
+});
+
+test('store: a password set by an admin must be changed; the flag is kept on disk only while it is set', async () => {
+  const { store, dataDir, file } = await open();
+  await store.createUser({ name: 'bob', passwordHash: await hash(), mustChangePassword: true });
+  await store.createUser({ name: 'carol', passwordHash: await hash() });
+  assert.equal(store.lookup('bob').mustChangePassword, true);
+  assert.equal(store.lookup('carol').mustChangePassword, false);
+  const disk = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(disk.users.find((u) => u.name === 'bob').mustChangePassword, true);
+  assert.equal(Object.hasOwn(disk.users.find((u) => u.name === 'carol'), 'mustChangePassword'), false, 'older versions read the same file');
+  const again = await UserStore.open({ dataDir, warn: () => {} });
+  assert.equal(again.lookup('bob').mustChangePassword, true);
+  // Their own new password clears it; an admin's reset sets it again.
+  await again.setPassword('bob', await hash('bobs own password'));
+  assert.equal(again.lookup('bob').mustChangePassword, false);
+  assert.equal(Object.hasOwn(JSON.parse(await fs.readFile(file, 'utf8')).users.find((u) => u.name === 'bob'), 'mustChangePassword'), false);
+  await again.setPassword('carol', await hash(), { mustChangePassword: true });
+  assert.equal(again.lookup('carol').mustChangePassword, true);
+});
+
+test('store: the overview lists every user by name with what the users page shows, and no secret', async () => {
+  const { store } = await open({ configUsers: [await configUser('Zed', 'admin')] });
+  await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hash(), mustChangePassword: true });
+  await store.createUser({ name: 'Anna', passwordHash: await hash() });
+  await store.addDevice('bob', 'a'.repeat(64));
+  const list = store.overview();
+  assert.deepEqual(list.map((u) => u.name), ['Anna', 'bob', 'Zed']);
+  assert.deepEqual(list[1], { name: 'bob', role: 'manage', source: 'store', secondFactor: false, devices: 1, lastLogin: null, created: new Date(NOW).toISOString(), mustChangePassword: true });
+  assert.deepEqual(list[2], { name: 'Zed', role: 'admin', source: 'config', secondFactor: false, devices: 0, lastLogin: null, created: null, mustChangePassword: false });
+  assert.doesNotMatch(JSON.stringify(list), /argon2|[0-9a-f]{64}/);
+  assert.equal(store.wouldLeaveNoAdmin('Zed'), true);
+  assert.equal(store.wouldLeaveNoAdmin('Zed', 'admin'), false);
+  assert.equal(store.wouldLeaveNoAdmin('bob'), false);
+});
+
+test('store: the last admin goes only with force; a guard that says no changes nothing', async () => {
+  const { store } = await open();
+  await store.createUser({ name: 'root', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  await assert.rejects(store.setRole('root', 'viewer'), (e) => e.code === 'last-admin');
+  for (const p of [store.deleteUser('bob', { guard: () => false }), store.setRole('bob', 'admin', { guard: () => false }), store.resetSecondFactor('bob', { guard: () => false }), store.createUser({ name: 'x', passwordHash: await hash() }, { guard: () => false })]) {
+    await assert.rejects(p, (e) => e instanceof UserError && e.code === 'gone');
+  }
+  assert.equal(store.lookup('bob').role, 'viewer');
+  assert.equal(store.lookup('x'), null);
+  await store.setRole('root', 'viewer', { force: true });
+  assert.equal(store.admins(), 0);
+  await store.setRole('root', 'admin');
+  await store.deleteUser('root', { force: true });
+  assert.equal(store.lookup('root'), null);
+});
+
+test('store: the largest file MAX_STORE_USERS users make is below the read limit, which the old 1 MiB was not', () => {
+  const one = worstCaseStoreBytes(1);
+  const two = worstCaseStoreBytes(2);
+  // Two lists of that many records each: the size grows by two records per user.
+  const perUser = two - one;
+  assert.ok(perUser > 2 * 3000 && perUser < 2 * 5000, `${perUser} bytes per user`);
+  assert.ok(worstCaseStoreBytes(MAX_STORE_USERS) <= MAX_STORE_BYTES);
+  assert.ok(worstCaseStoreBytes(MAX_STORE_USERS) > 1024 * 1024);
+  assert.equal(worstCaseStoreBytes(MAX_STORE_USERS), one + (MAX_STORE_USERS - 1) * perUser);
+});
+
+test('store: filled to the cap with every field at its most, it is written and read back; more is refused and changes nothing', async () => {
+  const maxUsers = 4;
+  const maxBytes = worstCaseStoreBytes(maxUsers);
+  const clock = { t: NOW };
+  const dataDir = await tmp();
+  const configUsers = [await configUser('Alice', 'admin'), await configUser('Carol', 'viewer')];
+  const store = await UserStore.open({ dataDir, configUsers, warn: () => {}, now: () => clock.t, maxUsers, maxBytes });
+  await store.createUser({ name: 'b'.repeat(32), role: 'manage', passwordHash: await hash(), mustChangePassword: true });
+  await store.createUser({ name: 'd'.repeat(32), role: 'manage', passwordHash: await hash(), mustChangePassword: true });
+  for (const name of ['b'.repeat(32), 'd'.repeat(32), 'alice', 'carol']) {
+    await store.beginTotp(name);
+    await store.enableTotp(name, codeAt(store, name, clock.t));
+    for (let i = 0; i < MAX_DEVICES + 3; i++) await store.addDevice(name, crypto.createHash('sha256').update(`${name}${i}`).digest('hex'));
+    await store.recordLogin(name);
+  }
+  await assert.rejects(store.createUser({ name: 'eve', passwordHash: await hash() }), (e) => e instanceof UserError && e.code === 'full');
+  const size = (await fs.stat(path.join(dataDir, STORE_FILE))).size;
+  assert.ok(size <= maxBytes, `${size} > ${maxBytes}`);
+  const again = await UserStore.open({ dataDir, configUsers, warn: () => {}, maxUsers, maxBytes });
+  assert.equal(again.devices('alice').length, MAX_DEVICES);
+  assert.equal(again.secondFactorEnabled('d'.repeat(32)), true);
+  // A file larger than the limit (unknown keys from a newer version, say) is not written.
+  const before = await fs.readFile(path.join(dataDir, STORE_FILE), 'utf8');
+  store.extra.padding = 'x'.repeat(maxBytes);
+  await assert.rejects(store.setRole('b'.repeat(32), 'viewer'), (e) => e instanceof StoreFullError && writeRefusal(e).includes('full'));
+  assert.equal(store.lookup('b'.repeat(32)).role, 'manage', 'nothing changed in memory');
+  assert.equal(await fs.readFile(path.join(dataDir, STORE_FILE), 'utf8'), before);
+  // And one the server finds larger than it reads stops the start.
+  await assert.rejects(UserStore.open({ dataDir, warn: () => {}, maxBytes: size - 1 }), /larger than/);
+});
+
+test('store: a users.json changed on disk is never written over; the server says so once a minute until restarted', async () => {
+  const clock = { t: NOW };
+  const logs = [];
+  const dataDir = await tmp();
+  const store = await UserStore.open({ dataDir, warn: () => {}, now: () => clock.t, log: (m) => logs.push(m) });
+  await store.createUser({ name: 'bob', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'carol', passwordHash: await hash() });
+  // Another writer (scripts/users.js) changes the file meanwhile.
+  const other = await UserStore.open({ dataDir, warn: () => {} });
+  await other.setRole('carol', 'manage');
+  const theirs = await fs.readFile(path.join(dataDir, STORE_FILE), 'utf8');
+  await assert.rejects(store.setRole('carol', 'admin'), (e) => e instanceof StoreChangedError && /restart the website/i.test(writeRefusal(e)));
+  assert.equal(store.lookup('carol').role, 'viewer');
+  // Writes made in memory first (a sign in, a device) are not written either.
+  await assert.rejects(store.addDevice('bob', 'a'.repeat(64)), StoreChangedError);
+  clock.t += 30_000;
+  await assert.rejects(store.recordLogin('bob'), StoreChangedError);
+  assert.equal(await fs.readFile(path.join(dataDir, STORE_FILE), 'utf8'), theirs);
+  assert.deepEqual(logs, [`error: ${CHANGED_ON_DISK}. Nothing is written to it until then, so changes made on the website meanwhile are not saved`]);
+  clock.t += 60_000;
+  await assert.rejects(store.recordLogin('bob'), StoreChangedError);
+  assert.equal(logs.length, 2);
+  // A file removed, or put there when there was none, counts as changed too.
+  const empty = await UserStore.open({ dataDir: await tmp(), warn: () => {}, log: () => {} });
+  await fs.writeFile(path.join(path.dirname(empty.file), STORE_FILE), theirs);
+  await assert.rejects(empty.createUser({ name: 'dave', passwordHash: await hash() }), StoreChangedError);
+  const removed = await UserStore.open({ dataDir, warn: () => {}, log: () => {} });
+  await fs.rm(path.join(dataDir, STORE_FILE));
+  await assert.rejects(removed.setRole('carol', 'viewer'), StoreChangedError);
+  await assert.rejects(fs.access(path.join(dataDir, STORE_FILE)));
+});
+
+test('store: a password typed by an admin is refused for an admin, also when they became one meanwhile', async () => {
+  const { store } = await open();
+  await store.createUser({ name: 'bob', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
+  await assert.rejects(store.setPassword('bob', await hash('another password'), { typedForAdmin: true }), (e) => e.code === 'admin-password');
+  await store.setPassword('carol', await hash('another password'), { typedForAdmin: true });
+  await store.setPassword('bob', await hash('another password'));
+  // setRole gives the role right before its change.
+  assert.equal(await store.setRole('carol', 'manage'), 'viewer');
+});
+
+test('writeAtomic keeps the owner and group of the file it replaces', { skip: process.platform === 'win32' || process.getuid?.() !== 0 }, async () => {
+  const dir = await tmp();
+  const file = path.join(dir, STORE_FILE);
+  await fs.writeFile(file, '{}', { mode: 0o600 });
+  await fs.chown(file, 4321, 4322);
+  await writeAtomic(file, '{"a":1}');
+  const st = await fs.stat(file);
+  assert.deepEqual([st.uid, st.gid, st.mode & 0o777], [4321, 4322, 0o600]);
+  assert.equal(await fs.readFile(file, 'utf8'), '{"a":1}');
+  // A new file is the writer's own.
+  const fresh = path.join(dir, 'new.json');
+  await writeAtomic(fresh, '{}');
+  assert.equal((await fs.stat(fresh)).uid, process.getuid());
+});
+
+test('heartbeat: users.lock is written at start, touched while the server runs, and removed when it stops', async () => {
+  const dataDir = await tmp();
+  const logs = [];
+  const beat = await startHeartbeat({ dataDir, intervalMs: 10, log: (m) => logs.push(m) });
+  assert.match(await fs.readFile(path.join(dataDir, LOCK_FILE), 'utf8'), /^started \d{4}-\d{2}-\d{2}T/);
+  assert.notEqual(await serverHeartbeat(dataDir), null);
+  // An old file is touched again.
+  const old = new Date(Date.now() - 120_000);
+  await fs.utimes(path.join(dataDir, LOCK_FILE), old, old);
+  assert.equal(await serverHeartbeat(dataDir), null);
+  for (let i = 0; i < 200 && (await serverHeartbeat(dataDir)) === null; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.notEqual(await serverHeartbeat(dataDir), null);
+  // A file removed meanwhile is written again.
+  await fs.rm(path.join(dataDir, LOCK_FILE));
+  for (let i = 0; i < 200 && (await serverHeartbeat(dataDir)) === null; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.notEqual(await serverHeartbeat(dataDir), null);
+  await beat.stop();
+  await assert.rejects(fs.access(path.join(dataDir, LOCK_FILE)));
+  assert.equal(await serverHeartbeat(dataDir), null);
+  assert.deepEqual(logs, []);
+  // A file in the future counts as a running server; one older than LOCK_FRESH_MS does not.
+  await fs.writeFile(path.join(dataDir, LOCK_FILE), '');
+  assert.notEqual(await serverHeartbeat(dataDir, Date.now() - 60_000), null);
+  assert.equal(await serverHeartbeat(dataDir, Date.now() + LOCK_FRESH_MS + 1000), null);
 });

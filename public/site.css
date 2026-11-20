@@ -494,6 +494,40 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-codes li { font-family: var(--mono); font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
 .acct-sessions { padding-left: 20px; margin: 8px 0 0; }
 .acct-current { color: var(--green); font-weight: 600; }
+/* The users page: a table wide, a stack of cards on a phone (no sideways scroll) */
+.users-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
+.users-table th, .users-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.users-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.users-table th.users-name { font-weight: 600; overflow-wrap: anywhere; }
+.users-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.users-table td.users-actions { display: table-cell; }
+.users-actions button { margin: 0 6px 6px 0; }
+button.danger { color: var(--red); border-color: var(--red); font-weight: 600; }
+button.danger:hover { border-width: 1px; text-decoration: underline; }
+.users-warning { color: var(--red); font-weight: 500; }
+.users-otp { border-color: var(--accent); border-width: 2px; }
+.users-otp code { font-size: 17px; }
+.users-choice { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px 8px; margin: 6px 0 0; }
+.users-choice legend { font-weight: 500; font-size: 14px; padding: 0 4px; }
+.users-radio { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.users-radio input { width: auto; min-height: 0; margin: 0; }
+.users-radio label { margin: 0; font-weight: 400; }
+.acct-form select, .login-form select {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%;
+}
+@media (max-width: 700px) {
+  .users-table, .users-table caption, .users-table tbody, .users-table tr, .users-table th, .users-table td, .users-table td.users-actions { display: block; }
+  .users-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .users-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .users-table th, .users-table td { border: 0; padding: 3px 10px; }
+  .users-table td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+  .users-table td.num { text-align: left; }
+  .users-table td::before { content: attr(data-label); color: var(--dim); }
+  .users-table th.users-name { font-size: 15px; }
+  .users-table td.users-actions::before { display: block; margin-bottom: 4px; }
+  .users-actions button { min-height: 40px; }
+}
 @media (max-width: 560px) {
   .acct-codes { grid-template-columns: max-content; }
   .acct-card { padding: 10px 12px 14px; }

@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 // that loses its language, skip link, landmark or alt text, and a theme colour that stops being readable.
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (name) => fs.readFile(path.join(publicDir, name), 'utf8');
-const PAGES = ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html'];
+const PAGES = ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html', 'users.html'];
 // Pages that are in no menu: their nav marks no page as current.
-const OFF_MENU = ['account.html'];
+const OFF_MENU = ['account.html', 'users.html'];
 
 test('every page has a language, a viewport that allows zoom, and a title', async () => {
   for (const name of PAGES) {

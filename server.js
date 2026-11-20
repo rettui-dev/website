@@ -6,7 +6,7 @@ import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
 import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
-import { StoreError, UserStore, readStore, storeHasUsers } from './lib/users.js';
+import { StoreError, UserStore, readStore, startHeartbeat, storeHasUsers } from './lib/users.js';
 import { createAudit, createFailureLog } from './lib/audit.js';
 import { ReleaseCache, loadReleaseSettings } from './lib/releases.js';
 import { argon2Available } from './lib/password.js';
@@ -48,7 +48,10 @@ for (const w of warnings ?? []) console.warn(w);
 const sampleIntervalMs = process.env.STATS_SAMPLE_INTERVAL_MS ? Number(process.env.STATS_SAMPLE_INTERVAL_MS) : SAMPLE_INTERVAL_MS;
 if (!Number.isInteger(sampleIntervalMs) || sampleIntervalMs < 1000) throw new Error('STATS_SAMPLE_INTERVAL_MS must be a whole number of at least 1000');
 
-const store = new UserStore({ file: stored.file, configUsers: users, data: stored.data });
+// identity: the users.json that was read, so that one changed on disk meanwhile is never written over.
+const store = new UserStore({ file: stored.file, configUsers: users, data: stored.data, identity: stored.identity });
+// users.lock tells scripts/users.js that the server runs, and that it must not write users.json.
+const heartbeat = await startHeartbeat({ dataDir });
 
 // Checked now rather than at the first login, so a wrong Node.js is noticed at once.
 if ((users.length || store.hasLocalUsers()) && !argon2Available()) throw new Error(`users need Node.js 24.7 or later for Argon2id (this is ${process.version})`);
@@ -86,9 +89,13 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     failures.stop();
     // The last uptime and history, the failures summed up so far, the audit lines and the user
     // store writes still under way are all written before the process ends.
-    Promise.all([monitor.flush(), failures.flush(), audit.flush(), store.flush()]).catch((err) => console.error(`final save failed: ${err.message}`)).finally(() => {
-      server.close(() => process.exit(0));
-      server.closeAllConnections();
-    });
+    Promise.all([monitor.flush(), failures.flush(), audit.flush(), store.flush()])
+      .catch((err) => console.error(`final save failed: ${err.message}`))
+      // Only once the last write of users.json has ended may scripts/users.js write it.
+      .then(() => heartbeat.stop())
+      .finally(() => {
+        server.close(() => process.exit(0));
+        server.closeAllConnections();
+      });
   });
 }

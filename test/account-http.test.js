@@ -437,41 +437,80 @@ test('set up gives the secret once, to its owner, and never again; it turns on o
   }
 });
 
-test('turning TOTP off needs a right code or the password, and new recovery codes replace the old', async () => {
+test('with TOTP on, sensitive changes need the password AND a code (or a recovery code); neither alone', async () => {
   const s = await setup();
   try {
     const { cookie } = await logIn(s);
     const { secret, codes } = await enableTotp(s, cookie);
-    // New codes need the password or a current code in the request.
-    assert.equal((await api(s, '/api/account/recovery-codes', {}, cookie)).status, 400);
-    assert.equal((await api(s, '/api/account/recovery-codes', { password: 'nope' }, cookie)).status, 400);
-    const fresh = await api(s, '/api/account/recovery-codes', { password: PASSWORD }, cookie);
-    assert.equal(fresh.status, 200);
+    const p = '/api/account/recovery-codes';
+    // The password alone, or a code alone: refused, and nothing changes. (At most five of these
+    // an hour from one session: the rest is asked from a second one.)
+    const pwOnly = await api(s, p, { password: PASSWORD }, cookie);
+    assert.equal(pwOnly.status, 400);
+    assert.deepEqual(pwOnly.json(), { error: 'Enter the code from your app as well, or a recovery code.', field: 'code', secondFactor: true });
+    const codeOnly = await api(s, p, { code: codeNow(s, secret) }, cookie);
+    assert.equal(codeOnly.status, 400);
+    assert.equal(codeOnly.json().field, 'password');
+    // A wrong password does not use up the code; a wrong code counts like one at sign in.
+    assert.equal((await api(s, p, { password: 'nope', code: codeNow(s, secret) }, cookie)).status, 400);
+    assert.equal(s.login.codeUsers.count('user:alice'), 0);
+    const wrongCode = await api(s, p, { password: PASSWORD, code: codeNow(s, secret, 4) }, cookie);
+    assert.equal(wrongCode.status, 400);
+    assert.equal(wrongCode.json().field, 'code');
+    assert.equal(s.login.codeUsers.count('user:alice'), 1);
+    assert.equal(s.store.useRecoveryCode('alice', codes[0]).ok, true, 'the old codes still work: nothing changed');
+    // Both: new codes.
+    const code = codeNow(s, secret);
+    const fresh = await api(s, p, { password: PASSWORD, code }, cookie);
+    assert.equal(fresh.status, 200, fresh.text);
     const newCodes = fresh.json().recoveryCodes;
     assert.equal(newCodes.length, 10);
     assert.equal(s.store.useRecoveryCode('alice', codes[1]).ok, false);
-    assert.equal((await api(s, '/api/account/totp/disable', {}, cookie)).status, 400);
-    assert.equal((await api(s, '/api/account/totp/disable', { code: codeNow(s, secret, 4) }, cookie)).status, 400);
-    assert.equal((await api(s, '/api/account/totp/disable', { password: 'wrong' }, cookie)).status, 400);
+    // The same code again is a replay, refused (also from another session).
+    s.clock.t += 30_000;
+    const c2 = await logInWithCode(s, secret);
+    const replay = await api(s, p, { password: PASSWORD, code }, c2);
+    assert.equal(replay.status, 400);
+    assert.equal(replay.json().field, 'code');
+    // Turning it off: the same rules; a recovery code works instead of the app's code, once.
+    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD }, c2)).status, 400);
+    assert.equal((await api(s, '/api/account/totp/disable', { code: codeNow(s, secret, 1) }, c2)).status, 400);
+    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD, recovery: 'aaaa-bbbb-cccc-dddd' }, c2)).status, 400);
     assert.equal(s.store.secondFactorEnabled('alice'), true);
-    const off = await api(s, '/api/account/totp/disable', { code: codeNow(s, secret) }, cookie);
-    assert.equal(off.status, 200);
+    const off = await api(s, '/api/account/totp/disable', { password: PASSWORD, recovery: newCodes[0] }, c2);
+    assert.equal(off.status, 200, off.text);
     assert.equal(s.store.secondFactorEnabled('alice'), false);
-    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD }, cookie)).status, 409);
-    assert.equal((await api(s, '/api/account/recovery-codes', { password: PASSWORD }, cookie)).status, 409);
-    // An hour on, the limit of these changes starts again; the sign in is old by then, so the
-    // password is given again first.
-    s.clock.t += 40 * 60_000;
-    assert.equal((await get(s, '/api/account', cookie)).status, 200);
-    s.clock.t += 21 * 60_000;
-    assert.equal((await api(s, '/api/account/reauth', { password: PASSWORD }, cookie)).status, 200);
-    // On again, and off with the password.
-    await enableTotp(s, cookie);
-    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD }, cookie)).status, 200);
+    assert.equal((await api(s, p, { password: PASSWORD }, c2)).status, 409);
+    // On again, and off with the password and the app's code.
+    s.clock.t += 30_000;
+    const again = await enableTotp(s, c2);
+    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD, code: codeNow(s, again.secret) }, c2)).status, 200);
     const events = (await changeLines(s)).map((l) => `${l.event}${l.with ? `:${l.with}` : ''}`);
-    assert.deepEqual(events, ['totp-enabled', 'recovery-codes-regenerated:password', 'totp-disabled:code', 'totp-enabled', 'totp-disabled:password']);
+    assert.deepEqual(events, ['totp-enabled', 'recovery-codes-regenerated:password+code', 'recovery-code-used', 'totp-disabled:password+recovery', 'totp-enabled', 'totp-disabled:password+code']);
     // Off again: the password alone signs in.
     assert.deepEqual((await logIn(s)).r.json(), { ok: true, name: 'Alice' });
+  } finally {
+    await s.close();
+  }
+});
+
+test('without TOTP, the password alone confirms a password change; with it, the code is needed too', async () => {
+  const s = await setup();
+  try {
+    const b = await logIn(s, 'bob', BOB_PASSWORD);
+    // The password from the step-up dialog (password); the older field name (current) still works.
+    assert.equal((await api(s, '/api/account/password', { password: BOB_PASSWORD, next: 'bobs second password' }, b.cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/password', { current: 'bobs second password', next: 'bobs third password' }, b.cookie)).status, 200);
+    const { secret } = await enableTotp(s, b.cookie, 'bobs third password');
+    const pwOnly = await api(s, '/api/account/password', { password: 'bobs third password', next: 'bobs fourth password' }, b.cookie);
+    assert.equal(pwOnly.status, 400);
+    assert.equal(pwOnly.json().field, 'code');
+    assert.equal((await api(s, '/api/account/password', { code: codeNow(s, secret), next: 'bobs fourth password' }, b.cookie)).status, 400);
+    assert.equal((await logIn(s, 'bob', 'bobs fourth password')).r.status, 401);
+    const both = await api(s, '/api/account/password', { password: 'bobs third password', code: codeNow(s, secret), next: 'bobs fourth password' }, b.cookie);
+    assert.equal(both.status, 200, both.text);
+    const lines = (await changeLines(s)).filter((l) => l.event === 'password-changed').map((l) => l.with);
+    assert.deepEqual(lines, ['password', 'password', 'password+code']);
   } finally {
     await s.close();
   }
@@ -558,7 +597,8 @@ test('turning TOTP on or off, and changing the password, sign out every other se
     assert.equal((await get(s, '/api/session', a2.cookie)).json().name, null, 'ended when TOTP was turned on');
     assert.equal((await get(s, '/api/session', a1.cookie)).json().name, 'Alice');
     const a3 = await logInWithCode(s, secret);
-    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD }, a1.cookie)).status, 200);
+    s.clock.t += 30_000;
+    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD, code: codeNow(s, secret) }, a1.cookie)).status, 200);
     assert.equal((await get(s, '/api/session', a3)).json().name, null, 'ended when TOTP was turned off');
     // Sign out other sessions.
     const b1 = await logIn(s, 'bob', BOB_PASSWORD);
@@ -589,7 +629,8 @@ test('an open second step from the old password is dropped by a password change 
     // Someone who has the old password gets as far as the code step.
     const stolen = (await postForm(s, '/login', { name: 'bob', password: BOB_PASSWORD })).json().pending;
     assert.ok(stolen);
-    assert.equal((await api(s, '/api/account/password', { current: BOB_PASSWORD, next: 'a brand new one' }, b.cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/password', { password: BOB_PASSWORD, code: codeNow(s, secret), next: 'a brand new one' }, b.cookie)).status, 200);
+    s.clock.t += 30_000;
     const late = await postForm(s, '/login/code', { pending: stolen, code: codeNow(s, secret) });
     assert.equal(late.status, 401);
     assert.equal(late.json().restart, true);
@@ -597,7 +638,7 @@ test('an open second step from the old password is dropped by a password change 
     // The same after TOTP is turned off.
     const p = (await postForm(s, '/login', { name: 'bob', password: 'a brand new one' })).json().pending;
     s.clock.t += 30_000;
-    assert.equal((await api(s, '/api/account/totp/disable', { code: codeNow(s, secret) }, b.cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/totp/disable', { password: 'a brand new one', code: codeNow(s, secret) }, b.cookie)).status, 200);
     assert.equal(s.login.pending.size, 0);
     s.clock.t += 30_000;
     assert.equal((await postForm(s, '/login/code', { pending: p, code: codeNow(s, secret) })).json().restart, true);
@@ -707,23 +748,29 @@ test('new recovery codes and TOTP changes are limited per session and per user; 
   try {
     const a1 = await logIn(s);
     const { secret } = await enableTotp(s, a1.cookie);
-    for (let i = 0; i < 5; i++) assert.equal((await api(s, '/api/account/recovery-codes', { password: PASSWORD }, a1.cookie)).status, 200);
-    const sixth = await api(s, '/api/account/recovery-codes', { password: PASSWORD }, a1.cookie);
+    // Each with the password and a new code (a code works once).
+    const both = () => {
+      s.clock.t += 30_000;
+      return { password: PASSWORD, code: codeNow(s, secret) };
+    };
+    for (let i = 0; i < 5; i++) assert.equal((await api(s, '/api/account/recovery-codes', both(), a1.cookie)).status, 200);
+    const sixth = await api(s, '/api/account/recovery-codes', both(), a1.cookie);
     assert.equal(sixth.status, 429);
     assert.match(sixth.json().error, /^You did this too often\. Try again in \d+ minutes\.$/);
     assert.ok(Number(sixth.headers['retry-after']) > 0);
     // Wrong passwords count too, so they cannot be used to get round it.
+    s.clock.t += 30_000;
     const a2 = { cookie: await logInWithCode(s, secret) };
-    for (let i = 0; i < 4; i++) await api(s, '/api/account/recovery-codes', { password: 'nope' }, a2.cookie);
-    assert.equal((await api(s, '/api/account/recovery-codes', { password: PASSWORD }, a2.cookie)).status, 200);
+    for (let i = 0; i < 4; i++) await api(s, '/api/account/recovery-codes', { password: 'nope', code: '000000' }, a2.cookie);
+    assert.equal((await api(s, '/api/account/recovery-codes', both(), a2.cookie)).status, 200);
     // Ten for the user in all, whichever session asks.
     s.clock.t += 30_000;
     const a3 = { cookie: await logInWithCode(s, secret) };
-    assert.equal((await api(s, '/api/account/recovery-codes', { password: PASSWORD }, a3.cookie)).status, 429);
+    assert.equal((await api(s, '/api/account/recovery-codes', both(), a3.cookie)).status, 429);
     const regenerated = (await auditLines(s)).filter((l) => l.event === 'recovery-codes-regenerated');
     assert.equal(regenerated.length, 6);
     // Another action has its own count.
-    assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD }, a3.cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/totp/disable', both(), a3.cookie)).status, 200);
   } finally {
     await s.close();
   }

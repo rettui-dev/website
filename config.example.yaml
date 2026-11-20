@@ -20,6 +20,10 @@
 #   - name: alice
 #     password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
 #     role: admin          # optional: admin, manage or viewer (default viewer)
+# An admin opens the Users page (/users) to manage the users kept in users.json. There must be an
+# admin for that page to exist: set role: admin here, or make one with
+#   node scripts/users.js create NAME --role admin
+# (see "Managing users" in README.md). Users here stay read-only on that page.
 # Each user can turn on two-step sign-in (TOTP) on their account page (/account); that is kept in
 # users.json in DATA_DIR, not here (see "Accounts and second factor" in README.md).
 # What a visitor without a login does not see. With users and no rule, all of these;
