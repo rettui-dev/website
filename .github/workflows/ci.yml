@@ -46,6 +46,25 @@ jobs:
           cache-from: type=gha,scope=ci
           cache-to: type=gha,scope=ci,mode=max
 
+  # The LXMF bridge image (bridges/lxmf/Dockerfile); it needs the submodules in its build context.
+  bridge-docker-build:
+    name: LXMF bridge image builds (no push)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: bridges/lxmf
+          push: false
+          cache-from: type=gha,scope=bridge-ci
+          cache-to: type=gha,scope=bridge-ci,mode=max
+
   # The LXMF bridge (bridges/lxmf) is a Rust crate of its own; nothing else in this repository uses it.
   bridge-lxmf:
     name: LXMF bridge (Rust)
