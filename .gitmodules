@@ -1,0 +1,8 @@
+[submodule "bridges/lxmf/deps/rsReticulum"]
+	path = bridges/lxmf/deps/rsReticulum
+	url = https://github.com/rettui-dev/rsReticulum
+	branch = rettui-1.5
+[submodule "bridges/lxmf/deps/rsLXMF"]
+	path = bridges/lxmf/deps/rsLXMF
+	url = https://github.com/rettui-dev/rsLXMF
+	branch = rettui-1.5
