@@ -309,10 +309,13 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 /* Table of a propagation node's peers: a table wide, a stack of cards on a phone (no sideways scroll) */
 .peer-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
 .peer-table caption { text-align: left; color: var(--dim); font-size: 13px; padding-bottom: 4px; }
-.peer-table th, .peer-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
-.peer-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; }
+.peer-table th, .peer-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.peer-table th, .peer-table td { padding: 6px 6px; }
+.peer-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.peer-table th.peer-name { overflow-wrap: anywhere; min-width: 9em; }
 .peer-table th.peer-name { font-weight: 500; }
-.peer-table td.num { text-align: right; }
+.peer-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.peer-table td { overflow-wrap: break-word; }
 .peer-addr { font-family: var(--mono); font-size: 13px; }
 .peer-flag { display: block; font-size: 13px; font-weight: 600; color: var(--red); }
 .peer-flag::before { content: "\26A0\FE0E\00a0"; }
