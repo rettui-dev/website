@@ -438,12 +438,12 @@
     return h.locked.filter(function (k) { return Object.prototype.hasOwnProperty.call(LOCK_WORDS, k); });
   }
 
-  // "Message store, disk and versions need a login." or null.
-  function lockText(locked) {
-    var words = (locked || []).filter(function (k) { return LOCK_WORDS[k]; }).map(function (k) { return LOCK_WORDS[k]; });
-    if (!words.length) return null;
-    var list = words.length === 1 ? words[0] : words.slice(0, -1).join(', ') + ' and ' + words[words.length - 1];
-    return list.charAt(0).toUpperCase() + list.slice(1) + (words.length === 1 && words[0] !== 'versions' && words[0] !== 'peered nodes' ? ' needs' : ' need') + ' a login.';
+  var HIDDEN_HINT = 'Some details are only shown to signed-in users.';
+
+  // Whether anything is kept from this visitor: the full details of a node, or a part of its row.
+  // Only then does the page say so; what is kept is never named or drawn as a placeholder.
+  function anyHidden(hosts) {
+    return (hosts || []).some(function (h) { return detailsLocked(h) || rowLocks(h).length > 0; });
   }
 
   function detailsLocked(h) { return !!(h.locked && h.locked.indexOf('details') !== -1); }
@@ -559,11 +559,9 @@
     }
     parts.push(factsList('Disk' + label, diskFacts(d && d.disk), bar));
     parts.forEach(function (x) { if (x) body.appendChild(x); });
-    var locks = opts.itself ? [] : rowLocks(h);
-    var lockedDetails = h.hasDetail && !opts.itself && detailsLocked(h);
-    if (locks.length || lockedDetails) body.appendChild(lockBox(h, locks, lockedDetails));
+    // What needs a login is left out, not shown as locked: the page says once that something is hidden.
     // The proxy's own row has no button of its own: the group's More has it.
-    if (h.hasDetail && !opts.itself && !lockedDetails) {
+    if (h.hasDetail && !opts.itself && !detailsLocked(h)) {
       var full = el('button', 'detail-btn', 'Full details');
       full.type = 'button';
       full.setAttribute('data-host', hostKey(h));
@@ -573,23 +571,6 @@
       body.appendChild(full);
     }
     return body;
-  }
-
-  // What a row keeps for logged-in users, and the way to log in. One button
-  // does both: with the details locked it opens them after the login.
-  function lockBox(h, locks, lockedDetails) {
-    var box = el('div', 'lock-box');
-    var text = lockText(locks);
-    if (lockedDetails) text = (text ? text.replace(/\.$/, ', ') : '') + (text ? 'and so do the full details.' : 'Full details need a login.');
-    box.appendChild(el('p', 'lock-text', text));
-    var b = el('button', 'login-btn', lockedDetails ? 'Log in for full details' : 'Log in to see more');
-    b.type = 'button';
-    b.setAttribute('data-host', hostKey(h));
-    b.setAttribute('data-role', 'login');
-    b.setAttribute('aria-label', (lockedDetails ? 'Log in for full details of ' : 'Log in to see more about ') + displayName(h));
-    b.addEventListener('click', function () { openLogin(b, lockedDetails ? hostKey(h) : null); });
-    box.appendChild(b);
-    return box;
   }
 
   // The More or Less button and the part it opens. Open rows stay open on refresh;
@@ -1541,18 +1522,21 @@
     return s;
   }
 
-  // In the details: what is left out until the visitor logs in.
+  // In the details: one line when parts are left out for a visitor who is not signed in.
   function lockSection(d) {
-    var text = lockText(d.locked);
-    if (!text) return null;
-    var s = section('Needs a login');
-    s.appendChild(el('p', 'lock-text', text));
-    var b = el('button', 'login-btn', 'Log in to see more');
+    if (!d.locked || !d.locked.some(function (k) { return LOCK_WORDS[k]; })) return null;
+    var p = el('p', 'note lock-note', HIDDEN_HINT + ' ');
+    p.appendChild(signInLink());
+    return p;
+  }
+
+  // The button, styled as a link, that opens the sign in dialog.
+  function signInLink() {
+    var b = el('button', 'link-btn', 'Sign in');
     b.type = 'button';
     b.setAttribute('data-role', 'login');
-    b.addEventListener('click', function () { openLogin(b, null); });
-    s.appendChild(b);
-    return s;
+    b.addEventListener('click', function () { openLogin(b); });
+    return b;
   }
 
   function overviewTab(d) {
@@ -1877,13 +1861,217 @@
     return out;
   }
 
+  // ---- The Logs tab: a node's recent log lines, fetched when asked ----
+
+  var LOG_LEVELS = ['error', 'warn', 'info', 'debug'];
+  var LOG_LEVEL_WORD = { error: 'Error', warn: 'Warning', info: 'Info', debug: 'Debug', trace: 'Trace' };
+  var LOG_LINE_CHOICES = [50, 100, 200, 500];
+  var LOGS_MAX_LINES = 500;
+
+  // The number of lines to ask for: a whole number from 1 to 500, 200 when it is anything else.
+  function clampLines(v) {
+    var n = Math.floor(Number(v));
+    if (!isFinite(n) || n < 1) return 200;
+    return Math.min(n, LOGS_MAX_LINES);
+  }
+
+  function logLevel(v) { return LOG_LEVELS.indexOf(v) !== -1 ? v : 'info'; }
+
+  // The address of the logs of one node (host:port), with the lines and level to ask for.
+  function logsPath(host, lines, level) {
+    return '/api/logs/' + encodeURIComponent(host) + '?lines=' + clampLines(lines) + '&level=' + logLevel(level);
+  }
+
+  // The level in words; a line without a known level says so.
+  function logLevelWord(level) {
+    return Object.prototype.hasOwnProperty.call(LOG_LEVEL_WORD, level) ? LOG_LEVEL_WORD[level] : 'Unknown';
+  }
+
+  // One line as it is shown: the time (when there is one), the level in words and the text.
+  function logLineParts(line) {
+    var l = line && typeof line === 'object' ? line : {};
+    return {
+      time: typeof l.time === 'string' ? l.time : '',
+      level: Object.prototype.hasOwnProperty.call(LOG_LEVEL_WORD, l.level) ? l.level : 'unknown',
+      word: logLevelWord(l.level),
+      text: typeof l.text === 'string' ? l.text : ''
+    };
+  }
+
+  // The nodes whose logs can be asked for: the node itself, or the members of a proxy's combined view, one by one.
+  function logsHosts(d) {
+    if (!d) return [];
+    if (d.view === 'combined') {
+      return (d.members || []).filter(function (m) { return m.hasLogs; }).map(function (m) { return { host: m.host, label: m.name || m.host }; });
+    }
+    return d.logs ? [{ host: d.host, label: d.host }] : [];
+  }
+
+  // What to tell the visitor when the logs could not be had. The server's own words are used for the rate limit and the
+  // missing logs; nothing else from the answer is shown.
+  function logsErrorText(status, body) {
+    var msg = body && typeof body.error === 'string' ? body.error : '';
+    if (status === 401) return 'The logs need a login.';
+    if (status === 404) return msg || 'This node does not serve logs.';
+    if (status === 429) return msg || 'Try again in a few seconds.';
+    if (status === 400) return 'Those choices are not valid.';
+    return 'Could not get the logs. Try again later.';
+  }
+
+  // The line under the controls: how many lines, at which level, and whether older ones were left out.
+  function logsSummary(data) {
+    if (!data || !Array.isArray(data.lines)) return '';
+    var n = data.lines.length;
+    if (n === 0) return 'No log lines at this level.';
+    var level = Object.prototype.hasOwnProperty.call(LOG_LEVEL_WORD, data.level) ? data.level : 'info';
+    var text = n + (n === 1 ? ' line' : ' lines') + ', oldest first, at level ' + level + (level === 'error' ? '.' : ' and above.');
+    if (data.truncated) text += ' Older lines were left out.';
+    return text;
+  }
+
+  var logsState = { host: null, level: 'info', lines: 200, phase: 'idle', data: null, message: '', fetchedAt: null };
+  var logsUi = null;
+  var logsSeq = 0;
+
+  function resetLogs() {
+    logsSeq++;
+    logsState = { host: null, level: logsState.level, lines: logsState.lines, phase: 'idle', data: null, message: '', fetchedAt: null };
+    logsUi = null;
+  }
+
+  function paintLogs() {
+    var ui = logsUi;
+    if (!ui || !ui.list.isConnected) return;
+    var st = logsState;
+    ui.refresh.setAttribute('aria-disabled', st.phase === 'loading' ? 'true' : 'false');
+    var status = st.phase === 'loading' ? 'Loading...' : st.phase === 'error' ? st.message : st.phase === 'ok' ? logsSummary(st.data) : '';
+    if (ui.status.textContent !== status) ui.status.textContent = status;
+    ui.status.className = st.phase === 'error' ? 'note log-error-note' : 'note';
+    var lines = st.phase === 'ok' && st.data ? st.data.lines : [];
+    var items = lines.map(function (line) {
+      var p = logLineParts(line);
+      var li = el('li', 'log-line log-' + p.level);
+      if (p.time) li.appendChild(el('span', 'log-time', p.time));
+      li.appendChild(el('span', 'log-level', p.word));
+      li.appendChild(el('span', 'log-text', p.text));
+      return li;
+    });
+    ui.list.replaceChildren.apply(ui.list, items);
+    ui.list.hidden = items.length === 0;
+    if (st.fetchedAt && st.phase === 'ok') ui.when.textContent = 'Fetched ' + ago(st.fetchedAt) + '.';
+    else ui.when.textContent = '';
+  }
+
+  function loadLogs() {
+    var st = logsState;
+    if (!st.host || st.phase === 'loading') return;
+    var seq = ++logsSeq;
+    st.phase = 'loading';
+    paintLogs();
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+    fetch(logsPath(st.host, st.lines, st.level), { cache: 'no-store', signal: ctl.signal, credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, ok: r.ok, body: body }; });
+      })
+      .then(function (r) {
+        if (seq !== logsSeq) return;
+        if (r.ok && r.body && Array.isArray(r.body.lines)) {
+          st.phase = 'ok';
+          st.data = r.body;
+          st.fetchedAt = typeof r.body.fetchedAt === 'string' ? r.body.fetchedAt : null;
+        } else {
+          st.phase = 'error';
+          st.data = null;
+          st.message = logsErrorText(r.status, r.body);
+        }
+      })
+      .catch(function () {
+        if (seq !== logsSeq) return;
+        st.phase = 'error';
+        st.data = null;
+        st.message = 'Could not reach the server. Try again.';
+      })
+      .then(function () {
+        clearTimeout(timer);
+        if (seq === logsSeq) paintLogs();
+      });
+  }
+
+  function logsSelect(id, label, choices, current, onChange) {
+    var wrap = el('div', 'log-field');
+    var lab = el('label', null, label);
+    lab.setAttribute('for', id);
+    var sel = el('select');
+    sel.id = id;
+    choices.forEach(function (c) {
+      var o = el('option', null, c[1]);
+      o.value = String(c[0]);
+      sel.appendChild(o);
+    });
+    sel.value = String(current);
+    sel.addEventListener('change', function () { onChange(sel.value); });
+    wrap.appendChild(lab);
+    wrap.appendChild(sel);
+    return wrap;
+  }
+
+  function logsTab(d) {
+    var sec = section('Logs');
+    sec.id = 'logs-panel';
+    var hosts = logsHosts(d);
+    if (!hosts.length) {
+      sec.appendChild(el('p', 'note', 'No node here serves logs.'));
+      logsUi = null;
+      return [sec];
+    }
+    if (!logsState.host || !hosts.some(function (h) { return h.host === logsState.host; })) {
+      logsState.host = hosts[0].host;
+      logsState.phase = 'idle';
+      logsState.data = null;
+    }
+    var controls = el('div', 'log-controls');
+    if (hosts.length > 1) {
+      controls.appendChild(logsSelect('log-node', 'Node', hosts.map(function (h) { return [h.host, h.label]; }), logsState.host, function (v) {
+        logsState.host = v;
+        logsState.phase = 'idle';
+        logsState.data = null;
+        logsSeq++;
+        loadLogs();
+      }));
+    }
+    controls.appendChild(logsSelect('log-level', 'Level', LOG_LEVELS.map(function (l) { return [l, l === 'error' ? 'error' : l + ' and above']; }), logsState.level, function (v) { logsState.level = logLevel(v); }));
+    controls.appendChild(logsSelect('log-lines', 'Lines', LOG_LINE_CHOICES.map(function (n) { return [n, String(n)]; }), LOG_LINE_CHOICES.indexOf(logsState.lines) !== -1 ? logsState.lines : 200, function (v) { logsState.lines = clampLines(v); }));
+    var refresh = el('button', 'log-refresh', 'Refresh');
+    refresh.type = 'button';
+    refresh.addEventListener('click', function () { if (refresh.getAttribute('aria-disabled') !== 'true') loadLogs(); });
+    controls.appendChild(refresh);
+    sec.appendChild(controls);
+    var status = el('p', 'note');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    sec.appendChild(status);
+    var when = el('p', 'note');
+    sec.appendChild(when);
+    var list = el('ul', 'log-list');
+    list.tabIndex = 0;
+    list.setAttribute('aria-label', 'Log lines, oldest first');
+    sec.appendChild(list);
+    logsUi = { refresh: refresh, status: status, when: when, list: list };
+    paintLogs();
+    // Opening the tab asks once; after that only the Refresh button does.
+    if (logsState.phase === 'idle') loadLogs();
+    return [sec];
+  }
+
   var detailTab = 'overview';
-  var TAB_LABEL = { overview: 'Overview', traffic: 'Traffic', peers: 'Peers', storage: 'Storage', disk: 'Disk' };
+  var TAB_LABEL = { overview: 'Overview', traffic: 'Traffic', peers: 'Peers', storage: 'Storage', disk: 'Disk', logs: 'Logs' };
 
   function detailTabs(d) {
     var out = ['overview', 'traffic', 'peers'];
     if (hasStorage(d)) out.push('storage');
     if (hasDisk(d)) out.push('disk');
+    if (logsHosts(d).length) out.push('logs');
     return out;
   }
 
@@ -1953,6 +2141,7 @@
     var collecting = ser.sampleCount < 2;
     var parts = [];
     if (detailTab === 'overview') parts = overviewTab(d);
+    else if (detailTab === 'logs') parts = logsTab(d);
     else {
       // Only the charts of the open tab are drawn.
       if (collecting) parts.push(emptyState(d, ser));
@@ -1962,12 +2151,12 @@
       else if (detailTab === 'disk') parts = parts.concat(diskTab(d, ser, width, collecting));
     }
     // The redraw replaces the charts: remember which focusable thing had the focus.
-    var stops = body.querySelectorAll('[tabindex="0"], button');
+    var stops = body.querySelectorAll('[tabindex="0"], button, select');
     var at = -1;
     for (var i = 0; i < stops.length; i++) if (stops[i] === document.activeElement) at = i;
     body.replaceChildren.apply(body, parts);
     if (at >= 0) {
-      var again = body.querySelectorAll('[tabindex="0"], button');
+      var again = body.querySelectorAll('[tabindex="0"], button, select');
       if (again[at]) again[at].focus();
     }
   }
@@ -1983,6 +2172,7 @@
     var body = document.getElementById('detail-body');
     var seq = ++detailSeq;
     if (showLoading) {
+      resetLogs();
       detailData = null;
       detailKey = '';
       var wait = el('p', 'note', 'Loading...');
@@ -1998,12 +2188,8 @@
           if (seq !== detailSeq) return null;
           detailData = null;
           detailKey = '';
-          var p = el('p', 'note', 'The details need a login. ');
-          var b = el('button', 'login-btn', 'Log in');
-          b.type = 'button';
-          b.setAttribute('data-role', 'login');
-          b.addEventListener('click', function () { openLogin(b, null); });
-          p.appendChild(b);
+          var p = el('p', 'note', 'Your sign in ended, so these details are hidden. ');
+          p.appendChild(signInLink());
           body.replaceChildren(p);
           return null;
         }
@@ -2017,7 +2203,8 @@
         var same = detailData !== null && key === detailKey;
         detailKey = key;
         detailData = data;
-        if (!same) renderDetail();
+        // The logs the visitor is reading stay as they are while the numbers behind the other tabs refresh.
+        if (!same && !(detailTab === 'logs' && document.getElementById('logs-panel'))) renderDetail();
       })
       .catch(function () {
         if (seq !== detailSeq || detailData) return;
@@ -2132,135 +2319,46 @@
   }
 
   // ---- Login ----
+  // The sign in button and dialog are in account.js (on every page). Here is the one line under the
+  // banner, and what the page does when the viewer changes.
 
-  var loginDlg = null;
-  var loginOpener = null;
-  // The node whose details to open once the login works.
-  var loginThen = null;
-  var loginBusy = false;
+  var viewerNow = null;
 
+  // The line says that something is hidden, only to a visitor who is not signed in and only when
+  // something is: an account with nothing hidden, or a site without users, gets no line.
   function setAccount(viewer) {
+    viewerNow = viewer || null;
     var box = document.getElementById('account');
     if (!box) return;
-    // Without users there is no login at all: the line stays hidden.
-    if (!viewer) {
-      box.hidden = true;
-      return;
-    }
-    var text = viewer.name ? 'Logged in as ' + viewer.name + '.' : 'Some numbers are only shown after a login.';
-    setText('account-text', text);
-    var b = document.getElementById('account-btn');
-    var label = viewer.name ? 'Log out' : 'Log in';
-    if (b.textContent !== label) b.textContent = label;
-    b.setAttribute('data-state', viewer.name ? 'in' : 'out');
-    box.hidden = false;
+    var acc = window.rettuiAccount;
+    if (acc) acc.sync(viewerNow && viewerNow.name ? viewerNow.name : null);
+    var show = !!(acc && acc.enabled() && viewerNow && !viewerNow.name && lastData && anyHidden(lastData.hosts));
+    if (show) setText('account-text', HIDDEN_HINT);
+    box.hidden = !show;
   }
 
-  function loginError(text) {
-    var e = document.getElementById('login-error');
-    e.textContent = text;
-    var bad = text ? 'true' : 'false';
-    document.getElementById('login-name').setAttribute('aria-invalid', bad);
-    document.getElementById('login-password').setAttribute('aria-invalid', bad);
+  function openLogin(opener) {
+    if (window.rettuiAccount) window.rettuiAccount.open(opener, null);
   }
 
-  function openLogin(opener, detailFor) {
-    if (!loginDlg) return;
-    loginOpener = opener || null;
-    loginThen = detailFor || null;
-    loginError('');
-    document.getElementById('login-password').value = '';
-    if (!loginDlg.open) loginDlg.showModal();
-    var name = document.getElementById('login-name');
-    (name.value ? document.getElementById('login-password') : name).focus();
-  }
-
-  // After the dialog closes, the focus goes back where it came from, or to the account button.
-  function refocus(el) {
-    if (el && el.isConnected && el.offsetParent !== null) el.focus();
-    else {
-      var b = document.getElementById('account-btn');
-      if (b && b.offsetParent !== null) b.focus();
-    }
-  }
-
-  function submitLogin(e) {
-    e.preventDefault();
-    if (loginBusy) return;
-    var name = document.getElementById('login-name');
-    var pass = document.getElementById('login-password');
-    if (!name.value.trim() || !pass.value) {
-      loginError('Enter your name and password.');
-      (name.value.trim() ? pass : name).focus();
-      return;
-    }
-    var submit = document.getElementById('login-submit');
-    loginBusy = true;
-    submit.disabled = true;
-    submit.textContent = 'Logging in...';
-    loginError('');
-    var ok = false;
-    fetch('/login', { method: 'POST', body: new URLSearchParams({ name: name.value, password: pass.value }), credentials: 'same-origin', cache: 'no-store' })
-      .then(function (r) {
-        return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, body: body }; });
-      })
-      .then(function (r) {
-        if (r.status === 200 && r.body.ok) {
-          ok = true;
-          pass.value = '';
-          var then = loginThen;
-          loginThen = null;
-          loginOpener = null;
-          loginDlg.close();
-          setText('account-live', 'Logged in as ' + r.body.name + '.');
-          return load().then(function () {
-            if (dlg && dlg.open) {
-              loadDetail(true);
-              document.getElementById('detail-body').focus();
-            } else if (then) openDetail(then);
-            else refocus(null);
-          });
-        }
-        loginError(r.body && r.body.error ? r.body.error : 'Could not log in. Try again.');
-      })
-      .catch(function () { loginError('Could not reach the server. Try again.'); })
-      .then(function () {
-        loginBusy = false;
-        submit.disabled = false;
-        submit.textContent = 'Log in';
-        if (!ok && loginDlg.open) {
-          pass.value = '';
-          pass.focus();
-        }
-      });
-  }
-
-  function logout() {
-    fetch('/logout', { method: 'POST', body: new URLSearchParams(), credentials: 'same-origin', cache: 'no-store' })
-      .then(function () {
-        setText('account-live', 'Logged out.');
-        if (dlg && dlg.open) dlg.close();
-        return load();
-      })
-      .catch(function () { setText('account-live', 'Could not log out. Try again.'); });
+  // After a sign in or out the numbers are fetched again, and an open details view is reloaded (or closed).
+  function viewerChanged(name) {
+    if (name === null && dlg && dlg.open) dlg.close();
+    return load().then(function () {
+      if (name !== null && dlg && dlg.open) {
+        loadDetail(true);
+        document.getElementById('detail-body').focus();
+      }
+    });
   }
 
   function setupLogin() {
-    loginDlg = document.getElementById('login');
-    if (!loginDlg || typeof loginDlg.showModal !== 'function') return;
-    document.getElementById('login-form').addEventListener('submit', submitLogin);
-    document.getElementById('login-cancel').addEventListener('click', function () { loginDlg.close(); });
-    loginDlg.addEventListener('click', function (e) { if (e.target === loginDlg) loginDlg.close(); });
-    loginDlg.addEventListener('close', function () {
-      var back = loginOpener;
-      loginOpener = null;
-      loginThen = null;
-      if (back) refocus(back);
-    });
-    document.getElementById('account-btn').addEventListener('click', function (e) {
-      if (e.currentTarget.getAttribute('data-state') === 'in') logout();
-      else openLogin(e.currentTarget, null);
-    });
+    var acc = window.rettuiAccount;
+    document.getElementById('account-btn').addEventListener('click', function (e) { openLogin(e.currentTarget); });
+    if (!acc) return;
+    acc.onChange(viewerChanged);
+    // The button may find out that the site has users after the first answer of the page.
+    document.addEventListener('rettui:account', function () { setAccount(viewerNow); });
   }
 
   var lastData = null;
@@ -2404,7 +2502,8 @@
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
       peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerFailureText: peerFailureText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
       peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
-      rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked,
+      clampLines: clampLines, logsPath: logsPath, logLevelWord: logLevelWord, logLineParts: logLineParts, logsHosts: logsHosts, logsErrorText: logsErrorText, logsSummary: logsSummary,
+      rowLocks: rowLocks, anyHidden: anyHidden, hiddenHint: HIDDEN_HINT, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };
     return;
   }

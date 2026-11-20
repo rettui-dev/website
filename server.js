@@ -38,7 +38,7 @@ if (users.length && !argon2Available()) throw new Error(`users in CONFIG_FILE ne
 const alerts = createAlerter(alertSettings, nodes);
 if (alerts) console.log(`alerts: ${alertSettings.channels.map((c) => c.type).join(', ')} for ${alertSettings.events.join(', ')}`);
 
-const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, requireLogin: defaults.requireLogin, sampleIntervalMs });
+const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, publicLogs: defaults.publicLogs, requireLogin: defaults.requireLogin, sampleIntervalMs, logsEnabled: true });
 await monitor.load();
 monitor.start();
 

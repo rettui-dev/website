@@ -71,10 +71,10 @@ ${node2}
 
 test('public_details and public_disk_figures: global default, node override, strict', () => {
   const none = loadConfig(yaml());
-  assert.deepEqual(none.defaults, { publicDetails: true, publicDiskFigures: false, requireLogin: [] });
+  assert.deepEqual(none.defaults, { publicDetails: true, publicDiskFigures: false, publicLogs: false, requireLogin: [] });
   assert.equal(none.nodes.get('a.test:1').publicDetails, true);
   const c = loadConfig(yaml('public_details: false\npublic_disk_figures: true', '    public_details: true\n    public_disk_figures: false'));
-  assert.deepEqual(c.defaults, { publicDetails: false, publicDiskFigures: true, requireLogin: [] });
+  assert.deepEqual(c.defaults, { publicDetails: false, publicDiskFigures: true, publicLogs: false, requireLogin: [] });
   assert.deepEqual([c.nodes.get('a.test:1').publicDetails, c.nodes.get('a.test:1').publicDiskFigures], [true, false]);
   assert.deepEqual([c.nodes.get('b.test:1').publicDetails, c.nodes.get('b.test:1').publicDiskFigures], [false, true]);
   const bad = (text, pattern) => assert.throws(() => loadConfig(text), (e) => pattern.test(e.message));
@@ -86,8 +86,8 @@ test('public_details and public_disk_figures: global default, node override, str
 
 test('PUBLIC_DETAILS and PUBLIC_DISK_FIGURES in the environment: global only, strict, not with CONFIG_FILE', async () => {
   const n = await loadNodes({});
-  assert.deepEqual(n.defaults, { publicDetails: true, publicDiskFigures: false, requireLogin: [] });
-  assert.deepEqual((await loadNodes({ PUBLIC_DETAILS: 'false', PUBLIC_DISK_FIGURES: 'true' })).defaults, { publicDetails: false, publicDiskFigures: true, requireLogin: [] });
+  assert.deepEqual(n.defaults, { publicDetails: true, publicDiskFigures: false, publicLogs: false, requireLogin: [] });
+  assert.deepEqual((await loadNodes({ PUBLIC_DETAILS: 'false', PUBLIC_DISK_FIGURES: 'true' })).defaults, { publicDetails: false, publicDiskFigures: true, publicLogs: false, requireLogin: [] });
   // An empty value is a mistake, never "public".
   await assert.rejects(loadNodes({ PUBLIC_DETAILS: '' }), /PUBLIC_DETAILS is empty/);
   await assert.rejects(loadNodes({ PUBLIC_DISK_FIGURES: '' }), /PUBLIC_DISK_FIGURES is empty/);
@@ -96,7 +96,17 @@ test('PUBLIC_DETAILS and PUBLIC_DISK_FIGURES in the environment: global only, st
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
   await fs.writeFile(path.join(dir, 'c.yaml'), yaml());
   await assert.rejects(loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml'), PUBLIC_DETAILS: 'false' }), /not both/);
-  assert.deepEqual((await loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml') })).defaults, { publicDetails: true, publicDiskFigures: false, requireLogin: [] });
+  assert.deepEqual((await loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml') })).defaults, { publicDetails: true, publicDiskFigures: false, publicLogs: false, requireLogin: [] });
+});
+
+test('a node with public_logs gets a warning at start, one without gets none', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  await fs.writeFile(path.join(dir, 'c.yaml'), yaml('', '    public_logs: true'));
+  const w = (await loadNodes({ CONFIG_FILE: path.join(dir, 'c.yaml') })).warnings.filter((m) => /public_logs/.test(m));
+  assert.equal(w.length, 1);
+  assert.match(w[0], /a\.test:1 has public_logs: true/);
+  await fs.writeFile(path.join(dir, 'd.yaml'), yaml());
+  assert.deepEqual((await loadNodes({ CONFIG_FILE: path.join(dir, 'd.yaml') })).warnings.filter((m) => /public_logs/.test(m)), []);
 });
 
 test('the group reports the fullest disk by level, and exact free space only from nodes that publish it', () => {

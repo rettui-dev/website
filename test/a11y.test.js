@@ -53,9 +53,9 @@ test('the nav marks exactly one page as current, and buttons and inputs have nam
     const html = await read(name);
     const nav = /<nav class="links"[^>]*>([\s\S]*?)<\/nav>/.exec(html)[1];
     assert.equal((nav.match(/aria-current="page"/g) ?? []).length, 1, name);
-    // The account button is filled in by status.js; every other button has its words in the file.
-    for (const [tag, inner] of html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)) {
-      if (!tag.includes('id="account-btn"')) assert.ok(inner.replace(/<[^>]*>/g, '').trim().length > 0, `${name}: empty button`);
+    // Every button has its words in the file (the sign in buttons too: account.js only changes them).
+    for (const [, inner] of html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)) {
+      assert.ok(inner.replace(/<[^>]*>/g, '').trim().length > 0, `${name}: empty button`);
     }
     for (const [tag] of html.matchAll(/<input\b[^>]*>/g)) {
       const id = /\sid="([^"]+)"/.exec(tag)?.[1];

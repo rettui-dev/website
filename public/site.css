@@ -412,7 +412,9 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
   nav.links { order: 3; flex: 1 0 100%; gap: 0 4px; }
   nav.links a { display: inline-flex; align-items: center; min-height: 40px; padding: 0 8px; }
   .brand { margin-right: auto; }
-  #theme-toggle { min-height: 40px; }
+  #theme-toggle, #signin-btn { min-height: 40px; }
+  .signin-name { max-width: 9ch; }
+  .link-btn { min-height: 40px; padding: 4px 6px; }
   .btn { min-height: 44px; display: inline-flex; align-items: center; }
   .hero .wordmark { height: 54px; }
   .hero p { font-size: 15px; }
@@ -429,9 +431,14 @@ dialog.detail > .detail-controls { margin: 0; padding: 10px 12px 0; }
 .account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0 0; color: var(--dim); font-size: 13px; }
 .account[hidden] { display: none; }
 .account-text { margin: 0; }
-.account-btn, .login-btn { font-size: 14px; min-height: 40px; }
-.lock-box { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 6px; background: var(--sunken); }
-.lock-text { margin: 0 0 6px; color: var(--dim); font-size: 13px; line-height: 1.45; }
+/* A button that reads as a link: the sign in line under the banner and in the details. */
+.link-btn { font: inherit; color: var(--accent); background: none; border: 0; border-radius: 4px; padding: 4px 2px; min-height: 32px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.link-btn:hover { border: 0; text-decoration-thickness: 2px; }
+.lock-note { margin: 12px 0 0; }
+/* The sign in button, last in the header and so at the top right. Signed in it shows the name and Sign out. */
+.signin { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.signin[hidden], .signin-name[hidden] { display: none; }
+.signin-name { color: var(--dim); font-size: 14px; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 dialog.login {
   background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
   padding: 16px; width: min(360px, calc(100% - 16px));
@@ -549,4 +556,30 @@ details.more-files .files { padding-top: 4px; border-top: 1px solid var(--border
 /* Nothing here has to move: for those who ask for less motion, nothing does. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* The Logs tab: controls, then the lines in the code font. The level is always written out; the colour only adds to it. */
+.log-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; margin-top: 8px; }
+.log-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.log-field label { font-size: 13px; color: var(--dim); }
+.log-field select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--control); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
+.log-field select:hover { border-color: var(--accent); }
+.log-refresh { font-size: 14px; min-height: 32px; }
+.log-refresh[aria-disabled=true] { opacity: 0.6; cursor: progress; }
+.log-error-note { color: var(--red); }
+.log-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 60vh; overflow: auto; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.45 var(--mono); font-feature-settings: "calt" 0, "liga" 0; }
+.log-list[hidden] { display: none; }
+.log-line { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 2px 8px; border-bottom: 1px solid var(--border); }
+.log-line:last-child { border-bottom: 0; }
+.log-time { color: var(--dim); white-space: nowrap; }
+.log-level { min-width: 7ch; font-weight: 600; text-transform: uppercase; }
+.log-text { flex: 1 1 24ch; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-error .log-level { color: var(--red); }
+.log-warn .log-level { color: var(--yellow); }
+.log-info .log-level { color: var(--green); }
+.log-debug .log-level, .log-trace .log-level, .log-unknown .log-level { color: var(--dim); }
+@media (max-width: 600px) {
+  .log-field select, .log-refresh { min-height: 40px; }
+  .log-list { max-height: 55vh; }
+  .log-text { flex-basis: 100%; }
 }

@@ -18,6 +18,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
+<script src="/account.js" defer></script>
 <script src="/copy.js" defer></script>
 </head>
 <body>
@@ -34,6 +35,10 @@
       <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
     </nav>
     <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
   </div>
 </header>
 <main id="main" tabindex="-1" class="wrap page">

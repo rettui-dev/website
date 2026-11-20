@@ -422,24 +422,25 @@ test('group storage is split into the message store and the disk', () => {
   assert.equal(groupDiskPairs(null).length, 0);
 });
 
-test('locked sections: which a row offers a login for, and the words for them', () => {
-  const { rowLocks, lockText, detailsLocked } = sandbox.statusLogic;
+test('locked sections: what is hidden from a visitor, and when the page says so (no placeholder, one line)', () => {
+  const { rowLocks, anyHidden, hiddenHint, detailsLocked } = sandbox.statusLogic;
   const all = ['details', 'storage', 'peers', 'disk', 'versions'];
   assert.deepEqual([...rowLocks({ locked: all, stats: { ok: true } })], ['storage', 'peers', 'disk', 'versions']);
   assert.deepEqual([...rowLocks({ locked: all, stats: null, group: null })], [], 'nothing to see without stats');
   assert.deepEqual([...rowLocks({ locked: all, stats: null, group: { nodes: 2 } })], ['storage', 'peers', 'disk', 'versions']);
   assert.deepEqual([...rowLocks({ locked: [], stats: { ok: true } })], []);
   assert.deepEqual([...rowLocks({ stats: { ok: true } })], [], 'no users: no locks');
-  assert.equal(lockText(['storage', 'peers', 'disk', 'versions']), 'Message store, peered nodes, disk and versions need a login.');
-  assert.equal(lockText(['details', 'disk']), 'Disk needs a login.');
-  assert.equal(lockText(['storage']), 'Message store needs a login.');
-  assert.equal(lockText(['versions']), 'Versions need a login.');
-  assert.equal(lockText(['peers', 'disk']), 'Peered nodes and disk need a login.');
-  assert.equal(lockText(['details']), null);
-  assert.equal(lockText(undefined), null);
   assert.equal(detailsLocked({ locked: ['details'] }), true);
   assert.equal(detailsLocked({ locked: ['disk'] }), false);
   assert.equal(detailsLocked({}), false);
+  // The line is for a visitor from whom something is kept, and only then.
+  assert.equal(anyHidden([{ locked: ['details'], stats: null }]), true);
+  assert.equal(anyHidden([{ locked: [] }, { locked: ['disk'], stats: { ok: true } }]), true);
+  assert.equal(anyHidden([{ locked: [] }, {}]), false);
+  assert.equal(anyHidden([{ locked: ['disk'], stats: null }]), false, 'a section with nothing to show hides nothing');
+  assert.equal(anyHidden([]), false);
+  assert.equal(anyHidden(undefined), false);
+  assert.equal(hiddenHint, 'Some details are only shown to signed-in users.');
 });
 
 test('day cells are told apart by level, with no data kept apart from zero', () => {
@@ -617,4 +618,54 @@ test('the last failure is shown in words', () => {
   assert.equal(peerFailureText(prow({ lastFailure: 'some_new_one' })), 'some new one');
   assert.equal(peerFailureText(prow({ lastFailure: null })), '-');
   assert.equal(peerCell(prow({ lastFailure: 'timeout' }), 'why'), 'Timed out');
+});
+
+const { clampLines, logsPath, logLevelWord, logLineParts, logsHosts, logsErrorText, logsSummary } = sandbox.statusLogic;
+
+test('logs: lines are a whole number from 1 to 500, 200 otherwise', () => {
+  assert.equal(clampLines(50), 50);
+  assert.equal(clampLines('75'), 75);
+  assert.equal(clampLines(9999), 500);
+  assert.equal(clampLines(2.9), 2);
+  for (const bad of [0, -3, NaN, 'x', undefined, null, Infinity]) assert.equal(clampLines(bad), 200, String(bad));
+});
+
+test('logs: the address carries an encoded host and only a known level', () => {
+  assert.equal(logsPath('a.test:4242', 100, 'warn'), '/api/logs/a.test%3A4242?lines=100&level=warn');
+  assert.equal(logsPath('a b/../c', 0, 'loud&x=1'), '/api/logs/a%20b%2F..%2Fc?lines=200&level=info');
+});
+
+test('logs: levels are words, and a line without a known level says so', () => {
+  assert.equal(logLevelWord('error'), 'Error');
+  assert.equal(logLevelWord('warn'), 'Warning');
+  assert.equal(logLevelWord(null), 'Unknown');
+  assert.equal(logLevelWord('constructor'), 'Unknown');
+  assert.deepEqual(plain(logLineParts({ time: 't', level: 'debug', text: 'x' })), { time: 't', level: 'debug', word: 'Debug', text: 'x' });
+  assert.deepEqual(plain(logLineParts({ time: 5, level: '__proto__', text: ['x'] })), { time: '', level: 'unknown', word: 'Unknown', text: '' });
+  assert.deepEqual(plain(logLineParts(null)), { time: '', level: 'unknown', word: 'Unknown', text: '' });
+});
+
+test('logs: a node view has one node, a combined view one entry for each member that has logs', () => {
+  assert.deepEqual(plain(logsHosts({ host: 'a:1', logs: true })), [{ host: 'a:1', label: 'a:1' }]);
+  assert.deepEqual(plain(logsHosts({ host: 'a:1' })), []);
+  assert.deepEqual(plain(logsHosts({ view: 'combined', members: [{ host: 'a:1', name: 'Alpha', hasLogs: true }, { host: 'b:1', name: null, hasLogs: false }, { host: 'c:1', name: null, hasLogs: true }] })),     [{ host: 'a:1', label: 'Alpha' }, { host: 'c:1', label: 'c:1' }]);
+  assert.deepEqual(plain(logsHosts({ view: 'combined' })), []);
+  assert.deepEqual(plain(logsHosts(null)), []);
+});
+
+test('logs: errors are said in plain words', () => {
+  assert.equal(logsErrorText(401, {}), 'The logs need a login.');
+  assert.match(logsErrorText(404, { error: 'this node does not serve logs (needs a newer rettui and a stats token)' }), /does not serve logs/);
+  assert.equal(logsErrorText(404, null), 'This node does not serve logs.');
+  assert.match(logsErrorText(429, { error: 'Try again in 3 seconds.' }), /3 seconds/);
+  assert.match(logsErrorText(502, { error: 'x' }), /Could not get the logs/);
+  assert.match(logsErrorText(500, null), /Could not get the logs/);
+});
+
+test('logs: the summary counts lines and says when older ones were left out', () => {
+  assert.equal(logsSummary(null), '');
+  assert.equal(logsSummary({ level: 'info', lines: [] }), 'No log lines at this level.');
+  assert.equal(logsSummary({ level: 'warn', lines: [{}] }), '1 line, oldest first, at level warn and above.');
+  assert.equal(logsSummary({ level: 'error', truncated: true, lines: [{}, {}] }), '2 lines, oldest first, at level error. Older lines were left out.');
+  assert.equal(logsSummary({ level: '<b>', lines: [{}] }), '1 line, oldest first, at level info and above.');
 });

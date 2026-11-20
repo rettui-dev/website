@@ -246,3 +246,26 @@ test('the Docker image copies every folder the new files are in', async () => {
   const ignore = await fs.readFile(path.join(root, '.dockerignore'), 'utf8');
   assert.doesNotMatch(ignore, /^(lib|public|server\.js)$/m);
 });
+
+test('every page has the sign in button in the header, after the theme button, and loads account.js', async () => {
+  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html']) {
+    const html = await read(name);
+    const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)[1];
+    // Hidden until account.js has heard that the site has users; the words are in the file.
+    assert.match(header, /<div class="signin" id="signin" hidden>\s*<span class="signin-name" id="signin-name" hidden><\/span>\s*<button id="signin-btn" type="button">Sign in<\/button>\s*<\/div>/, name);
+    assert.ok(header.indexOf('id="theme-toggle"') < header.indexOf('id="signin"'), `${name}: the button comes last, at the right`);
+    assert.match(html, /<script src="\/account\.js" defer><\/script>/, name);
+  }
+  // One dialog, made by the script, so no page carries its own copy.
+  assert.doesNotMatch(await read('status.html'), /<dialog id="login"/);
+  const js = await read('account.js');
+  assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+  assert.match(js, /\/api\/session/);
+  assert.match(js, /\/login/);
+  assert.match(js, /\/logout/);
+});
+
+test('account.js is served in a status-only site too (it is not a project file)', async () => {
+  const { PROJECT_FILES } = await import('../lib/site.js');
+  assert.equal(PROJECT_FILES.includes('account.js'), false);
+});

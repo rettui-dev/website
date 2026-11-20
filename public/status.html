@@ -18,6 +18,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
+<script src="/account.js" defer></script>
 <script src="/netmap.js" defer></script>
 <script src="/status.js" defer></script>
 </head>
@@ -35,6 +36,10 @@
       <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
     </nav>
     <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
   </div>
 </header>
 <main id="main" tabindex="-1" class="wrap">
@@ -45,8 +50,7 @@
   </div>
   <div id="account" class="account" hidden>
     <p id="account-text" class="account-text"></p>
-    <button id="account-btn" type="button" class="account-btn"></button>
-    <p id="account-live" class="sr-only" role="status"></p>
+    <button id="account-btn" type="button" class="link-btn">Sign in</button>
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <details id="netmap" class="netmap" open hidden>
@@ -90,21 +94,6 @@
       </div>
     </div>
     <div id="detail-body" class="detail-body" role="tabpanel" tabindex="0"></div>
-  </dialog>
-  <dialog id="login" class="login" aria-labelledby="login-title">
-    <form id="login-form" class="login-form" method="post" action="/login" novalidate>
-      <h2 id="login-title">Log in</h2>
-      <p class="note login-why">Some numbers on this page are only shown to people with an account.</p>
-      <p id="login-error" class="login-error" role="alert"></p>
-      <label for="login-name">Name</label>
-      <input id="login-name" name="name" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required aria-describedby="login-error">
-      <label for="login-password">Password</label>
-      <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="login-error">
-      <div class="login-actions">
-        <button id="login-submit" type="submit" class="primary">Log in</button>
-        <button id="login-cancel" type="button">Cancel</button>
-      </div>
-    </form>
   </dialog>
 </main>
 <footer>

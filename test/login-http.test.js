@@ -109,6 +109,31 @@ test('without users the API is exactly as before: no login, no viewer, no locks'
     assert.equal(d.json().version.current, '9.8.7');
     const p = await post(s, '/login', form({ name: 'alice', password: PASSWORD }));
     assert.equal(p.status, 405);
+    // The sign in button of every page asks this: with no users it stays hidden.
+    const session = await get(s, '/api/session');
+    assert.equal(session.status, 200);
+    assert.deepEqual(session.json(), { enabled: false, name: null });
+    assert.equal(session.headers['cache-control'], 'no-store');
+  } finally {
+    await s.close();
+  }
+});
+
+test('/api/session says whether there are users and who is signed in, and is never cached or shared', async () => {
+  const s = await setup();
+  try {
+    const anon = await get(s, '/api/session');
+    assert.equal(anon.status, 200);
+    assert.deepEqual(anon.json(), { enabled: true, name: null });
+    assert.equal(anon.headers['cache-control'], 'private, no-store');
+    assert.equal(anon.headers.vary, 'Cookie');
+    const { cookie } = await logIn(s);
+    assert.deepEqual((await get(s, '/api/session', cookie)).json(), { enabled: true, name: 'Alice' });
+    // A made-up or ended session is the same as none.
+    assert.deepEqual((await get(s, `/api/session`, `${COOKIE}=${'a'.repeat(43)}`)).json(), { enabled: true, name: null });
+    await post(s, '/logout', '', { ...FORM, Cookie: cookie });
+    assert.deepEqual((await get(s, '/api/session', cookie)).json(), { enabled: true, name: null });
+    assert.equal((await request(s.port, { method: 'POST', path: '/api/session', headers: FORM, body: '' })).status, 405);
   } finally {
     await s.close();
   }

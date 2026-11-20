@@ -25,6 +25,9 @@ hosts, keeps their history and can fetch their node stats.
 - `/api/stats?host=<host:port>&range=6h|24h|7d` is the detail of one node's stats (see
   "Stats history" below). `range` defaults to `24h`. An unknown host, or one without a
   stats URL, is a 404; a bad range is a 400. Only GET and HEAD are allowed.
+- `/api/logs/<host:port>?lines=<1..500>&level=<error|warn|info|debug>` is a node's recent log lines for the
+  Logs tab (see "Node logs" below). It needs a login (or `public_logs: true` on the node), the `details` section, and a node with a stats
+  token that serves logs. Only GET and HEAD are allowed.
 - `/join` explains how to connect to the entry point `rns.rettui.dev:4242` over TCP, with a
   Reticulum interface block to copy, the other entry points and a QR code for phones (see
   "Join page").
@@ -37,6 +40,8 @@ hosts, keeps their history and can fetch their node stats.
   dashboards (see "Public stats API").
 - `/healthz` answers `ok` (used by the Docker health check).
 - `/login` and `/logout` (POST only) exist only when the config file has users (see "Logins").
+- `/api/session` answers `{enabled, name}`: whether the site has users, and the name of whoever is signed in
+  (`null` if nobody). The Sign in button on every page asks it. GET and HEAD only, never cached.
 
 ## Join page
 
@@ -664,6 +669,7 @@ environment variables there is no login.
     nodes:
       - address: rns.rettui.dev:4242
         require_login: []            # a node can override the rule, like public_details
+                                     # (this does not make its logs public, see "Node logs")
 
 **Making a hash.** `npm run hash-password -- --name alice` asks for the password twice without
 showing it and prints the hash and a line to paste under `users:`. The name in that line is in
@@ -693,8 +699,14 @@ section while there are no users stops the server at start, and so does a `login
 
 Up or down, the check bar and uptime, clients, peers heard, traffic, announces, interfaces and how
 long a node has been running stay public. The server takes the locked numbers out of
-`/api/status` and `/api/stats` before they are sent; the page only shows what it got, with a
-"Log in to see more" button where something is missing. A proxy's group line leaves out a sum
+`/api/status` and `/api/stats` before they are sent; the page only shows what it got.
+A visitor who is not signed in is not shown what needs a login: no locked placeholder, no greyed
+tab, no "log in" box in a row. The Logs tab, the Full details button of a node whose details are
+locked, and the sections above are left out altogether. Where something is hidden, the status page
+says so once, in one line under the banner ("Some details are only shown to signed-in users." and a
+Sign in link), and the Overview of the details says the same; a site or visitor with nothing hidden
+gets no line. The logs of a node are never said to exist to a visitor who may not read them, so they
+are not counted as hidden. A proxy's group line leaves out a sum
 (message store, peered nodes, disk) as soon as one of its nodes, or the proxy, has that section
 locked, since the sum would give the node's number away. A node whose details are locked is left
 out of the combined view, as with `public_details: false`. `public_details: false` and
@@ -705,6 +717,15 @@ With users, `/api/status` has `viewer` (`{name}`, `null` without a login) and ea
 `locked`, the sections this visitor cannot see (empty once logged in); a detail answer with
 something left out has `locked` too. Both answers then carry `Cache-Control: private, no-store`
 and `Vary: Cookie`, so no shared cache keeps one visitor's answer for another.
+
+**The Sign in button.** Every page (home, status, join, downloads) has a Sign in button at the right end
+of the header, after the Theme button; on a phone it stays in the header row, not in a menu. It
+appears only when the site has users (`/api/session`), and it needs JavaScript. It opens a dialog
+with name and password, which posts to `/login`, and the visitor stays on the page they were on.
+Signed in, the button reads Sign out and the name sits beside it; the status page then fetches its
+numbers again. Without a config file with users there is no button. The button and its dialog are
+built by `public/account.js` (no inline script or style), take keyboard focus like any button, and
+use the same colours and focus ring in the dark and light themes.
 
 **How the login works.** The page posts the form to `/login`. It answers 200 with a session
 cookie, `__Host-rettui_session`: a random 256-bit id, `HttpOnly`, `Secure`, `SameSite=Strict`,
@@ -764,6 +785,51 @@ lockout beyond the wait.
 The Docker image is built `FROM node:24-alpine`, which moves with each Node.js 24 release. To
 build the exact same image every time, pin it by digest (`FROM node:24-alpine@sha256:...`, from
 `docker buildx imagetools inspect node:24-alpine`) and update the digest yourself.
+
+## Node logs
+
+A node's Full details has a **Logs** tab with its recent log lines. It needs rettui started with `--stats-logs` (which adds a `/logs`
+endpoint to its stats server), and the node's stats token (see "Exact peer counts"): without a token, or on an older
+rettui, the tab is not offered. The page never reads logs by itself. Opening the tab asks once, and
+the Refresh button asks again; there is no automatic refresh.
+
+- **Who sees it.** Logs can hold addresses and other private things, so they are never public by
+  omission: `require_login` has no say in them, and a list with or without sections (even `[]`) never
+  exposes them. Only a logged-in visitor reads them, and only when they may see the node's `details`.
+  To show a node's logs to everybody, set `public_logs: true` on that node, or at the top level for
+  all nodes (a node's own value wins; default `false`). The server logs a warning at start for each
+  node that has it. The details still apply: a node with `public_details: false`, or `details` locked,
+  has no public logs. Without `public_logs` and without users there are no logs and `/api/logs/...`
+  answers 404. A visitor who may not read the logs is not told which nodes serve them: the detail and
+  combined answers leave out `logs` and `hasLogs` for them, and `/api/logs/...` checks access before it
+  looks at the node (a 401 for a locked node, whether or not it has logs).
+- **The request.** `GET /api/logs/<host:port>?lines=<1 to 500, default 200>&level=<error|warn|info|debug,
+  default info>`. The website asks the node for `GET <origin of stats_url>/logs?lines=...&level=...`
+  with the node's token in the `Authorization: Bearer` header (the same rule as for the stats: https, or
+  http for private addresses). The token is never in a URL and never sent to the browser. A bad query is a
+  400 (`level=trace` is refused: the node answers up to `debug`); an unknown host, a node without a token, and a node that answers 404 are a 404 ("this node does
+  not serve logs (needs a newer rettui started with --stats-logs, and a stats token)"); no login is a 401; any other failure is a 502
+  with a fixed sentence. Nothing the node says in an error is passed on.
+- **Rate limit.** The answer to a question (node, lines and level) is kept for 5 seconds and shared by
+  everybody who asks the same (a failure too), so the same question is one fetch. A new question costs
+  the node a fetch, and is limited twice: each viewer (the login name, or the client address when nobody
+  is logged in, which only happens with `public_logs`) may start one new question per node every 5
+  seconds, and a node is asked once every 2 seconds across all viewers. Fetches that come sooner wait
+  their turn (up to 4 in line); only past that, or for a viewer who asked too soon, is the answer a
+  429 with `Retry-After`, which the tab shows as "Try again in N seconds". So one viewer who changes
+  the question again and again gets 429 for themselves only. At most 200 answers and 1000 viewers are
+  kept, they expire, and nothing is written to a file. Behind a reverse proxy that is not in
+  `login.trusted_proxies`, visitors without a login share one address (see "Behind a reverse proxy").
+- **What is kept of the answer.** Answers over 1 MiB are refused. At most 500 lines are kept (the newest,
+  as the node lists them oldest first), and the answer says when older ones were left out. Each line
+  is `{time, level, text}`: the text loses control, bidirectional and zero-width characters (a line
+  break or tab becomes a space) and is cut to 1000 characters, the time is cut to 40, and the level is
+  one of `error`, `warn`, `info`, `debug`, `trace` or `null`; a line that has no text is dropped.
+- **The tab.** Level and Lines choices, a Refresh button, and a list in the code font. Each line
+  shows its level in words (Error, Warning, Info, Debug) as well as in colour. The status text
+  ("12 lines, oldest first, at level info and above", "Older lines were left out", or why it failed) is a
+  live region. All text is set as text, never as HTML. For a proxy's combined view the tab has a Node
+  choice: logs are shown for one node at a time, never added up.
 
 ## Propagation node and disk numbers
 
@@ -848,7 +914,7 @@ tooltip. The times are as of the last stats check, not live.
 
 - **Who sees it.** Only the node's own Full details, and only when the node has a stats token.
   The rows follow the `peers` section of `require_login`, like the peered nodes count: a visitor
-  without a login gets no rows (and the usual "Log in to see more"); `details` locked or
+  without a login gets no rows (and no table); `details` locked or
   `public_details: false` hide the whole view as before. A proxy's combined view shows no
   per-peer rows, and neither do `/api/status` and `/api/public/stats`: the rows are in
   `/api/stats?host=...` (node view) as `stats.peerRows`, next to `stats.peerSummary`

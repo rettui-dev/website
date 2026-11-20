@@ -22,6 +22,11 @@
 # What a visitor without a login does not see. With users and no rule, all of these;
 # a node can override it with its own require_login.
 # require_login: [details, storage, peers, disk, versions]
+# The Logs tab of a node's Full details (its recent log lines, fetched with the node's stats token
+# from a node started with --stats-logs; see "Node logs" in README.md) is not one of these sections:
+# it always needs a login, whatever require_login says. To show a node's logs to everybody, set
+# public_logs: true at the top or on the node (default false; the server warns at start).
+# public_logs: false
 # login:
 #   idle_timeout_minutes: 60
 #   max_age_hours: 12
