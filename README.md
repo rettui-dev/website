@@ -592,7 +592,8 @@ whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB
       "propagation": { storedMessages, storedBytes, storageLimitBytes, peersConnected,
           peersTotal, peersAlive, peersStatic, peersAuto, peerLimit, staticPeers,
           autopeerDepth, messagesReceived, messagesServed, messagesSentToPeers,
-          messagesReceivedFromPeers, messagesOfferedToPeers, unhandledMessages: number | null,
+          messagesReceivedFromPeers, messagesOfferedToPeers, unhandledMessages,
+          unhandledDistinct: number | null,
           autopeer?: boolean | null } | null,   // keys locked by require_login are absent
       "disk": { "level": "ok" | "high" | "full" | null, "usedPercent": number | null,
           "totalBytes"?: n, "freeBytes"?: n } | null,  // bytes only with public_disk_figures
@@ -769,6 +770,22 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
   node still has to offer to its peer nodes, counted once for each peer (one message waiting for
   3 peers counts 3). It is high right after peering starts and falls as peers catch up. It can lag
   behind the real number.
+  `unhandledDistinct` (rettui 2.1.0 and later; `null` from older nodes) counts those stored
+  messages once each, so it never exceeds `storedMessages`: 20 messages that 20 peers wait for
+  are 20 here and 400 in `unhandledMessages`. It is part of the storage numbers, so
+  `require_login` takes it out together with `unhandledMessages`, and it is in `/api/status`,
+  `/api/stats` and `/api/public/stats` (under `propagation`). For a group (nodes behind one
+  proxy) the sums above are added up over the nodes, but `unhandledDistinct` is the largest value
+  of one node (a lower bound), because nodes may wait for the same messages; `null` if no node
+  sends it.
+  The status page shows "Messages waiting for peers: N of M stored" when the node sends the
+  distinct count, with "Total across peers: S" (the sum) as a second line in the details. For a
+  node without it, and for a group, it shows "Waiting to send to peers (summed over peers)".
+  The BACKLOG warning appears when the distinct count is larger than the stored messages (which
+  cannot happen), or, with only the sum, when the sum is larger than the peered nodes times the
+  stored messages. A large backlog on its own is normal and gives no warning. The warning does not
+  look at per-peer sync failures: the website keeps only the counts of the peer rows, so
+  `sync_failures`, `last_attempt_seconds_ago` and `next_attempt_in_seconds` are not shown.
 - `disk`: the size of the node's data (public on the node) and, only in the answer to a request
   with a token, free and total space of the file system it is on (see "What is public").
 
