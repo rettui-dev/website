@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Keyring } from '../lib/keys.js';
 import { hashPassword, parsePhc, verifyPassword } from '../lib/password.js';
 import {
-  LOGIN_WRITE_MS, MAX_DEVICES, MAX_RECOVERY_CODES, RECOVERY_CODES, STORE_FILE, StoreBusyError, StoreError, StoreFullError, UserError, UserStore, hashRecoveryCode, writeRefusal,
+  LOGIN_WRITE_MS, MAX_DEVICES, MAX_PASSKEYS, MAX_RECOVERY_CODES, RECOVERY_CODES, STORE_FILE, StoreBusyError, StoreError, StoreFullError, UserError, UserStore, hashRecoveryCode, passkeyRef, writeRefusal,
 } from '../lib/users.js';
 import { DB_FILE, MADE_FILE } from '../lib/userdb.js';
 import { base32Decode, hotp, stepAt } from '../lib/totp.js';
@@ -661,8 +661,8 @@ test('store: the overview lists every user by name with what the users page show
   await store.addDevice('bob', 'a'.repeat(64));
   const list = store.overview();
   assert.deepEqual(list.map((u) => u.name), ['Anna', 'bob', 'Zed']);
-  assert.deepEqual(list[1], { name: 'bob', role: 'manage', source: 'store', secondFactor: false, devices: 1, lastLogin: null, created: new Date(NOW).toISOString(), mustChangePassword: true });
-  assert.deepEqual(list[2], { name: 'Zed', role: 'admin', source: 'config', secondFactor: false, devices: 0, lastLogin: null, created: null, mustChangePassword: false });
+  assert.deepEqual(list[1], { name: 'bob', role: 'manage', source: 'store', secondFactor: false, totp: false, passkeys: 0, devices: 1, lastLogin: null, created: new Date(NOW).toISOString(), mustChangePassword: true });
+  assert.deepEqual(list[2], { name: 'Zed', role: 'admin', source: 'config', secondFactor: false, totp: false, passkeys: 0, devices: 0, lastLogin: null, created: null, mustChangePassword: false });
   assert.doesNotMatch(JSON.stringify(list), /argon2|[0-9a-f]{64}/);
   assert.equal(store.wouldLeaveNoAdmin('Zed'), true);
   assert.equal(store.wouldLeaveNoAdmin('Zed', 'admin'), false);
@@ -716,15 +716,78 @@ test('store: filled to the cap with every field at its most, it is written and r
   assert.ok(MAX_RECOVERY_CODES >= RECOVERY_CODES);
 });
 
-test('store: a password typed by an admin is refused for an admin, also when they became one meanwhile', async () => {
-  const { store } = await open();
+test('store: notAdmin refuses a password or second-factor reset for an admin, also one made an admin meanwhile; without it (the command line) it works', async () => {
+  const { store, dataDir } = await open();
   await store.createUser({ name: 'bob', role: 'admin', passwordHash: await hash() });
   await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
-  await assert.rejects(store.setPassword('bob', await hash('another password'), { typedForAdmin: true }), (e) => e.code === 'admin-password');
-  await store.setPassword('carol', await hash('another password'), { typedForAdmin: true });
+  await store.beginTotp('bob');
+  const before = store.find('bob').phc;
+  await assert.rejects(store.setPassword('bob', await hash('another password'), { notAdmin: true }), (e) => e.code === 'admin-target');
+  await assert.rejects(store.resetSecondFactor('bob', { notAdmin: true }), (e) => e.code === 'admin-target');
+  assert.deepEqual(store.find('bob').phc, before);
+  assert.ok(store.factorRecord('bob').totp);
+  await store.setPassword('carol', await hash('another password'), { notAdmin: true });
+  // Made an admin by another program (the command line), which this store has not read yet: the
+  // transaction reads it first, and refuses.
+  const cli = await reopen(dataDir);
+  await cli.setRole('carol', 'admin');
+  await cli.beginTotp('carol');
+  cli.close();
+  assert.equal(store.lookup('carol').role, 'viewer', 'not read yet');
+  await assert.rejects(store.setPassword('carol', await hash('a third password'), { notAdmin: true }), (e) => e.code === 'admin-target');
+  await assert.rejects(store.resetSecondFactor('carol', { notAdmin: true }), (e) => e.code === 'admin-target');
+  assert.ok(store.factorRecord('carol').totp);
+  await store.setRole('carol', 'viewer');
   await store.setPassword('bob', await hash('another password'));
+  await store.resetSecondFactor('bob');
+  assert.equal(store.factorRecord('bob').totp, null);
   // setRole gives the role right before its change.
   assert.equal(await store.setRole('carol', 'manage'), 'viewer');
+});
+
+test('store: noDeleteAdmin refuses deleting an admin, also one made an admin meanwhile; the command line still deletes one', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'root', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'bob', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
+  await store.createUser({ name: 'dave', role: 'viewer', passwordHash: await hash() });
+  await assert.rejects(store.deleteUser('bob', { noDeleteAdmin: true }), (e) => e.code === 'admin-delete');
+  assert.equal(store.lookup('bob').role, 'admin');
+  await store.deleteUser('dave', { noDeleteAdmin: true });
+  assert.equal(store.lookup('dave'), null);
+  // Made an admin by another program (the command line), which this store has not read yet: the
+  // transaction reads the record as it is then, and refuses.
+  const cli = await reopen(dataDir);
+  await cli.setRole('carol', 'admin');
+  cli.close();
+  assert.equal(store.lookup('carol').role, 'viewer', 'not read yet');
+  await assert.rejects(store.deleteUser('carol', { noDeleteAdmin: true }), (e) => e.code === 'admin-delete');
+  assert.equal(store.lookup('carol').role, 'admin');
+  // Without it (the command line, or an admin deleting themselves) an admin is deleted.
+  await store.deleteUser('bob');
+  assert.equal(store.lookup('bob'), null);
+});
+
+test('store: noDemote refuses another role for an admin, also one made an admin meanwhile; promotions and the command line still work', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'root', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'bob', role: 'admin', passwordHash: await hash() });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
+  for (const role of ['manage', 'viewer']) await assert.rejects(store.setRole('bob', role, { noDemote: true }), (e) => e.code === 'admin-demote');
+  assert.equal(store.lookup('bob').role, 'admin');
+  // Not an admin: other roles, and making them an admin, as before.
+  assert.equal(await store.setRole('carol', 'manage', { noDemote: true }), 'viewer');
+  // Made an admin by another program (the command line), which this store has not read yet: the
+  // transaction reads the record as it is then, and refuses.
+  const cli = await reopen(dataDir);
+  await cli.setRole('carol', 'admin');
+  cli.close();
+  assert.equal(store.lookup('carol').role, 'manage', 'not read yet');
+  await assert.rejects(store.setRole('carol', 'viewer', { noDemote: true }), (e) => e.code === 'admin-demote');
+  assert.equal(store.lookup('carol').role, 'admin');
+  // Without it (the command line, or an admin's own role) an admin is given another role.
+  assert.equal(await store.setRole('bob', 'viewer'), 'admin');
+  assert.equal(await store.setRole('bob', 'admin', { noDemote: true }), 'viewer');
 });
 
 test('store: users.db and its -wal and -shm keep the owner of users.db when root changes it', { skip: process.platform === 'win32' || process.getuid?.() !== 0 }, async () => {
@@ -1107,4 +1170,339 @@ test('login: when the store cannot be read again, signing in is off and every se
   assert.match(logs.at(-1), /can be read again; signing in is back on/);
   assert.equal((await auth.attempt('bob', 'a good password', '192.0.2.1')).ok, true);
   store.close();
+});
+
+// ---- passkeys ----
+
+// A passkey as passkeys.js hands it over after a registration; over changes fields.
+const passkey = (label = 'Phone', over = {}) => ({
+  id: crypto.randomBytes(32).toString('base64url'),
+  publicKey: crypto.randomBytes(77).toString('base64url'),
+  counter: 0,
+  transports: ['hybrid', 'internal'],
+  name: label,
+  backupEligible: true,
+  backedUp: true,
+  rpId: 'status.example.org',
+  ...over,
+});
+const userError = (code) => (e) => e instanceof UserError && e.code === code;
+// The passkey rows of the store on disk.
+function credentialRows(dataDir) {
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
+  try {
+    return sql.prepare('SELECT c.*, u.kind, u.name AS user FROM credentials c JOIN users u ON u.id = c.user_id ORDER BY c.id').all();
+  } finally {
+    sql.close();
+  }
+}
+
+test('passkeys: added to a website user and a config user, kept in their own rows, and read back the same after a restart', async () => {
+  const configUsers = [await configUser('Alice', 'admin')];
+  const clock = { t: NOW };
+  const { store, dataDir } = await open({ configUsers, clock });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  assert.deepEqual(store.secondFactors('bob'), { totp: false, passkeys: 0, recoveryCodesLeft: 0 });
+  assert.equal(store.passkeyByRef('bob', 'x'), null);
+  assert.deepEqual(store.passkeys('nobody'), []);
+
+  const handle = await store.ensurePasskeyUserId('bob');
+  assert.equal(Buffer.from(handle, 'base64url').length, 32);
+  assert.equal(await store.ensurePasskeyUserId('BOB'), handle, 'made once');
+  const one = passkey('  My phone  ');
+  const added = await store.addPasskey('bob', one);
+  assert.equal(added.first, true);
+  assert.equal(added.recoveryCodes.length, RECOVERY_CODES);
+  assert.equal(added.ref, passkeyRef(one.id));
+  assert.equal(added.ref, crypto.createHash('sha256').update(Buffer.from(one.id, 'base64url')).digest('hex').slice(0, 16));
+  clock.t += 1000;
+  const two = passkey('Key', { transports: [], backupEligible: false, backedUp: false, counter: 7 });
+  assert.deepEqual(await store.addPasskey('bob', two), { first: false, recoveryCodes: null, ref: passkeyRef(two.id) });
+  assert.equal(store.secondFactorEnabled('bob'), true);
+  assert.deepEqual(store.secondFactors('bob'), { totp: false, passkeys: 2, recoveryCodesLeft: RECOVERY_CODES });
+
+  // A config user without a record gets one, with a user handle, in a 'config' row.
+  assert.equal(store.factorRecord('alice'), null);
+  const three = passkey('Laptop');
+  assert.equal((await store.addPasskey('alice', three)).first, true);
+  assert.equal(Buffer.from(store.factorRecord('alice').passkeyUserId, 'base64url').length, 32);
+  assert.deepEqual(credentialRows(dataDir).map((r) => [r.kind, r.user, r.name]), [['store', 'bob', 'My phone'], ['store', 'bob', 'Key'], ['config', 'Alice', 'Laptop']]);
+
+  const want = [
+    { ref: passkeyRef(one.id), name: 'My phone', created: new Date(NOW).toISOString(), lastUsed: null, backedUp: true, backupEligible: true, rpId: 'status.example.org' },
+    { ref: passkeyRef(two.id), name: 'Key', created: new Date(NOW + 1000).toISOString(), lastUsed: null, backedUp: false, backupEligible: false, rpId: 'status.example.org' },
+  ];
+  assert.deepEqual(store.passkeys('bob'), want);
+  const full = { type: 'passkey', ...one, name: 'My phone', created: want[0].created, lastUsed: null, ref: want[0].ref };
+  assert.deepEqual(store.passkeyByRef('bob', want[0].ref), full);
+  assert.deepEqual(store.passkeyById('bob', one.id), full);
+  assert.equal(store.passkeyById('alice', one.id), null, 'only the user\'s own');
+  // A copy: changing it changes nothing kept.
+  store.passkeyByRef('bob', want[0].ref).transports.push('usb');
+  assert.deepEqual(store.passkeyByRef('bob', want[0].ref).transports, ['hybrid', 'internal']);
+
+  // What the pages see has no id and no key.
+  const account = store.account('bob');
+  assert.deepEqual(account.passkeys, want);
+  assert.equal(account.recoveryCodesLeft, RECOVERY_CODES);
+  assert.deepEqual(account.totp, { enabled: false, recoveryCodesLeft: 0 });
+  const overview = store.overview();
+  assert.deepEqual(overview.map((u) => [u.name, u.secondFactor, u.totp, u.passkeys]), [['Alice', true, false, 1], ['bob', true, false, 2]]);
+  for (const text of [JSON.stringify(account), JSON.stringify(overview)]) {
+    for (const p of [one, two, three]) assert.equal(text.includes(p.id) || text.includes(p.publicKey), false);
+  }
+
+  const again = await reopen(dataDir, { configUsers });
+  for (const name of ['bob', 'alice']) assert.deepEqual(again.factorRecord(name), store.factorRecord(name), name);
+  assert.equal(await again.ensurePasskeyUserId('bob'), handle);
+  assert.equal(again.useRecoveryCode('bob', added.recoveryCodes[0]).ok, true);
+  again.close();
+  store.close();
+});
+
+test('passkeys: at most ten per user, every field checked, and a bad name is refused; nothing is written then', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  await assert.rejects(store.addPasskey('nobody', passkey()), userError('unknown'));
+  const bad = {
+    id: ['', 'a+b/', 'aGk=', crypto.randomBytes(513).toString('base64url'), 42],
+    publicKey: ['', crypto.randomBytes(601).toString('base64url'), null],
+    counter: [-1, 2 ** 32, 1.5, '3'],
+    transports: [['warp'], Array(9).fill('usb'), 'usb'],
+    rpId: ['', 'a'.repeat(254), 'exa mple.org', 'example.org/'],
+    backupEligible: [1, undefined],
+    backedUp: ['yes'],
+    created: ['yesterday'],
+    lastUsed: ['soon'],
+  };
+  for (const [field, values] of Object.entries(bad)) {
+    for (const v of values) await assert.rejects(store.addPasskey('bob', passkey('Phone', { [field]: v })), TypeError, `${field}: ${v}`);
+  }
+  await assert.rejects(store.addPasskey('bob', 'not an object'), TypeError);
+  for (const label of ['', '   ', 'x'.repeat(65), 'a\nb', 'tab\there', 'evil‮gnp.exe', 'line break', 42, null]) {
+    await assert.rejects(store.addPasskey('bob', passkey(label)), userError('bad-label'), JSON.stringify(label));
+  }
+  assert.deepEqual(credentialRows(dataDir), [], 'nothing written');
+  assert.equal(store.secondFactorEnabled('bob'), false);
+
+  // 64 characters, some outside the basic plane, are fine.
+  const refs = [(await store.addPasskey('bob', passkey('\u{1F511}'.repeat(64)))).ref];
+  for (let i = 1; i < MAX_PASSKEYS; i++) refs.push((await store.addPasskey('bob', passkey(`Key ${i}`))).ref);
+  assert.equal(new Set(refs).size, MAX_PASSKEYS);
+  await assert.rejects(store.addPasskey('bob', passkey('One more')), userError('full'));
+  assert.equal(store.passkeys('bob').length, MAX_PASSKEYS);
+  assert.equal(credentialRows(dataDir).length, MAX_PASSKEYS);
+  assert.equal(store.passkeys('bob')[0].name, '\u{1F511}'.repeat(64));
+  // Renaming checks the name the same way, and an unknown ref is refused.
+  await assert.rejects(store.renamePasskey('bob', refs[1], 'x'.repeat(65)), userError('bad-label'));
+  await assert.rejects(store.renamePasskey('bob', 'ffffffffffffffff', 'New'), userError('unknown'));
+  await assert.rejects(store.renamePasskey('nobody', refs[1], 'New'), userError('unknown'));
+  assert.deepEqual(await store.renamePasskey('bob', refs[1], ' Work key '), { from: 'Key 1', to: 'Work key' });
+  assert.equal((await reopen(dataDir)).passkeyByRef('bob', refs[1]).name, 'Work key');
+  // The store itself refuses an eleventh passkey written by any other way.
+  const r = store.factorRecord('bob');
+  assert.throws(() => store.db.tx(() => store.db.put('store', { ...r, credentials: [...r.credentials, { type: 'passkey', ...passkey(), created: new Date(NOW).toISOString(), lastUsed: null }] })), StoreFullError);
+  store.close();
+});
+
+test('passkeys: one id belongs to one passkey of one user only', async () => {
+  const configUsers = [await configUser('Alice')];
+  const { store, dataDir } = await open({ configUsers });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  await store.createUser({ name: 'carol', passwordHash: await hash() });
+  const p = passkey();
+  await store.addPasskey('bob', p);
+  await assert.rejects(store.addPasskey('bob', passkey('Again', { id: p.id })), userError('exists'));
+  for (const name of ['carol', 'alice']) await assert.rejects(store.addPasskey(name, passkey('Mine', { id: p.id })), userError('exists'), name);
+  // Added by another program meanwhile: refused all the same.
+  const q = passkey();
+  const cli = await reopen(dataDir, { configUsers });
+  await cli.addPasskey('carol', q);
+  await assert.rejects(store.addPasskey('alice', passkey('Mine', { id: q.id })), userError('exists'));
+  // And by the database itself, for a record that has it anyway.
+  const r = store.factorRecord('bob');
+  const copy = { ...store.passkeyById('carol', q.id) };
+  delete copy.ref;
+  assert.throws(() => store.db.tx(() => store.db.put('store', { ...r, credentials: [...r.credentials, copy] })), userError('exists'));
+  assert.deepEqual(credentialRows(dataDir).map((c) => c.user), ['bob', 'carol']);
+  cli.close();
+  store.close();
+});
+
+test('passkeys: removing the last second factor clears the recovery codes; TOTP off keeps them while a passkey is left', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  const { ref, recoveryCodes } = await store.addPasskey('bob', passkey('Phone'));
+  // TOTP turned on next makes new codes, and the old ones stop working.
+  await store.beginTotp('bob');
+  const totpCodes = await store.enableTotp('bob', codeAt(store, 'bob', NOW));
+  assert.equal(store.useRecoveryCode('bob', recoveryCodes[0]).ok, false);
+  const second = await store.addPasskey('bob', passkey('Key'));
+  assert.deepEqual([second.first, second.recoveryCodes], [false, null]);
+  assert.deepEqual(store.secondFactors('bob'), { totp: true, passkeys: 2, recoveryCodesLeft: RECOVERY_CODES });
+
+  assert.deepEqual(await store.removePasskey('bob', ref), { label: 'Phone', secondFactorOff: false });
+  await store.disableTotp('bob');
+  assert.equal(store.secondFactorEnabled('bob'), true);
+  assert.deepEqual(store.secondFactors('bob'), { totp: false, passkeys: 1, recoveryCodesLeft: RECOVERY_CODES });
+  assert.equal(store.useRecoveryCode('bob', totpCodes[0]).ok, true, 'the codes stay with the passkey');
+  await assert.rejects(store.removePasskey('bob', ref), userError('unknown'), 'gone already');
+  await assert.rejects(store.removePasskey('nobody', second.ref), userError('unknown'));
+  await assert.rejects(store.removePasskey('bob', second.ref, { guard: () => false }), userError('gone'));
+  assert.equal(store.passkeys('bob').length, 1, 'a guard that says no changes nothing');
+
+  assert.deepEqual(await store.removePasskey('bob', second.ref), { label: 'Key', secondFactorOff: true });
+  assert.deepEqual(store.secondFactors('bob'), { totp: false, passkeys: 0, recoveryCodesLeft: 0 });
+  assert.deepEqual(store.factorRecord('bob').recoveryCodes, []);
+  assert.equal(store.useRecoveryCode('bob', totpCodes[1]).ok, false);
+  assert.equal(store.secondFactorEnabled('bob'), false);
+  const again = await reopen(dataDir);
+  assert.deepEqual(again.factorRecord('bob').credentials, []);
+  assert.equal(row(dataDir, 'bob').totp_box, null);
+  store.close();
+});
+
+test('passkeys: recovery codes work, and can be made again, with passkeys only; the first passkey after TOTP keeps them', async () => {
+  const { store } = await open();
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  await assert.rejects(store.newRecoveryCodes('bob'), userError('unknown'));
+  const { recoveryCodes } = await store.addPasskey('bob', passkey());
+  const r = store.useRecoveryCode('bob', recoveryCodes[0]);
+  assert.deepEqual([r.ok, r.left], [true, RECOVERY_CODES - 1]);
+  await r.saved;
+  const fresh = await store.newRecoveryCodes('bob');
+  assert.equal(store.useRecoveryCode('bob', recoveryCodes[1]).ok, false);
+  assert.equal(store.useRecoveryCode('bob', fresh[0]).ok, true);
+  assert.equal(store.account('bob').recoveryCodesLeft, RECOVERY_CODES - 1);
+
+  // TOTP first: a passkey added later is not the first factor, and the codes stay.
+  await store.createUser({ name: 'carol', passwordHash: await hash() });
+  await store.beginTotp('carol');
+  const codes = await store.enableTotp('carol', codeAt(store, 'carol', NOW));
+  const added = await store.addPasskey('carol', passkey());
+  assert.deepEqual([added.first, added.recoveryCodes], [false, null]);
+  assert.equal(store.useRecoveryCode('carol', codes[0]).ok, true);
+  assert.equal(store.account('carol').totp.recoveryCodesLeft, RECOVERY_CODES - 1);
+  // A TOTP set up but not turned on is no second factor: the first passkey is.
+  await store.createUser({ name: 'dave', passwordHash: await hash() });
+  await store.beginTotp('dave');
+  assert.equal((await store.addPasskey('dave', passkey())).first, true);
+  assert.equal(store.totpPending('dave'), true);
+  store.close();
+});
+
+test('passkeys: a reset takes them away with the TOTP and the codes, keeps the user handle, and clears them from users.db-wal', async () => {
+  const configUsers = [await configUser('Alice')];
+  const { store, dataDir } = await open({ configUsers });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  const has = async (b64) => (await diskBytes(dataDir)).includes(Buffer.from(b64, 'base64url'));
+  const p = passkey();
+  const q = passkey();
+  const handle = await store.ensurePasskeyUserId('bob');
+  await store.addPasskey('bob', p);
+  await store.addPasskey('alice', q);
+  await store.beginTotp('bob');
+  await store.enableTotp('bob', codeAt(store, 'bob', NOW));
+  assert.equal(await has(p.publicKey), true, 'written');
+  assert.equal(await has(p.id), true, 'written');
+
+  const waitScrub = async () => {
+    for (let i = 0; i < 40 && store.scrubPending; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(store.scrubPending, false);
+  };
+  await store.resetSecondFactor('bob');
+  await waitScrub();
+  assert.deepEqual(store.secondFactors('bob'), { totp: false, passkeys: 0, recoveryCodesLeft: 0 });
+  assert.equal(store.factorRecord('bob').passkeyUserId, handle);
+  assert.equal(await has(p.publicKey), false, 'the key is in neither file');
+  assert.equal(await has(p.id), false, 'nor the id');
+  // Removing one does the same.
+  await store.removePasskey('alice', passkeyRef(q.id));
+  await waitScrub();
+  assert.equal(await has(q.publicKey), false);
+  const again = await reopen(dataDir, { configUsers });
+  assert.equal(again.factorRecord('bob').passkeyUserId, handle);
+  assert.equal(await again.ensurePasskeyUserId('bob'), handle);
+  assert.equal(again.secondFactorEnabled('bob'), false);
+  assert.equal(again.secondFactorEnabled('alice'), false);
+  again.close();
+  store.close();
+});
+
+test('passkeys: a use raises the counter in memory at once and always writes it; only the time is written at most once a minute', async () => {
+  const clock = { t: NOW };
+  const { store, dataDir } = await open({ clock });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  const p = passkey('Key', { counter: 5, backedUp: false });
+  const { ref } = await store.addPasskey('bob', p);
+  const onDisk = () => credentialRows(dataDir).map((c) => [c.counter, c.backed_up, c.last_used])[0];
+  assert.equal(store.usePasskey('bob', 'ffffffffffffffff', { counter: 9 }).ok, false);
+  assert.equal(store.usePasskey('nobody', ref, { counter: 9 }).ok, false);
+  for (const counter of [-1, 2 ** 32, 1.5, '6']) assert.throws(() => store.usePasskey('bob', ref, { counter }), TypeError);
+  assert.throws(() => store.usePasskey('bob', ref, { counter: 6, backedUp: 'yes' }), TypeError);
+
+  const first = store.usePasskey('bob', ref, { counter: 6, backedUp: false });
+  assert.equal(first.ok, true);
+  assert.equal(store.passkeyByRef('bob', ref).counter, 6, 'in memory at once');
+  await first.saved;
+  assert.deepEqual(onDisk(), [6, 0, new Date(NOW).toISOString()]);
+  // Within the minute, a new counter is written all the same.
+  clock.t += 1000;
+  await store.usePasskey('bob', ref, { counter: 7, backedUp: false }).saved;
+  assert.deepEqual(onDisk(), [7, 0, new Date(NOW + 1000).toISOString()]);
+  // A lower counter never lowers it (passkeys.js refuses that use; this is a second guard).
+  clock.t += 1000;
+  await store.usePasskey('bob', ref, { counter: 3, backedUp: false }).saved;
+  assert.equal(store.passkeyByRef('bob', ref).counter, 7);
+  assert.equal(store.passkeyByRef('bob', ref).lastUsed, new Date(NOW + 2000).toISOString(), 'the time in memory');
+  assert.deepEqual(onDisk(), [7, 0, new Date(NOW + 1000).toISOString()], 'only the time changed: not written yet');
+  // A change of backup state is written at once.
+  await store.usePasskey('bob', ref, { counter: 7, backedUp: true }).saved;
+  assert.deepEqual(onDisk(), [7, 1, new Date(NOW + 2000).toISOString()]);
+  clock.t += LOGIN_WRITE_MS;
+  await store.usePasskey('bob', ref, { counter: 7, backedUp: true }).saved;
+  assert.deepEqual(onDisk(), [7, 1, new Date(clock.t).toISOString()], 'a minute later the time is written');
+  // A use found to have a change made elsewhere meanwhile is made on the fresh record too.
+  const cli = await reopen(dataDir);
+  await cli.renamePasskey('bob', ref, 'Renamed');
+  await store.usePasskey('bob', ref, { counter: 8 }).saved;
+  const back = await reopen(dataDir);
+  assert.deepEqual([back.passkeyByRef('bob', ref).name, back.passkeyByRef('bob', ref).counter], ['Renamed', 8]);
+  cli.close();
+  back.close();
+  store.close();
+});
+
+test('passkeys: added, removed or renamed by another program, picked up; adding or removing one ends sessions, a new name does not', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  const calls = [];
+  store.onExternalChange = (name, what) => calls.push([name, what]);
+  const cli = await reopen(dataDir);
+  const { ref } = await cli.addPasskey('bob', passkey('Phone'));
+  assert.equal(store.refresh(), true);
+  assert.deepEqual(calls, [['bob', ['second-factor']]]);
+  assert.equal(store.secondFactorEnabled('bob'), true);
+  calls.length = 0;
+  await cli.renamePasskey('bob', ref, 'Old phone');
+  await cli.usePasskey('bob', ref, { counter: 3 }).saved;
+  assert.equal(store.refresh(), true);
+  assert.deepEqual(calls, []);
+  assert.deepEqual([store.passkeyByRef('bob', ref).name, store.passkeyByRef('bob', ref).counter], ['Old phone', 3]);
+  await cli.removePasskey('bob', ref);
+  store.refresh();
+  assert.deepEqual(calls, [['bob', ['second-factor']]]);
+  assert.equal(store.secondFactorEnabled('bob'), false);
+  cli.close();
+  store.close();
+});
+
+test('passkeys: a store without a database keeps them in memory', async () => {
+  const store = new UserStore({ warn: () => {}, now: () => NOW });
+  await store.createUser({ name: 'bob', passwordHash: await hash() });
+  const { ref, recoveryCodes } = await store.addPasskey('bob', passkey());
+  assert.equal(store.useRecoveryCode('bob', recoveryCodes[0]).ok, true);
+  await store.usePasskey('bob', ref, { counter: 2 }).saved;
+  assert.equal(store.passkeyByRef('bob', ref).counter, 2);
+  assert.deepEqual(await store.removePasskey('bob', ref), { label: 'Phone', secondFactorOff: true });
 });

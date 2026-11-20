@@ -99,3 +99,46 @@ test('the style sheet has a visible focus style, a skip link, and respects reduc
   const theme = await read('theme.js');
   assert.match(theme, /prefers-color-scheme: light/);
 });
+
+test('the passkey section is a labelled region with named controls, messages that are read out, and hints for password managers', async () => {
+  const html = await read('account.html');
+  for (const id of ['acct-passkeys', 'acct-recovery']) {
+    const section = new RegExp(`<section id="${id}"[^>]*aria-labelledby="([^"]+)"[^>]*hidden>`).exec(html);
+    assert.ok(section, `${id} is a hidden section with a name`);
+    assert.match(html, new RegExp(`<h2 id="${section[1]}"`), id);
+  }
+  // The name field has a visible label, and a text field never gets filled in by a password manager.
+  assert.match(html, /<label for="passkey-name">[^<]+<\/label>\s*<input id="passkey-name" type="text"[^>]*maxlength="64"/);
+  for (const [tag] of html.matchAll(/<input\b[^>]*type="text"[^>]*>/g)) {
+    if (/\sreadonly\b/.test(tag)) continue; // the hidden name for the password manager, on purpose
+    for (const a of ['data-bwignore="true"', 'data-1p-ignore="true"', 'data-lpignore="true"']) assert.ok(tag.includes(a), `${a} on ${tag}`);
+  }
+  // Errors are read out as they appear; the page's status line is a polite status.
+  for (const id of ['passkey-add-error', 'codes-new-error', 'totp-disable-error']) assert.match(html, new RegExp(`<p id="${id}" class="login-error" role="alert">`), id);
+  assert.match(html, /<p id="acct-status" class="note" role="status">/);
+  // The unavailable reason is text on the page, not only a disabled button.
+  assert.match(html, /<p id="passkeys-unavailable" class="note" hidden><\/p>/);
+  assert.match(html, /<h2 id="acct-passkeys-h" tabindex="-1">/);
+});
+
+test('the sign in and step-up dialogs: the passkey button is a button with words, the errors are read out, and the code fields keep the hints', async () => {
+  const sign = await read('account.js');
+  assert.match(sign, /el\('button', 'primary', 'Use your passkey'\)/);
+  assert.match(sign, /err\.id = 'login-code-error';\s*err\.setAttribute\('role', 'alert'\)/);
+  assert.match(sign, /rec\.setAttribute\(a, 'true'\)/);
+  const step = await read('step-up.js');
+  assert.match(step, /Use your passkey instead/);
+  assert.match(step, /err\.setAttribute\('aria-live', 'assertive'\)/);
+  assert.match(step, /\['data-bwignore', 'data-1p-ignore', 'data-lpignore'\]\.forEach/);
+  // Passkey prompts are never started by a script on its own: the only calls are in click and submit handlers.
+  assert.doesNotMatch(await read('passkey.js'), /addEventListener|setTimeout|DOMContentLoaded/);
+});
+
+test('the passkey list works at phone width: it wraps, and the buttons are large enough to touch', async () => {
+  const css = await read('site.css');
+  assert.match(css, /\.acct-passkey \{[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.acct-passkeys \{[^}]*display: grid/);
+  // Buttons in the list use the same 40px touch size as the other account buttons.
+  assert.match(css, /\.login-actions button \{ min-height: 40px/);
+  assert.match(css, /\.acct-passkey \.acct-form \{ max-width: none; \}/);
+});

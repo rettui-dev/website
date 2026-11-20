@@ -5,8 +5,9 @@ status page that checks the project's Reticulum entry points. It has the same lo
 as rettui's web UI (colours, Fira Sans and Fira Code, dark and light themes).
 
 It is plain HTML, CSS and JavaScript, served by a small Node.js server
-(`server.js`) with no dependencies and no build step. The server also probes the
-hosts, keeps their history and can fetch their node stats.
+(`server.js`) with no build step and two dependencies (`yaml`, and `@simplewebauthn/server` for
+passkeys, see "Passkeys"). The server also probes the hosts, keeps their history and can fetch
+their node stats.
 
 ## Pages
 
@@ -180,7 +181,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `RELEASE_REPOS`  | `rettui-dev/rettui,rettui-dev/rngit-rs` | Comma separated `owner/name` list of the repositories the Downloads page shows (at most 8). Anything else is an error at start. |
 | `GITHUB_TOKEN`   | none                              | Optional GitHub token that raises the API rate limit; it only reads public releases. `GITHUB_TOKEN_FILE` reads it from a file (not both): a regular file of at most 1024 bytes; a pipe, a device or a bigger file stops the server at start. |
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
-| `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
+| `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. It is also the address passkeys are made for: without it there are no passkeys (see "Passkeys"), and `http://localhost` is accepted for testing. Changing it later stops existing passkeys working. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
 | `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses or networks in CIDR notation (like `172.22.0.0/16`) of the reverse proxies in front of the site (at most 16), for users in the user store without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in the user store, it is not used and the server says so at start. |
 
@@ -240,7 +241,9 @@ site:
   `site:` the pages are byte for byte what they were.
 - `url` (or `SITE_URL` without a config file) is the https address of this server, with no path,
   user name, password, query or fragment. It does not change what a visitor sees: it is used for
-  the links that must be absolute (the feed's own links now, the Open Graph tags below).
+  the links that must be absolute (the feed's own links now, the Open Graph tags below). It is
+  also the address of passkeys (see "Passkeys"), where `http://localhost` is accepted too, for
+  testing.
 - The theme toggle, fonts and the strict CSP are unchanged: no inline script or style.
 
 How it works: `status.html` stays a plain file. When the site is customised (status mode, or a
@@ -322,7 +325,8 @@ never repeats a URL:
   (`<<`), no custom tags and only one document.
 
 In Docker, mount the file read-only and point `CONFIG_FILE` at it (see `compose.yaml`).
-The image installs its one runtime dependency, `yaml`, with `npm ci --omit=dev`.
+The image installs its runtime dependencies, `yaml` and `@simplewebauthn/server`, with
+`npm ci --omit=dev --ignore-scripts`.
 
 ## Uptime history and incidents
 
@@ -773,8 +777,8 @@ most, so one account signing in over and over never signs anyone else out.
 - A password over 1024 bytes, or a name over 64 characters, can never be right: it gets the same
   401 at once, without a hash, and counts nowhere. It is not a guess, so sending many of them
   holds nobody back.
-- **Known devices.** Every sign in that works (the password, and the code when two-step sign-in
-  is on) sets a second cookie, `__Host-rettui_device`: a random 128-bit id, `HttpOnly`, `Secure`,
+- **Known devices.** Every sign in that works (the password, and the second step when two-step
+  sign-in is on) sets a second cookie, `__Host-rettui_device`: a random 128-bit id, `HttpOnly`, `Secure`,
   `SameSite=Strict`, `Path=/`, for 180 days. The server keeps only its SHA-256, with the user (at
   most 10 per user; past that the one used least recently is forgotten), and when each was first
   and last used (the times of sign ins are written to the user store at most once a minute per
@@ -823,8 +827,8 @@ most, so one account signing in over and over never signs anyone else out.
   waiting. So a flood from outside never holds back a signed-in user or a known device, and
   signed-in users and known devices never hold back a sign in from outside for more than that
   one place. A 503 does not count as a failed login.
-- `/login`, `/login/code` and `/logout` only take `application/x-www-form-urlencoded` (else 415),
-  at most 4 KiB (else 413), with the header `X-Rettui-Request: 1`, and only from the page itself:
+- `/login`, `/login/code`, `/login/passkey` and `/logout` only take `application/x-www-form-urlencoded` (else 415),
+  at most 4 KiB, or 8 KiB for `/login/passkey` (else 413), with the header `X-Rettui-Request: 1`, and only from the page itself:
   `Sec-Fetch-Site` must be `same-origin`, or, from a browser too old to send it, `Origin` must
   name the host the request was sent to (else 403). A form on another site cannot send the
   header.
@@ -865,7 +869,7 @@ starts with `WARNING:` and names both settings.
 
 **Limits.** Everything is in one process and in memory: sessions end when the server restarts
 (everyone has to log in again), and running several copies behind a load balancer does not
-share sessions or failed-login counts. Users can turn on a second factor (TOTP) on their
+share sessions or failed-login counts. Users can turn on a second factor (an app code, or passkeys) on their
 account page, and website users can change their password there (see "Accounts and second
 factor"); there is no account lockout beyond the wait.
 
@@ -904,7 +908,8 @@ node:24.x.y-alpine` gives the digest).
 Everyone who can sign in has an account page, `/account`: the name in the header links to it once
 signed in. It shows the name, the role, the last sign in, where the account is signed in (the sessions in
 this server's memory, without addresses) and its known devices, and has the password and the
-second factor.
+second factor: an app code, passkeys, or both (see "Passkeys"). The recovery codes work with
+either.
 
 **Where users live.** Users come from two places:
 
@@ -967,21 +972,27 @@ restart the server with the right keys.
 
 TOTP secrets are kept encrypted with the user store key, and recovery codes only as a keyed hash
 (see "The user store"), so the database alone gives neither. Keep the data directory as private
-as the config file anyway, and back it up (see "Backups").
+as the config file anyway, and back it up (see "Backups"). A passkey's record (its public key,
+name and counter) is in the store too; a public key cannot sign in.
 
-**Two-step sign-in (TOTP).** On the account page, Set up two-step sign-in shows a QR code and the
+**Two-step sign-in with an app code (TOTP).** On the account page, Set up two-step sign-in shows a QR code and the
 same key as text, for any authenticator app (RFC 6238: HMAC-SHA1, 6 digits, 30 seconds). The key
 is a new random 20-byte secret, and it is shown this once, to its owner: no later answer contains
 it, it is never in a URL and never logged. It is only turned on once the first code from the app
-is right; turning it on gives ten recovery codes, shown once too, with Copy and Download buttons.
-Each recovery code signs in once instead of a code from the app. New recovery codes replace all
-the old ones. Setting it up needs the password; new recovery codes and turning it off need the
-password and a current code (or a recovery code) (see "Changes need a recent sign in").
+is right; turning it on gives ten recovery codes, shown once too, with Copy and Download buttons
+(they replace any recovery codes the user already had from a passkey). Each recovery code signs in
+once instead of any other second step: the code from the app or a passkey. New recovery codes
+replace all the old ones. The recovery codes belong to the second step as a whole: they are made
+when the first way (app code or passkey) is turned on, and they are removed only when the last way
+is turned off. Setting it up needs the password; new recovery codes and turning it off need the
+password and a second step (a passkey, a code from the app or a recovery code) (see "Changes need
+a recent sign in").
 
-With it on, a right password no longer signs in by itself. `/login` answers 200 with
-`{"ok": false, "secondFactor": true, "pending": "..."}` and no cookie, and the sign in dialog asks
-for the code (or, with "Use a recovery code", a recovery code), which it posts to `/login/code`
-with the `pending` token (a form, like `/login`). The token is good for 5 minutes, for one sign in,
+With a second step on, a right password no longer signs in by itself. `/login` answers 200 with
+`{"ok": false, "secondFactor": true, "pending": "..."}` (and `methods`, the ways the user can answer, and
+`passkey`, the options for the browser, when a passkey can be used here) and no cookie, and the sign in dialog asks
+for the passkey, the code or, with "Use a recovery code", a recovery code. The code and the recovery code are posted to `/login/code`
+with the `pending` token (a form, like `/login`); the passkey to `/login/passkey` (see "Passkeys"). The token is good for 5 minutes, for one sign in,
 only from the address that gave the password, and for 5 wrong codes; then the dialog goes back to
 the password. A wrong password gets the same answer as before, so nothing says whether a name has
 a second factor before the password is right.
@@ -1018,17 +1029,22 @@ right and wrong passwords alike (a right one does not start the count again); pa
 answer is 429 with `Retry-After`. Some need more in the request itself, and the page asks for it
 in a pop-up (the step-up dialog) when the button is pressed, not in boxes on the page:
 
-- **Password change, new recovery codes, turning two-step sign-in off** (and every change on the
-  Users page): the password (`password`) **and**, when two-step sign-in is on, a current code
-  from the app (`code`) or an unused recovery code (`recovery`). Neither is enough alone: the
-  password alone is refused with 400 and `field: "code"`, a code alone with `field: "password"`.
+- **Password change, new recovery codes, turning the app code off, adding and removing a
+  passkey** (and every change on the Users page): the password (`password`) **and**, when a second
+  step is on, a passkey (`passkey`), a current code from the app (`code`) or an unused recovery
+  code (`recovery`). Neither is enough alone: the password alone is refused with 400 and
+  `field: "code"`, a code alone with `field: "password"`. A wrong passkey is refused with 400 and
+  `field: "passkey"`. A passkey is asked for with a challenge from `POST
+  /api/account/passkeys/challenge` (409 when the user has no passkey that works at this address;
+  30 a session and 60 a user an hour), and each challenge works once.
   A missing code is refused before the password is checked (no hash, no try counted); the code
   is only checked once the password is right, so a wrong password never uses up a code. A code
   counts like one at sign in: a wrong one counts in the same waits, and a code (and its 30
   seconds) works once, so a request cannot be replayed. A recovery code used here is used up and
   is an audit line, as at sign in. Users without two-step sign-in give the password only. The
-  dialog has "Your password", and with two-step sign-in on "Code from your app" (with "Use a
-  recovery code instead"); it keeps the keyboard focus inside, closes with Escape, gives the
+  dialog has "Your password", and with two-step sign-in on asks for the passkey first (when the
+  user has one that works at this address and the browser can use it), or "Code from your app", with
+  "Use the code from your app instead" and "Use a recovery code instead" as the other ways; it keeps the keyboard focus inside, closes with Escape, gives the
   focus back to the button, and shows a wrong password or code inside it. When the sign in is
   older than 15 minutes, the password given there makes it recent again first.
 - **Password change:** the current password is the step-up's password (`password`; `current`,
@@ -1037,8 +1053,9 @@ in a pop-up (the step-up dialog) when the button is pressed, not in boxes on the
   common passwords (any case), one character over and over, or the name with fewer than 8 other
   characters. Passwords in the config file are not checked: the server only has their hash, so
   pick them with the same care.
-- **Set up two-step sign-in:** the password (`password`), in the same dialog; then the first
-  code from the app, on the page, turns it on.
+- **Set up the app code:** the password (`password`), in the same dialog, and a second step too
+  when one is on already (a passkey, say); then the first code from the app, on the page, turns it
+  on.
 
 A password asked for while signed in counts in a wait of that session (five free, then doubling),
 kept apart from every other count, so nobody outside can hold a signed-in user back by sending
@@ -1050,8 +1067,9 @@ the store checks it again right before writing. If it is gone, the answer is 401
 changed, and no secret (a new key or recovery codes) is handed out. A password check that was
 under way when the password changed does not sign in.
 
-Changing the password and turning two-step sign-in on or off sign the account out everywhere else
-(the session that made the change stays), drop any second step still open, and forget every
+Changing the password, turning the app code on or off, adding a user's first passkey and removing
+any passkey sign the account out everywhere else (adding a second passkey does not; the session
+that made the change stays), drop any second step still open, and forget every
 known device but the one that made the change. **Sign out other sessions**, under "Where you are
 signed in" (`POST /api/account/sign-out-others`), does the same on its own.
 
@@ -1065,9 +1083,11 @@ says how many, `ended`), and removing this browser's own device signs this brows
 removed device is held back like any other browser until it signs in again. Removing takes effect
 at once, also when writing the user store fails.
 
-Setting up, turning on and off, new recovery codes and signing out other sessions can each be done
-at most 5 times an hour from one session and 10 times an hour for one user, wrong passwords and
-codes included; past that the answer is 429 with `Retry-After`.
+Setting up, turning on and off, new recovery codes, signing out other sessions and adding or
+removing a passkey (the three steps `passkeys/begin`, `passkeys/finish` and `passkeys/remove`) can
+each be done at most 5 times an hour from one session and 10 times an hour for one user, wrong
+passwords and codes included; past that the answer is 429 with `Retry-After`. Renaming a passkey is
+not counted.
 
 A change is written to the user store first and only then made: when the write fails (a full
 disk, a full user store, or the store held by `scripts/users.js` for longer than a second, see
@@ -1077,9 +1097,14 @@ was signed out.
 
 **The account API.** `GET /api/account` says who is signed in, and never holds a secret. The
 changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enable`,
-`/totp/disable`, `/recovery-codes`, `/sign-out-others`, `/devices/remove` and
-`/devices/remove-others`. They only take JSON (`Content-Type: application/json`, at
-most 4 KiB), with the header `X-Rettui-Request: 1`, from the page itself (`Sec-Fetch-Site:
+`/totp/disable`, `/recovery-codes`, `/sign-out-others`, `/devices/remove`,
+`/devices/remove-others`, `/passkeys/challenge`, `/passkeys/begin`, `/passkeys/finish`,
+`/passkeys/rename` and `/passkeys/remove`. `GET /api/account` also says whether passkeys are
+available here (`passkeys.available`, with `reason: "no-address"` when `site.url` is not set), and
+lists them (`passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and `here`, false for a
+passkey made for another address). Ids are short references, never the credential id or key. They
+only take JSON (`Content-Type: application/json`, at most 16 KiB, as a new passkey's answer is
+several kilobytes), with the header `X-Rettui-Request: 1`, from the page itself (`Sec-Fetch-Site:
 same-origin`, or `Origin` naming the host); a form on another site can send none of these.
 Without a session the answer is 401. All answers carry `Cache-Control: no-store`.
 
@@ -1089,9 +1114,14 @@ Without a session the answer is 401. All answers carry `Cache-Control: no-store`
 `recovery-code-used` (with how many are `left`), `recovery-codes-regenerated` (`with`),
 `sessions-ended` (how many were `ended`), `device-added` (a sign in from a new browser),
 `device-removed` and `devices-removed` (how many were `removed`, and how many sessions that
-ended, `ended`). Changes on the Users page add `user-created` (`role`, and `password`:
+ended, `ended`). Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
+user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
+`ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
+its counter did not go up, see "Passkeys"). A passkey is named by its name only: no credential id
+or key is ever in a line. Changes on the Users page add `user-created` (`role`, and `password`:
 `generated` or `typed`), `user-role-changed` (`from`, `to`), `user-deleted` (`role`),
-`user-password-reset` (`password`) and `user-second-factor-reset`; each of those has the admin
+`user-password-reset` (`password`) and `user-second-factor-reset` (with `passkeys`: how many
+passkeys it removed); each of those has the admin
 who made it (`actor`), the `user` it was made to, how many of their sessions `ended`, and how
 the admin confirmed it (`with`). A change made with `scripts/users.js` is
 `user-changed-elsewhere` (`what`: `created`, `deleted`, `password`, `role` or `second-factor`),
@@ -1101,10 +1131,12 @@ before, see "From users.json"), `key-added` for each user store key version it s
 first time, and `user-store-unreadable` (`sessionsEnded`) and `user-store-readable` when the
 store cannot be read again and when it can (see "When the store cannot be read again").
 `user-role-changed` has the role the user had right before the
-change, also when another change came in between. Resetting the password or the two-step sign-in
-of another **admin** is `admin-reset-admin` instead, with the `actor`, the `target` admin, `what`
-was reset (`password` or `second-factor`), `ended` and `with`, so that one admin taking over
-another stands out. Each line has the time, the user and the address. No password, secret, code or
+change, also when another change came in between. A try on the Users page to reset the password
+or the two-step sign-in of an **admin** is refused and written as `admin-reset-refused`, with the
+`actor`, the `target` admin and `what` they tried to reset (`password` or `second-factor`); a try
+to give another admin a lower role is refused and written as `admin-demote-refused`, and a try to
+delete another admin as `admin-delete-refused`, both with the `actor` and the `target` admin; see
+"Managing users". Each line has the time, the user and the address. No password, secret, code or
 device id is ever in it. `device-added` is only written for a user's first new browser in 24
 hours, or when the new browser pushes out a known device older than that (`pushedOut`: how
 many); the other new browsers are summed up in `failures.log`, so that an account signing in from
@@ -1124,6 +1156,130 @@ three files of each are kept, the oldest is dropped. So copy `audit.log` off the
 grows (a log shipper, or a timer that copies it to another machine): a long enough run of events
 still pushes old lines out, and whoever takes over the server can change the copy that stays on it.
 
+## Passkeys
+
+A passkey is a second step after the password. The user's phone, computer or security key confirms
+it is them, with a fingerprint, face or PIN, and there is nothing to type. It sits next to the app
+code (TOTP), not in place of the password: **passkey-only sign-in is not offered yet**. Users can
+have an app code, passkeys, or both.
+
+**What you need.** Users (see "Logins") and the site's public address:
+
+- Set `site.url` in the config file, or `SITE_URL` without one, to the https address people use,
+  like `https://status.example.org` (no path). For trying it out on your own machine,
+  `http://localhost` (with or without a port) works too.
+- Without it the Account page says "Passkeys need this site's https address in the config file
+  (site.url, or SITE_URL)." and the server prints `passkeys: off` at start when it has users,
+  with the reason (no address set, or one passkeys cannot use). The password and the app code are
+  not affected.
+- The address must have a host name. An IP address cannot be used for passkeys: `site.url` takes
+  one (for the feed and the page previews), but passkeys stay off, and the start says "the site
+  address (site.url, or SITE_URL) is an IP address; passkeys need a host name".
+- **A passkey is tied to the host name** in that address (`status.example.org` above), and only
+  works at the exact address it was made for. **Changing `site.url` later stops the passkeys made
+  before working**: they stay in the list, marked "Not usable at this address.", and can still be
+  removed. Users with an app code or recovery codes sign in with those, and an admin can reset the
+  rest (see "Managing users"). Decide the address before people add passkeys.
+
+In Docker, put it in `compose.yaml` and restart:
+
+    environment:
+      SITE_URL: "https://status.example.org"
+
+(or `site.url` in the config file, if you use `CONFIG_FILE`). Behind a reverse proxy this is the
+address the proxy serves, not `http://website:8080`.
+
+**Adding one.** On the Account page, "Passkeys", give it a name if you like (up to 64 characters,
+such as "Work laptop", without control, bidirectional or zero-width characters or more than three
+accents in a row on one letter; the default is "Passkey 1", "Passkey 2" and so on) and press "Add a
+passkey". A pop-up asks for the password, and for a second step when the user has one already.
+Then the device asks the user to make the passkey. A user can have 10. The list shows each
+passkey's name, when it was added and last used, and whether it is synced or device-bound. Each can
+be renamed or removed. A name in the user store that these rules refuse (one changed by hand, say)
+is shown as "Passkey N", by its place in the list, and the passkey keeps working.
+
+- The first second step of a user (the first passkey, or the app code) gives ten recovery codes,
+  shown once, and signs every other session out. A second passkey changes neither.
+- Removing a passkey asks for the password and a second step, and signs every other session out.
+- The Account page says when the browser cannot make passkeys. Users can still rename and remove
+  the ones they have.
+
+**Signing in.** The password comes first, as always. Then the dialog offers, in this order:
+
+1. **Use your passkey**, a button. Pressing it makes the browser ask for the passkey. It does not
+   start by itself, because some browsers (Safari) only show the prompt after a tap or click.
+2. **Use the code from the app**, when the app code is on.
+3. **Use a recovery code**, while any are left.
+
+Only passkeys made at the site's current address are offered. A user who has passkeys but none that
+work here still gets the second step, with the app code or a recovery code, and a note that the
+passkey does not work at this address. A passkey that fails counts exactly as a wrong code: the
+same waits and limits, and it is summed up in `failures.log` as
+`second-factor-failures` (see "Two-step sign-in with an app code (TOTP)"). The same choice is made
+when a change on the Account page or the Users page asks for a second step (the dialog asks for the
+passkey first).
+
+**Synced and device-bound.** Some passkeys are copied by the user's password manager or phone
+account to their other devices ("synced"); others stay on one device or security key
+("device-bound"). The Account page says which, going by what the device reported to the server. A
+device-bound passkey is gone if the device is lost or reset. Recovery codes cover both, so tell
+users to keep them.
+
+**The counter and the clone warning.** A device-bound passkey counts its uses. When a sign in
+answers with a signature that is right, but a counter that did not go up, the sign in is refused
+and `passkey-counter-error` is written to `audit.log` (with the passkey's name). It can mean the
+passkey was copied. Synced passkeys always send 0, which is accepted. The sign in dialog says that
+passkey did not work and offers the other ways.
+
+**When the last second step is removed.** Removing the user's last passkey (with no app code on),
+or turning off the app code with no passkey left, turns two-step sign-in off: the recovery codes
+are removed and the password alone signs in. The dialog says so before it goes ahead. While one
+way is left, the recovery codes stay.
+
+**Admin reset.** Reset two-step sign-in on the Users page (or `scripts/users.js reset-2fa NAME`,
+the only way for an admin's) removes the app code, every passkey and the recovery codes, and forgets the known devices (see
+"Managing users"). The audit line has how many `passkeys` it removed.
+
+**Browsers.** A page can use passkeys only in a secure context: over https, or on `localhost`. Use
+a current browser. Where the browser cannot use passkeys, the page says so, and the sign in
+offers the app code and recovery codes.
+
+**Going back to an older version.** An older version of this website knows nothing about passkeys.
+So that it can never let a user whose only second step is a passkey sign in with the password
+alone, the first passkey anyone adds raises the version of `users.db` (schema version 2), and the
+version before passkeys then refuses to start with it ("made by a newer version"). A store where
+nobody has added a passkey stays at version 1, and an older version reads it as before. To go back
+after passkeys were used, remove every passkey (on the Account page, or with `reset-2fa` for each
+user who has one, or the Reset two-step button on the Users page): when the last passkey anywhere
+goes, the version goes back to 1 and the older version opens the store again. Give users who had
+only a passkey the app code first, or tell them to set up two-step sign-in again afterwards: until
+then their password alone signs them in.
+
+**The library.** WebAuthn is checked by `@simplewebauthn/server`, the only package added for it.
+Only `lib/passkeys.js` uses it, after it has checked the size and shape of everything the browser
+sent.
+
+- It is pinned to an exact version in `package.json` (no `^` or `~`), and `package-lock.json` is
+  committed. The Docker image installs with `npm ci --omit=dev --ignore-scripts`, so no install
+  script of it or of anything it brings runs. Run the same when you install outside Docker.
+- Only attestation `none` is accepted (and `packed` signed by the new key itself, with no
+  certificate). A passkey that comes with a certificate is refused: "This security key sent a
+  certificate, which this site does not accept. Try another passkey." The library's certificate
+  code never runs.
+- There is no metadata service, and passkeys cause no request to any other server.
+- To check that the downloaded packages are the ones the registry signed, after `npm ci`:
+
+      npm audit signatures
+
+The algorithms are ES256 (a P-256 key, a point on the curve), EdDSA (an Ed25519 key, not one of
+the points of small order) and RS256 (an RSA key of at least 2048 bits, with the exponent 65537);
+a key that is not what its algorithm says is refused when the passkey is added. The
+device must verify the user (a PIN or biometrics). A passkey that another user has added already is
+refused like one that could not be checked, so that nobody can find out which passkeys others
+have; `failures.log` notes it as `passkey-id-taken`. The pages send
+`Permissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=(self)`, so a
+page of another site cannot use passkeys for this one, even in a frame.
+
 ## Managing users
 
 Admins (role `admin`) manage users on the **Users** page, `/users`. The Account page shows a
@@ -1132,8 +1288,9 @@ admin who still has to change a password an admin set) `/users` answers 404 and 
 401 or 403: the server decides, not the page.
 
 **What the page shows.** Every user: name, role, where they come from (config file or website),
-whether two-step sign-in is on, how many known devices, last sign in and when they were made. No
-password, hash, secret or device id is ever sent. On a phone the table becomes one card per user.
+what two-step sign-in is made of ("Off", or "On" with "app code" and the number of passkeys, like "On:
+app code, 2 passkeys"), how many known devices, last sign in and when they were made. No
+password, hash, secret, passkey id or device id is ever sent. On a phone the table becomes one card per user.
 
 **What an admin can do.**
 
@@ -1143,16 +1300,38 @@ password, hash, secret or device id is ever sent. On a phone the table becomes o
   random letters and digits) and shows it once, with a Copy button: it is never shown again, not
   stored anywhere but as a hash, and not logged. Either way the new user must choose their own
   password when they first sign in.
-- **Change the role** of a website user.
+- **Change the role** of a website user: anyone may be made an admin, but another admin is not
+  demoted here (see below). An admin may give themselves another role.
 - **Reset the password** of a website user: a one-time or typed password, as above, which they
   must change at their next sign in. An admin changes their own password on the Account page.
-  The password of another admin can only be reset to a one-time password (a typed one is refused
-  with 400): an admin who chose another admin's password, and then reset their two-step sign-in,
-  could sign in as them. Both are audited as `admin-reset-admin`.
-- **Reset two-step sign-in**, for someone who lost their phone: it turns TOTP off, removes the
-  recovery codes and forgets every known device. This works for users in the config file too.
+- **Reset two-step sign-in**, for someone who lost their phone or security key: it turns the app
+  code off, removes every passkey and the recovery codes, and forgets every known device. The
+  dialog names what will go ("app code, 2 passkeys, recovery codes and known devices"). This works for users in the config file too.
   An admin turns their own off on the Account page.
-- **Delete** a website user.
+- **Delete** a website user who is not an admin (see below). An admin may delete themselves.
+
+**Admins are reset, demoted and deleted on the server only.** The password and the two-step
+sign-in of an admin (another admin, or one from the config file) cannot be reset on the Users
+page: an admin who could do that could sign in as the other admin. For the same reason another
+admin cannot be given a lower role there either (else: demote them, reset them, make them an
+admin again), and cannot be deleted there, so that one admin cannot lock another out. The page
+does not offer those actions on another admin's row, and says where they are done. The API
+answers 403 and writes a line to `audit.log`, with who tried:
+
+- a reset: "Admin accounts can only be reset from the command line on the server
+  (scripts/users.js reset-password or reset-2fa).", event `admin-reset-refused`;
+- a demotion: "Admins can only be demoted from the command line on the server (scripts/users.js
+  set-role).", event `admin-demote-refused`;
+- a deletion: "Admins can only be deleted from the command line on the server (scripts/users.js
+  delete).", event `admin-delete-refused`.
+
+This holds also when the user is made an admin while the request is under way: the store checks
+the role again, on the record as it is then, right before it writes. Someone with access to the
+server does these with `node scripts/users.js reset-password <name>`,
+`node scripts/users.js reset-2fa <name>`, `node scripts/users.js set-role <name> <role>` or
+`node scripts/users.js delete <name>` (see "The command line" below). An admin may still give
+themselves another role, or delete themselves, while another admin exists (see "The last admin").
+Give the admin role only to people you trust with every account.
 
 Every way of writing the page's address (`/users.html`, `/users.html/`, `/%75sers.html`,
 `/users%2ehtml`, other cases) goes through the same check as `/users`, and every way of writing
@@ -1162,20 +1341,23 @@ Each change to a user signs that user out everywhere, ends their open second ste
 their known devices. Destructive changes ask in a dialog first, saying what will happen.
 
 **Users in the config file** are read-only here, marked "Managed by config": their name,
-password and role are changed in the config file. Only their second factor can be reset.
+password and role are changed in the config file. Only their second factor can be reset, and
+only if they are not an admin.
 
 **The last admin.** The last admin (counting the config file's admins too) can never be deleted
 or given another role, also not by themselves. An admin may give themselves another role, or
 delete themselves, only while another admin exists; they are then signed out at once.
 
 **Safeguards.** Every change needs, all at once: an admin's session; a sign in from the last 15
-minutes; the admin's password in the request itself, and with their two-step sign-in on a
-current code from their app (or a recovery code) as well, asked for in the step-up dialog (see
+minutes; the admin's password in the request itself, and with their two-step sign-in on their
+passkey, a current code from their app or a recovery code as well, asked for in the step-up dialog (see
 "Changes need a recent sign in"); the request header, same origin and JSON,
 as for the account API (`POST /api/users/create`, `/role`, `/delete`, `/reset-password`,
-`/reset-second-factor`, at most 4 KiB). Each admin may make 30 changes an hour, wrong passwords
+`/reset-second-factor`, at most 16 KiB). Each admin may make 30 changes an hour, wrong passwords
 and codes included (then 429 with `Retry-After`); a request that is refused before any password
-is asked (an unknown user, a bad name) does not count, and neither does one answered 503 because
+is asked (an unknown user, a bad name) does not count, except a reset of an admin's password or
+two-step sign-in, or another admin's demotion or deletion, which is refused with 403 before any password is
+asked and does count, so that refusals cannot fill `audit.log`. Neither does one answered 503 because
 too many passwords were being checked at once (the admin's own requests in parallel, say). After every step the server checks that
 the admin's session is still there and still an admin's, and the store checks it again right
 before it writes: an admin signed out or demoted meanwhile gets 401 and nothing changes. Each
@@ -1240,11 +1422,11 @@ yet, so the running server can always read what the command writes. (In a new st
 server ever started with a key, the command records its keys itself.)
 
     node scripts/users.js [--data-dir DIR] [--config FILE] COMMAND
-      list
+      list                                  # role and two-step sign-in: app code, passkeys
       create NAME --role ROLE [--generate] [--must-change]
       set-role NAME ROLE [--force]
       reset-password NAME [--generate] [--must-change]
-      reset-2fa NAME
+      reset-2fa NAME                        # app code, passkeys, recovery codes, known devices
       delete NAME [--force]
       backup FILE
       check
@@ -1268,9 +1450,9 @@ password.
 - *Lost the only admin password, or the admin left:* `scripts/users.js reset-password NAME
   --generate` for a website admin, or `create NEWNAME --role admin`; or give a config user
   `role: admin` and restart the server.
-- *An admin lost their phone:* another admin uses Reset two-step sign-in on the Users page. With
-  no other admin: `scripts/users.js reset-2fa NAME` (add `--config` for a user in the config
-  file). Recovery codes work too, if they still have them.
+- *An admin lost their phone or security key:* `scripts/users.js reset-2fa NAME` on the server
+  (add `--config` for a user in the config file); the Users page does not reset an admin. It says what went, for example "their app code, 2 passkeys, recovery codes
+  and known devices are gone". Recovery codes work too, if they still have them.
 - *The user store key is lost:* see "Backups".
 - *The key, or a copy of the data, may have been seen by someone else:* see "What the key does
   not protect".

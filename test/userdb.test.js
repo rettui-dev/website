@@ -9,8 +9,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { Keyring } from '../lib/keys.js';
 import { hashPassword } from '../lib/password.js';
 import { base32Decode } from '../lib/totp.js';
-import { DB_FILE, JSON_STILL_THERE, MADE_FILE, MIGRATIONS, NO_KEY, SCHEMA_VERSION, StoreBusyError, openUserDb } from '../lib/userdb.js';
+import { DB_FILE, JSON_STILL_THERE, MADE_FILE, MIGRATIONS, NO_KEY, PASSKEY_VERSION, SCHEMA_VERSION, StoreBusyError, openUserDb } from '../lib/userdb.js';
 import { MAX_DEVICES, STORE_FILE, StoreError, StoreFullError, UserStore, hashRecoveryCode } from '../lib/users.js';
+import { createPasskeys } from '../lib/passkeys.js';
+import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
 const NOW = 1_800_000_000_000;
@@ -66,7 +68,9 @@ test('userdb: a new store is made with mode 0600 in WAL mode, at the current sch
   assert.deepEqual(data, { users: [], configUsers: [] });
   assert.equal(imported, null);
   assert.deepEqual(addedKeys, [1]);
-  assert.equal(db.userVersion(), SCHEMA_VERSION);
+  // Version 1: version 2 (SCHEMA_VERSION) only comes with the first passkey.
+  assert.equal(SCHEMA_VERSION, 2);
+  assert.equal(db.userVersion(), PASSKEY_VERSION - 1);
   assert.equal(db.sql.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
   assert.deepEqual(db.sql.prepare('SELECT version, check_value FROM keys').all().map((r) => [r.version, Buffer.from(r.check_value).equals(keys.check(1))]), [[1, true]]);
   if (process.platform !== 'win32') {
@@ -118,15 +122,87 @@ test('userdb: a damaged file (garbage, a cut page, a folder) stops the start, an
 test('userdb: a store made by a newer version is refused and left as it is; migrations run one step at a time', async () => {
   const keys = keyring([[1, master()]]);
   const dataDir = await seeded(keys);
-  const newer = [...MIGRATIONS, (sql) => sql.exec('ALTER TABLE users ADD COLUMN nickname TEXT')];
+  // A newer release: version 2 as a step that is always taken, then a column.
+  const newer = [MIGRATIONS[0], () => {}, (sql) => sql.exec('ALTER TABLE users ADD COLUMN nickname TEXT')];
   const { db, data } = await openUserDb({ dataDir, keys, warn: quiet, migrations: newer });
-  assert.equal(db.userVersion(), 2);
+  assert.equal(db.userVersion(), 3);
   assert.ok(db.sql.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'nickname'));
   assert.equal(data.users[0].name, 'bob');
   db.close();
   const before = await bytes(dataDir);
-  await assert.rejects(openUserDb({ dataDir, keys, warn: quiet }), (e) => e instanceof StoreError && /made by a newer version \(schema version 2\).*left as it is/.test(e.message));
+  await assert.rejects(openUserDb({ dataDir, keys, warn: quiet }), (e) => e instanceof StoreError && /made by a newer version \(schema version 3\).*left as it is/.test(e.message));
   assert.deepEqual(await bytes(dataDir), before);
+});
+
+// The schema version on disk, read as another program would.
+const versionOnDisk = (dataDir) => {
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
+  try {
+    return sql.prepare('PRAGMA user_version').get().user_version;
+  } finally {
+    sql.close();
+  }
+};
+// The release before passkeys: it knows schema version 1 only.
+const BEFORE_PASSKEYS = [MIGRATIONS[0]];
+const ORIGIN = 'https://status.example.org';
+
+// Adds a passkey for a user of an open store, as the account page does.
+async function addPasskey(store, name, opts = {}) {
+  const pk = createPasskeys({ siteUrl: ORIGIN, store, now: () => NOW });
+  const o = await pk.registrationOptions(name, { sessionId: `s-${name}`, epoch: 0 });
+  return pk.finishRegistration(name, new SoftAuthenticator().create({ challenge: o.challenge, origin: ORIGIN, rpId: 'status.example.org' }), { sessionId: `s-${name}`, epoch: 0, ...opts });
+}
+
+test('userdb: a store without passkeys stays at schema version 1, so the release before passkeys still opens it', async () => {
+  const keys = keyring([[1, master()]]);
+  const dataDir = await seeded(keys);
+  const store = await UserStore.open({ dataDir, keys, warn: quiet, now: () => NOW });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
+  await store.deleteUser('carol');
+  await store.ensurePasskeyUserId('bob');
+  store.close();
+  assert.equal(versionOnDisk(dataDir), 1);
+  const { db } = await openUserDb({ dataDir, keys, warn: quiet, migrations: BEFORE_PASSKEYS });
+  assert.equal(db.userVersion(), 1);
+  db.close();
+});
+
+test('userdb: the first passkey raises the schema version to 2, which the release before passkeys refuses; removing the last lowers it', async () => {
+  const keys = keyring([[1, master()]]);
+  const dataDir = await seeded(keys);
+  let store = await UserStore.open({ dataDir, keys, warn: quiet, now: () => NOW });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hash() });
+  // A passkey whose write is refused (its session ended) changes nothing, the version neither.
+  await assert.rejects(addPasskey(store, 'bob', { guard: () => false }), (e) => e.code === 'gone');
+  assert.equal(versionOnDisk(dataDir), 1);
+  const bobs = await addPasskey(store, 'bob');
+  assert.equal(versionOnDisk(dataDir), 2);
+  const carols = await addPasskey(store, 'carol');
+  store.close();
+
+  // The older release refuses it, and leaves it as it is; this one opens it, at version 2.
+  const before = await bytes(dataDir);
+  await assert.rejects(openUserDb({ dataDir, keys, warn: quiet, migrations: BEFORE_PASSKEYS }), (e) => e instanceof StoreError && /made by a newer version \(schema version 2\)/.test(e.message));
+  assert.deepEqual(await bytes(dataDir), before);
+  store = await UserStore.open({ dataDir, keys, warn: quiet, now: () => NOW });
+  assert.equal(store.db.userVersion(), 2);
+  assert.equal(store.passkeys('bob').length, 1);
+
+  // Removing one of two keeps it; the last one (here: by deleting its user) lowers it again.
+  await store.removePasskey('bob', bobs.ref);
+  assert.equal(versionOnDisk(dataDir), 2);
+  assert.ok(carols.ref);
+  await store.deleteUser('carol');
+  assert.equal(versionOnDisk(dataDir), 1);
+  // And a reset takes the passkeys away as well.
+  await addPasskey(store, 'bob');
+  assert.equal(versionOnDisk(dataDir), 2);
+  await store.resetSecondFactor('bob');
+  assert.equal(versionOnDisk(dataDir), 1);
+  store.close();
+  const { db } = await openUserDb({ dataDir, keys, warn: quiet, migrations: BEFORE_PASSKEYS });
+  db.close();
 });
 
 test('userdb: users.json is imported once, with the same records; unknown fields are named; it is never written', async () => {
@@ -393,23 +469,105 @@ test('userdb: a backup is a new 0600 file with every record; an existing file is
   again.db.close();
 });
 
-test('userdb: passkeys of a newer version are kept by other changes and removed with the second factor', async () => {
+test('userdb: a passkey row is read as a passkey, kept by other changes, and removed with the second factor', async () => {
   const keys = keyring([[1, master()]]);
   const dataDir = await seeded(keys);
   const sql = raw(dataDir);
   sql.prepare("INSERT INTO credentials (user_id, type, cred_id, public_key, name, created, backup_eligible, backed_up, rp_id) VALUES (1, 'passkey', ?, ?, 'phone', ?, 0, 0, 'example.org')").run(Buffer.from('id'), Buffer.from('key'), time);
   sql.close();
   const store = await UserStore.open({ dataDir, keys, warn: quiet });
+  const want = { type: 'passkey', id: 'aWQ', publicKey: 'a2V5', counter: 0, transports: [], name: 'phone', created: time, lastUsed: null, backupEligible: false, backedUp: false, rpId: 'example.org' };
+  assert.deepEqual(store.factorRecord('bob').credentials, [want]);
   assert.equal(store.account('bob').credentials, 1);
+  assert.equal(store.secondFactorEnabled('bob'), true);
   await store.setRole('bob', 'manage', { force: true });
   store.close();
   const again = await UserStore.open({ dataDir, keys, warn: quiet });
-  assert.equal(again.account('bob').credentials, 1);
+  assert.deepEqual(again.factorRecord('bob').credentials, [want]);
   await again.resetSecondFactor('bob');
   again.close();
   const last = await UserStore.open({ dataDir, keys, warn: quiet });
   assert.equal(last.account('bob').credentials, 0);
   last.close();
+});
+
+test('userdb: a store written without passkeys reads back unchanged, and a write keeps it without them', async () => {
+  const keys = keyring([[1, master()]]);
+  const { json } = await legacyStore();
+  const { dataDir } = await withJson(json);
+  const first = await openUserDb({ dataDir, keys, warn: quiet, now: () => NOW });
+  first.db.close();
+  for (const r of [...first.data.users, ...first.data.configUsers]) {
+    assert.deepEqual(r.credentials, [], r.name);
+    assert.equal('passkeyUserId' in r, false, r.name);
+  }
+  const store = await UserStore.open({ dataDir, keys, warn: quiet, now: () => NOW });
+  assert.deepEqual({ users: [...store.local.values()], configUsers: [...store.factors.values()] }, first.data);
+  assert.deepEqual(store.overview().map((u) => [u.name, u.secondFactor, u.totp, u.passkeys]), [['Bob', true, true, 0], ['carol', false, false, 0]]);
+  await store.setRole('carol', 'manage');
+  await store.recordLogin('bob');
+  store.close();
+  const sql = raw(dataDir);
+  assert.deepEqual(sql.prepare('SELECT count(*) AS n FROM credentials').get().n, 0);
+  assert.deepEqual(sql.prepare('SELECT count(*) AS n FROM users WHERE passkey_user_id IS NOT NULL').get().n, 0);
+  sql.close();
+  const again = await openUserDb({ dataDir, keys, warn: quiet });
+  again.db.close();
+  const carol = first.data.users.find((u) => u.name === 'carol');
+  const bob = first.data.users.find((u) => u.name === 'Bob');
+  assert.deepEqual(again.data, { users: [{ ...bob, lastLogin: time }, { ...carol, role: 'manage' }], configUsers: first.data.configUsers });
+});
+
+test('userdb: a damaged passkey row, or too many, stop the start, naming the row and never the value', async () => {
+  const keys = keyring([[1, master()]]);
+  const id = crypto.randomBytes(32);
+  const key = crypto.randomBytes(77);
+  const insert = (sql, over = {}) => {
+    const c = { cred_id: id, public_key: key, counter: 1, transports: '["usb"]', name: 'Key', created: time, last_used: null, backup_eligible: 1, backed_up: 0, rp_id: 'example.org', ...over };
+    sql.prepare('INSERT INTO credentials (user_id, type, cred_id, public_key, counter, transports, name, created, last_used, backup_eligible, backed_up, rp_id) VALUES (1, \'passkey\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(c.cred_id, c.public_key, c.counter, c.transports, c.name, c.created, c.last_used, c.backup_eligible, c.backed_up, c.rp_id);
+  };
+  const cases = [
+    [(sql) => insert(sql, { cred_id: crypto.randomBytes(513) }), /users row 1 passkey row 1\.cred_id is too long/],
+    [(sql) => insert(sql, { public_key: crypto.randomBytes(601) }), /passkey row 1\.public_key is too long/],
+    [(sql) => insert(sql, { transports: 'not json' }), /passkey row 1\.transports is not a list/],
+    [(sql) => insert(sql, { transports: '["warp"]' }), /credentials\[1\]\.transports is not valid/],
+    [(sql) => insert(sql, { transports: '{"usb":1}' }), /credentials\[1\]\.transports is not valid/],
+    [(sql) => insert(sql, { counter: -1 }), /credentials\[1\]\.counter is not valid/],
+    [(sql) => insert(sql, { counter: 2 ** 32 }), /credentials\[1\]\.counter is not valid/],
+    [(sql) => insert(sql, { backed_up: 2 }), /passkey row 1\.backed_up must be 0 or 1/],
+    [(sql) => insert(sql, { created: 'yesterday' }), /credentials\[1\]\.created is not valid/],
+    [(sql) => insert(sql, { rp_id: 'exa mple' }), /credentials\[1\]\.rpId is not valid/],
+    [(sql) => insert(sql, { cred_id: Buffer.alloc(0) }), /credentials\[1\]\.id is not valid/],
+    [(sql) => sql.prepare('UPDATE users SET passkey_user_id = ?').run(crypto.randomBytes(31)), /users row 1\.passkey_user_id is not 32 bytes/],
+    [(sql) => sql.prepare('UPDATE users SET passkey_user_id = ?').run(crypto.randomBytes(33)), /users row 1\.passkey_user_id is too long/],
+    [(sql) => {
+      for (let i = 0; i <= 10; i++) insert(sql, { cred_id: crypto.randomBytes(16) });
+    }, /users row 1 has more than 10 passkeys/],
+  ];
+  for (const [change, why] of cases) {
+    const dataDir = await seeded(keys);
+    const sql = raw(dataDir);
+    change(sql);
+    sql.close();
+    const err = await openUserDb({ dataDir, keys, warn: quiet }).then(() => null, (e) => e);
+    assert.ok(err instanceof StoreError, `${why}: ${err}`);
+    assert.match(err.message, why);
+    assert.match(err.message, /it was left as it is/);
+    for (const b of [id, key]) for (const text of [b.toString('base64url'), b.toString('hex')]) assert.equal(err.message.includes(text), false);
+  }
+  // A name the rule refuses, or one too long to read, does not stop the start: it is read as
+  // "Passkey N", by its place in the list.
+  for (const name of ['n'.repeat(65), 'n'.repeat(5000), 'two\nlines', '', ' ', ' Key', 'a\u200bb']) {
+    const dataDir = await seeded(keys);
+    const sql = raw(dataDir);
+    insert(sql, { name: 'Key' });
+    insert(sql, { cred_id: crypto.randomBytes(16), name });
+    sql.close();
+    const opened = await openUserDb({ dataDir, keys, warn: quiet });
+    assert.deepEqual(opened.data.users[0].credentials.map((c) => c.name), ['Key', 'Passkey 2'], JSON.stringify(name).slice(0, 20));
+    opened.db.close();
+  }
 });
 
 test('userdb: a link or anything but a file as users.db, users.db-wal or users.db-shm is refused before anything is opened', async () => {

@@ -340,12 +340,13 @@ test('the second step ends after 5 minutes, and only works from the address that
       assert.ok([400, 401, 413].includes(r.status), `${bad.length}: ${r.status}`);
     }
     // Another address with the token gets nothing.
-    const token = s.login.startSecondFactor('Alice', '192.0.2.1', { epoch: s.login.epochOf('alice') });
+    const { token, methods } = s.login.startSecondFactor('Alice', '192.0.2.1', { epoch: s.login.epochOf('alice') });
+    assert.deepEqual(methods, ['totp', 'recovery']);
     assert.deepEqual(await s.login.finishSecondFactor(token, { code: codeNow(s, secret) }, '192.0.2.2'), { ok: false, reason: 'expired' });
     const r = await s.login.finishSecondFactor(token, { code: codeNow(s, secret) }, '192.0.2.1');
     assert.equal(r.ok, true);
     // Only a few second steps are open per user: older ones are dropped.
-    const tokens = Array.from({ length: 7 }, () => s.login.startSecondFactor('Alice', '192.0.2.1', { epoch: s.login.epochOf('alice') }));
+    const tokens = Array.from({ length: 7 }, () => s.login.startSecondFactor('Alice', '192.0.2.1', { epoch: s.login.epochOf('alice') }).token);
     assert.equal([...s.login.pending.values()].filter((x) => x.name === 'Alice').length, 5);
     assert.equal(s.login.pending.has(tokens[0]), false);
     assert.equal(s.login.pending.has(tokens[6]), true);
@@ -390,7 +391,9 @@ test('account changes only come from the page itself, as JSON with the header, f
     assert.equal((await api(s, p, 'text/plain', cookie, { ...JSON_HEADERS, 'Content-Type': 'text/plain' })).status, 415);
     assert.equal((await api(s, p, '{oops', cookie)).status, 400);
     assert.equal((await api(s, p, '[1]', cookie)).status, 400);
-    assert.equal((await api(s, p, JSON.stringify({ x: 'y'.repeat(5000) }), cookie)).status, 413);
+    // A new passkey's answer is several kilobytes: the limit is 16 KiB.
+    assert.notEqual((await api(s, p, JSON.stringify({ x: 'y'.repeat(5000) }), cookie)).status, 413);
+    assert.equal((await api(s, p, JSON.stringify({ x: 'y'.repeat(16384) }), cookie)).status, 413);
     assert.equal((await api(s, p, {})).status, 401);
     assert.equal((await api(s, p, {}, `${COOKIE}=${'a'.repeat(43)}`)).status, 401);
     assert.equal((await api(s, '/api/account/nothing', {}, cookie)).status, 405);
@@ -484,7 +487,7 @@ test('with TOTP on, sensitive changes need the password AND a code (or a recover
     // an hour from one session: the rest is asked from a second one.)
     const pwOnly = await api(s, p, { password: PASSWORD }, cookie);
     assert.equal(pwOnly.status, 400);
-    assert.deepEqual(pwOnly.json(), { error: 'Enter the code from your app as well, or a recovery code.', field: 'code', secondFactor: true });
+    assert.deepEqual(pwOnly.json(), { error: 'Enter the code from your app as well, or a recovery code.', field: 'code', secondFactor: true, methods: ['totp', 'recovery'] });
     const codeOnly = await api(s, p, { code: codeNow(s, secret) }, cookie);
     assert.equal(codeOnly.status, 400);
     assert.equal(codeOnly.json().field, 'password');

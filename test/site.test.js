@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Monitor } from '../lib/monitor.js';
 import { loadConfig, loadConfigFile, loadNodes } from '../lib/config.js';
 import { createApp } from '../lib/app.js';
-import { MAX_LOGO_BYTES, NO_SITE, renderStatus, sniffLogo } from '../lib/site.js';
+import { MAX_LOGO_BYTES, NO_SITE, parseSiteUrl, renderStatus, sniffLogo } from '../lib/site.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const NODES = 'nodes:\n  - address: a.test:1\n';
@@ -322,4 +322,17 @@ test('site.url and SITE_URL: only the https address of the site', async () => {
   await assert.rejects(loadNodes({ SITE_URL: 'https://rettui.example/x' }), /SITE_URL must be only the address/);
   const file = await configFile(NODES);
   await assert.rejects(loadNodes({ CONFIG_FILE: file, SITE_URL: 'https://rettui.example' }), /not both/);
+});
+
+test('site.url and SITE_URL: http is taken for localhost only, for trying passkeys out', async () => {
+  assert.equal(parseSiteUrl('http://localhost'), 'http://localhost');
+  assert.equal(parseSiteUrl('http://localhost:8080'), 'http://localhost:8080');
+  assert.equal(parseSiteUrl('http://LOCALHOST:8080/'), 'http://localhost:8080');
+  assert.equal(parseSiteUrl('https://localhost:8443'), 'https://localhost:8443');
+  assert.equal(loadConfig(`${NODES}site:\n  url: http://localhost:8080\n`).site.url, 'http://localhost:8080');
+  assert.equal((await loadNodes({ SITE_URL: 'http://localhost:3000' })).site.url, 'http://localhost:3000');
+  for (const bad of ['http://127.0.0.1', 'http://[::1]:8080', 'http://localhost.example.org', 'http://my-localhost', 'http://localhost:8080/path', 'http://user:pw@localhost', 'ws://localhost']) {
+    assert.throws(() => parseSiteUrl(bad), /must/, bad);
+  }
+  assert.throws(() => parseSiteUrl('http://example.org'), /must be an https URL \(or http:\/\/localhost for testing\)/);
 });

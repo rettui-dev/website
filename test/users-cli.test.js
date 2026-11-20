@@ -14,6 +14,8 @@ import { Keyring, parseKeys } from '../lib/keys.js';
 import { STORE_FILE, UserStore } from '../lib/users.js';
 import { DB_FILE, RETIRED_FILE, openUserDb } from '../lib/userdb.js';
 import { createLogin } from '../lib/login.js';
+import { createPasskeys } from '../lib/passkeys.js';
+import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -170,6 +172,24 @@ test('cli: passwords follow the website rules; a one-time password is shown once
   assert.equal((await cli(dir, ['create', 'BOB', '--role', 'viewer', '--generate'])).code, 1, 'exists, in any case');
 });
 
+test('cli: one admin is demoted here while another admin exists (the users page refuses it)', async () => {
+  const dir = await tmp();
+  await cli(dir, ['create', 'root', '--role', 'admin', '--generate']);
+  await cli(dir, ['create', 'bob', '--role', 'admin', '--generate']);
+  const r = await cli(dir, ['set-role', 'bob', 'viewer']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal((await reopen(dir)).lookup('bob').role, 'viewer');
+});
+
+test('cli: one admin is deleted here while another admin exists (the users page refuses it)', async () => {
+  const dir = await tmp();
+  await cli(dir, ['create', 'root', '--role', 'admin', '--generate']);
+  await cli(dir, ['create', 'bob', '--role', 'admin', '--generate']);
+  const r = await cli(dir, ['delete', 'bob']);
+  assert.equal(r.code, 0, r.err);
+  assert.equal((await reopen(dir)).lookup('bob'), null);
+});
+
 test('cli: the last admin is kept unless --force; admins in the config file count', async () => {
   const dir = await tmp();
   await cli(dir, ['create', 'root', '--role', 'admin', '--generate']);
@@ -217,6 +237,67 @@ test('cli: reset-2fa removes the second factor, recovery codes and devices, of w
     assert.deepEqual(after.factorRecord(name).recoveryCodes, [], name);
     assert.equal(after.devices(name).length, 0, name);
   }
+});
+
+test('cli: an admin\'s password and two-step sign-in are reset here (the users page refuses them)', async () => {
+  const dir = await tmp();
+  await cli(dir, ['create', 'root', '--role', 'admin'], { input: 'a good long password\n' });
+  const store = await reopen(dir);
+  const origin = 'https://status.example.org';
+  const pk = createPasskeys({ siteUrl: origin, store, now: () => NOW });
+  const o = await pk.registrationOptions('root', { sessionId: 's', epoch: 0 });
+  await pk.finishRegistration('root', new SoftAuthenticator().create({ challenge: o.challenge, origin, rpId: 'status.example.org' }), { sessionId: 's', epoch: 0 });
+  const before = store.find('root').phc;
+  store.close();
+  const r2fa = await cli(dir, ['reset-2fa', 'root']);
+  assert.equal(r2fa.code, 0, r2fa.err);
+  assert.match(r2fa.out, /Two-step sign-in of root is off: their app code, 1 passkey, recovery codes and known devices are gone\./);
+  const rpw = await cli(dir, ['reset-password', 'root', '--generate']);
+  assert.equal(rpw.code, 0, rpw.err);
+  const after = await reopen(dir);
+  assert.equal(after.lookup('root').role, 'admin');
+  assert.equal(after.secondFactorEnabled('root'), false);
+  assert.notDeepEqual(after.find('root').phc, before);
+  assert.equal(after.lookup('root').mustChangePassword, true);
+  after.close();
+});
+
+test('cli: list names the app code and the passkeys; reset-2fa takes the passkeys away too and keeps the user handle', async () => {
+  const dir = await tmp();
+  await cli(dir, ['create', 'bob', '--role', 'viewer', '--generate']);
+  await cli(dir, ['create', 'carol', '--role', 'viewer', '--generate']);
+  const store = await reopen(dir);
+  const origin = 'https://status.example.org';
+  const pk = createPasskeys({ siteUrl: origin, store, now: () => NOW });
+  for (const [name, n] of [['bob', 2], ['carol', 1]]) {
+    for (let i = 0; i < n; i++) {
+      const o = await pk.registrationOptions(name, { sessionId: `s-${name}`, epoch: 0 });
+      await pk.finishRegistration(name, new SoftAuthenticator().create({ challenge: o.challenge, origin, rpId: 'status.example.org' }), { sessionId: `s-${name}`, epoch: 0 });
+    }
+  }
+  await store.beginTotp('carol');
+  const h = store.home('carol');
+  store.commit(h.map, h.k, (cur) => ({ ...cur, totp: { ...cur.totp, enabled: true } }));
+  const handle = store.factorRecord('bob').passkeyUserId;
+  store.close();
+  const list = await cli(dir, ['list']);
+  assert.equal(list.code, 0, list.err);
+  assert.match(list.out, /^bob\tviewer\tuser store, two-step on \(2 passkeys\), 0 devices, must change password\t/m);
+  assert.match(list.out, /^carol\tviewer\tuser store, two-step on \(app code and 1 passkey\), 0 devices, must change password\t/m);
+  const help = await cli(dir, ['--help']);
+  assert.match(help.out + help.err, /reset-2fa NAME +turns off two-step sign-in: removes the\n +app code, passkeys, recovery codes and/);
+  const r = await cli(dir, ['reset-2fa', 'bob']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^Two-step sign-in of bob is off: their app code, 2 passkeys, recovery codes and known devices are gone\.$/m);
+  const after = await reopen(dir);
+  assert.deepEqual(after.passkeys('bob'), []);
+  assert.equal(after.secondFactorEnabled('bob'), false);
+  assert.equal(after.factorRecord('bob').passkeyUserId, handle);
+  assert.equal(after.passkeys('carol').length, 1);
+  after.close();
+  const none = await cli(dir, ['reset-2fa', 'bob']);
+  assert.match(none.out, /^Two-step sign-in of bob is off: their app code, recovery codes and known devices are gone\.$/m);
+  assert.match((await cli(dir, ['list'])).out, /^bob\tviewer\tuser store, two-step off, /m);
 });
 
 test('cli: a users.json that cannot be imported, or a damaged users.db, is left as it is, and nothing is done', async () => {

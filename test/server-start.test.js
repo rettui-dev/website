@@ -179,3 +179,19 @@ test('server: users.json left after its import is warned about at every start; a
   const imports = (await auditLines(dataDir)).filter((l) => l.event === 'user-store-imported');
   assert.deepEqual(imports.map((l) => l.again ?? false), [false, true]);
 });
+
+test('server: with users, the start says why passkeys are off: no address, or one they cannot use', async () => {
+  const dataDir = await tmp();
+  const config = path.join(dataDir, 'config.yaml');
+  const site = (url) => (url ? `site:\n  url: ${url}\n` : '');
+  const user = `users:\n  - name: alice\n    password_hash: '${await hashPassword('a good password', undefined, fakeHasher)}'\nnodes:\n  - address: 127.0.0.1:9\n`;
+  const key = newKey();
+  await fs.writeFile(config, user);
+  assert.match((await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out, /^passkeys: off, as this site's https address is not set \(site\.url, or SITE_URL\)$/m);
+  await fs.writeFile(config, user + site('https://192.0.2.1'));
+  const ip = (await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out;
+  assert.match(ip, /^passkeys: off, as the site address \(site\.url, or SITE_URL\) is an IP address; passkeys need a host name$/m);
+  assert.doesNotMatch(ip, /https address is not set/);
+  await fs.writeFile(config, user + site('https://status.example.org'));
+  assert.doesNotMatch((await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out, /passkeys: off/);
+});

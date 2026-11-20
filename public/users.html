@@ -15,6 +15,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
+<script src="/passkey.js" defer></script>
 <script src="/account.js" defer></script>
 <script src="/step-up.js" defer></script>
 <script src="/users-page.js" defer></script>
@@ -59,7 +60,7 @@
   <div id="users" hidden>
     <section class="acct-card" aria-labelledby="users-list-h">
       <h2 id="users-list-h" tabindex="-1">All users</h2>
-      <p class="note">Users from the config file are managed there: only their two-step sign-in can be reset here. The last admin cannot be removed or given another role.</p>
+      <p class="note">Users from the config file are managed there: only their two-step sign-in can be reset here. The last admin cannot be removed or given another role. The password and two-step sign-in of an admin are only reset on the server, with <code>scripts/users.js reset-password</code> or <code>reset-2fa</code>, and another admin is only demoted or deleted there, with <code>set-role</code> or <code>delete</code>.</p>
       <table class="users-table">
         <caption class="sr-only">Every user who can sign in</caption>
         <thead>
@@ -99,7 +100,7 @@
         <label for="new-password" id="new-password-label" hidden>Their first password</label>
         <input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" hidden aria-describedby="new-password-help new-error">
         <p id="new-password-help" class="note">At least 12 characters, and not one of the most common passwords. Either way, they must choose their own password when they first sign in.</p>
-        <p id="new-confirm-help" class="note">Every change on this page asks in a pop-up for your password, and for a code from your app if your two-step sign-in is on.</p>
+        <p id="new-confirm-help" class="note">Every change on this page asks in a pop-up for your password, and for your passkey or a code from your app if your two-step sign-in is on.</p>
         <div class="login-actions"><button id="new-submit" type="submit" class="primary">Add user</button></div>
       </form>
     </section>
@@ -120,7 +121,6 @@
         <legend>New password</legend>
         <div class="users-radio"><input type="radio" name="act-pw-kind" id="act-pw-generate" value="generate" checked> <label for="act-pw-generate">Make a one-time password, shown once</label></div>
         <div class="users-radio" id="act-pw-type-row"><input type="radio" name="act-pw-kind" id="act-pw-type" value="type"> <label for="act-pw-type">Type one</label></div>
-        <p id="act-pw-admin" class="note" hidden>An admin's password can only be reset to a one-time password, so that no other admin knows it.</p>
       </fieldset>
       <label for="act-password" id="act-password-label" hidden>Their new password</label>
       <input id="act-password" type="password" autocomplete="new-password" maxlength="1024" hidden aria-describedby="act-error">

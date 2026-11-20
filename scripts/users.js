@@ -60,13 +60,15 @@ Docker, docker compose exec website node scripts/users.js ... has it already.
 
 Commands:
   list                                 every user, with role and second factor
+                                       (app code, passkeys)
   create NAME --role ROLE [--generate] [--must-change]
                                        a new website user; ROLE is ${ROLES.join(', ')}
   set-role NAME ROLE [--force]         another role for a website user
   reset-password NAME [--generate] [--must-change]
                                        a new password for a website user
-  reset-2fa NAME                       turns off two-step sign-in, removes the
-                                       recovery codes and known devices
+  reset-2fa NAME                       turns off two-step sign-in: removes the
+                                       app code, passkeys, recovery codes and
+                                       known devices
   delete NAME [--force]                deletes a website user
   backup FILE                          copies the store to FILE, a new file
                                        (mode 600); back the key up separately
@@ -175,6 +177,15 @@ const REFUSED = {
 const NO_KEY_TO_CHANGE = 'Changing the user store needs its key: set USERS_KEY_FILE (or USERS_KEY) to the key the server uses. For a first key, node scripts/users.js gen-key makes one (see "The user store key" in README.md). Nothing was changed.';
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// A user's two-step sign-in for list: off, or on with what it is made of.
+function twoStep(u) {
+  if (!u.secondFactor) return 'two-step off';
+  const parts = [];
+  if (u.totp) parts.push('app code');
+  if (u.passkeys > 0) parts.push(plural(u.passkeys, 'passkey'));
+  return `two-step on (${parts.join(' and ')})`;
+}
 
 // One line per key version: what it still protects, and whether it can go from the key file.
 export function keyUsageLines(usage, keys) {
@@ -461,7 +472,7 @@ async function command(args, store, { stdin, stdout, stderr, hasher, cwd, dataDi
         const users = store.overview();
         if (users.length === 0) stdout.write('No users.\n');
         for (const u of users) {
-          const notes = [u.source === 'config' ? 'config file' : 'user store', u.secondFactor ? 'two-step on' : 'two-step off', `${u.devices} devices`];
+          const notes = [u.source === 'config' ? 'config file' : 'user store', twoStep(u), `${u.devices} devices`];
           if (u.mustChangePassword) notes.push('must change password');
           stdout.write(`${u.name}\t${u.role}\t${notes.join(', ')}\tlast sign in ${u.lastLogin ?? 'never'}\n`);
         }
@@ -546,11 +557,13 @@ async function command(args, store, { stdin, stdout, stderr, hasher, cwd, dataDi
       }
       case 'reset-2fa': {
         if (!store.lookup(name)) throw new UserError('unknown', 'unknown');
+        const { passkeys } = store.secondFactors(name);
         await store.resetSecondFactor(name);
         // The server forgets known devices when an admin resets this on the website; here too.
         const { saved } = store.dropDevices(name);
         await saved;
-        stdout.write(`Two-step sign-in of ${store.lookup(name).name} is off, and their recovery codes and known devices are gone.\n`);
+        const gone = passkeys > 0 ? `their app code, ${plural(passkeys, 'passkey')}, recovery codes and known devices are gone` : 'their app code, recovery codes and known devices are gone';
+        stdout.write(`Two-step sign-in of ${store.lookup(name).name} is off: ${gone}.\n`);
         break;
       }
       case 'delete': {

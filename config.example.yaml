@@ -26,8 +26,9 @@
 # an admin for that page to exist: set role: admin here, or make one with
 #   node scripts/users.js create NAME --role admin
 # (see "Managing users" in README.md). Users here stay read-only on that page.
-# Each user can turn on two-step sign-in (TOTP) on their account page (/account); that is kept,
-# encrypted, in the user store in DATA_DIR, not here (see "Accounts and second factor" in README.md).
+# Each user can turn on two-step sign-in (an app code, TOTP, and/or passkeys) on their account page
+# (/account); that is kept in the user store in DATA_DIR, not here (see "Accounts and second factor"
+# and "Passkeys" in README.md). Passkeys need site.url below.
 # Any users at all need the user store key, set in USERS_KEY_FILE (see "The user store key" in
 # README.md); without it the server does not start.
 # What a visitor without a login does not see. With users and no rule, all of these;
@@ -79,7 +80,9 @@
 #   logo: site/logo.png             # png, jpg, webp or svg, up to 512 KiB; relative to this file
 #   description: Public entry points of the Acme backbone.   # up to 200 characters
 #   footer: Run by volunteers.      # up to 200 characters
-#   url: https://status.acme.example   # https address of this site, no path: for the feed's own links
+#   url: https://status.acme.example   # https address of this site, no path: for the feed's own links.
+#                                      # It is also the passkey address: https (or http://localhost for
+#                                      # testing). Changing it later stops existing passkeys working.
 #   links:                          # up to 6, http or https, no user name or password
 #     - { label: Join us, url: "https://acme.example/join" }
 nodes:

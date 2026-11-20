@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { Monitor } from '../lib/monitor.js';
 import { loadConfig } from '../lib/config.js';
 import { createApp } from '../lib/app.js';
-import { COOKIE, Sessions, Throttle, clientIp, createLogin, hashGate, ipKey } from '../lib/login.js';
+import { COOKIE, NameBucket, Sessions, Throttle, clientIp, createLogin, hashGate, ipKey } from '../lib/login.js';
 import { argon2Available, hashPassword, parsePhc, verifyPassword } from '../lib/password.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -807,26 +807,59 @@ test('qa: real argon2id: a full HTTP login with the default hasher', { skip: !RE
 });
 
 test('qa: real argon2id: an unknown name takes as long as the wrong password of the one user it stands in for', { skip: !REAL }, async () => {
-  // Alice has the cheap costs; Bob has costs far above them. An unknown name always takes as long
-  // as one of them, the same one each time, so its time tells nothing about whether it exists.
+  // Alice has the cheap costs; Bob has costs several times higher. An unknown name always takes as
+  // long as one of them, the same one each time, so its time tells nothing about whether it exists.
   const cheap = await hashPassword('pw-alice');
-  // m=65536 is the highest memory cost accepted; 12 passes make the same work as m=131072,t=6.
-  const dear = await hashPassword('pw-bob', { memory: 65536, passes: 12, parallelism: 1 });
+  const dear = await hashPassword('pw-bob', { memory: 65536, passes: 3, parallelism: 1 });
   const config = loadConfig(`users:\n  - name: alice\n    password_hash: '${cheap}'\n  - name: bob\n    password_hash: '${dear}'\nnodes:\n  - address: a.test:1\n`);
-  const login = createLogin({ users: config.users, settings: config.login, throttle: { accounts: new Throttle({ free: 1000 }), addresses: new Throttle({ free: 1000 }) } });
+  // No throttle or pacing holds a try back: only the hash is timed.
+  const free = () => new Throttle({ free: 1e6 });
+  const login = createLogin({ users: config.users, settings: config.login, throttle: { accounts: free(), addresses: free(), nets56: free(), nets48: free(), names: new NameBucket({ burst: 1e6, backlog: 1e6 }) } });
   const time = async (name) => {
     const t0 = process.hrtime.bigint();
     const r = await login.attempt(name, 'wrong', '10.0.0.1');
     assert.equal(r.reason, 'invalid');
     return Number(process.hrtime.bigint() - t0) / 1e6;
   };
-  // Which user stands in for 'nobody' (alice or bob), by its costs.
-  const like = login.store.standIn('nobody').memory === 65536 ? 'bob' : 'alice';
-  await time(like);
-  const median = async (name) => [await time(name), await time(name), await time(name)].sort((a, b) => a - b)[1];
-  const real = await median(like);
-  const nobody = await median('nobody');
-  assert.ok(nobody > real * 0.6 && nobody < real * 1.6, `unknown name took ${nobody.toFixed(0)} ms, ${like}'s wrong password ${real.toFixed(0)} ms: the answer time tells which names exist`);
+  const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  // Unknown names that stand in for each user, by their costs.
+  const costs = (phc) => `${phc.memory},${phc.passes},${phc.parallelism},${phc.hash.length}`;
+  const like = (user) => {
+    const want = costs(login.store.find(user).phc);
+    const out = [];
+    for (let i = 0; i < 200 && out.length < 3; i++) if (costs(login.store.standIn(`nobody${i}`)) === want) out.push(`nobody${i}`);
+    // With two sets of costs, about half the names stand in for each user.
+    assert.equal(out.length, 3, `no unknown name is checked with the costs of ${user} (${want})`);
+    return out;
+  };
+  // The samples of a user and of the unknown names are interleaved, in turn first, so that a change
+  // of load on the machine falls on both alike (the whole suite runs in parallel); a median of many
+  // is compared, not single tries.
+  const compare = async (user, samples) => {
+    const unknown = like(user);
+    await time(user);
+    await time(unknown[0]);
+    const real = [];
+    const nobody = [];
+    for (let i = 0; i < samples; i++) {
+      const u = unknown[i % unknown.length];
+      if (i % 2) {
+        real.push(await time(user));
+        nobody.push(await time(u));
+      } else {
+        nobody.push(await time(u));
+        real.push(await time(user));
+      }
+    }
+    return { real: median(real), nobody: median(nobody) };
+  };
+  const a = await compare('alice', 15);
+  const b = await compare('bob', 9);
+  // Bob's costs are far above Alice's: an unknown name with the wrong costs would be off by that much.
+  assert.ok(b.real > a.real * 2, `bob ${b.real.toFixed(0)} ms, alice ${a.real.toFixed(0)} ms: the costs are not far enough apart for this test`);
+  for (const [user, m] of [['alice', a], ['bob', b]]) {
+    assert.ok(m.nobody > m.real / 1.5 && m.nobody < m.real * 1.5, `unknown names took ${m.nobody.toFixed(0)} ms, ${user}'s wrong password ${m.real.toFixed(0)} ms (medians): the answer time tells which names exist`);
+  }
 });
 
 // ---------- scripts/hash-password.js ----------

@@ -1,7 +1,7 @@
 // The users page (/users), for admins: every user from GET /api/users in a table (cards on a phone),
 // a form to add a user, and a dialog for the choices of a change (role, new password). Every change
 // is confirmed in the step-up dialog (step-up.js): the admin's password, and with their two-step
-// sign-in on, a code from their app as well. It is a POST of JSON with the X-Rettui-Request header. The
+// sign-in on, a passkey, a code from their app or a recovery code as well. It is a POST of JSON with the X-Rettui-Request header. The
 // server decides everything; this page only shows what it says. Everything is set as text: nothing
 // from the server becomes markup. A one-time password is shown once, with a copy button, and is
 // cleared from the page when the admin is done with it.
@@ -60,6 +60,7 @@
       action: opts.action,
       danger: opts.danger,
       secondFactor: Boolean(data && data.secondFactor),
+      methods: data && Array.isArray(data.stepUpMethods) ? data.stepUpMethods : undefined,
       send: function (fields) {
         var full = {};
         Object.keys(body).forEach(function (k) { full[k] = body[k]; });
@@ -95,6 +96,30 @@
     return b;
   }
 
+  // What a user's two-step sign-in is made of: "Off", or "On: app code, 2 passkeys". An older server
+  // only says on or off.
+  function secondStep(u) {
+    if (!u.secondFactor) return 'Off';
+    var parts = [];
+    if (u.totp === true) parts.push('app code');
+    if (typeof u.passkeys === 'number' && u.passkeys > 0) parts.push(u.passkeys === 1 ? '1 passkey' : u.passkeys + ' passkeys');
+    return parts.length ? 'On: ' + parts.join(', ') : 'On';
+  }
+
+  // What a reset takes away from this user, in words.
+  function removed(u) {
+    var n = passkeysOf(u);
+    var list = [];
+    if (u.totp !== false) list.push('app code');
+    if (n > 0) list.push(n === 1 ? 'passkey' : n + ' passkeys');
+    list.push('recovery codes', 'known devices');
+    return list.length > 2 ? list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1] : list.join(' and ');
+  }
+
+  function passkeysOf(u) {
+    return typeof u.passkeys === 'number' ? u.passkeys : 0;
+  }
+
   function paint() {
     var rows = $('users-rows');
     rows.textContent = '';
@@ -106,20 +131,24 @@
       tr.appendChild(th);
       cell(tr, 'Role', u.role);
       cell(tr, 'Source', u.source === 'config' ? 'Managed by config' : 'Website' + (u.mustChangePassword ? ' (must change password)' : ''));
-      cell(tr, 'Two-step sign-in', u.secondFactor ? 'On' : 'Off');
+      cell(tr, 'Two-step sign-in', secondStep(u));
       cell(tr, 'Devices', String(u.devices), 'num');
       cell(tr, 'Last sign in', when(u.lastLogin));
       cell(tr, 'Created', u.created ? when(u.created) : '-');
       var actions = cell(tr, 'Actions', undefined, 'users-actions');
       var self = u.name === data.me;
+      // The server resets an admin's password and two-step sign-in, and demotes or deletes another
+      // admin, only from the command line; another role for an admin could only be a lower one.
+      var admin = u.role === 'admin';
       if (u.source === 'store') {
-        actions.appendChild(button('Role', 'Change the role of ' + u.name, function (b) { open(b, 'role', u); }));
-        if (!self) actions.appendChild(button('Reset password', 'Reset the password of ' + u.name, function (b) { open(b, 'password', u); }));
+        if (self || !admin) actions.appendChild(button('Role', 'Change the role of ' + u.name, function (b) { open(b, 'role', u); }));
+        if (!self && !admin) actions.appendChild(button('Reset password', 'Reset the password of ' + u.name, function (b) { open(b, 'password', u); }));
       }
-      if (!self && (u.secondFactor || u.devices > 0)) {
+      if (!self && !admin && (u.secondFactor || u.devices > 0)) {
         actions.appendChild(button('Reset two-step', 'Reset the two-step sign-in of ' + u.name, function (b) { open(b, 'factor', u); }));
       }
-      if (u.source === 'store') actions.appendChild(button('Delete', 'Delete ' + u.name, function (b) { open(b, 'delete', u); }, 'danger'));
+      if (!self && admin) actions.appendChild(el('span', 'note users-admin-note', 'Admins are reset, demoted and deleted on the server: scripts/users.js reset-password, reset-2fa, set-role or delete.'));
+      if (u.source === 'store' && (self || !admin)) actions.appendChild(button('Delete', 'Delete ' + u.name, function (b) { open(b, 'delete', u); }, 'danger'));
       if (!actions.firstChild) actions.textContent = u.source === 'config' ? 'Change in the config file' : '-';
       rows.appendChild(tr);
     });
@@ -217,7 +246,7 @@
   var KINDS = {
     role: { path: '/api/users/role', title: 'Change the role', go: 'Change role', why: function (u) { return u.name + ' is signed out everywhere, and signs in again with the new role.'; } },
     password: { path: '/api/users/reset-password', title: 'Reset the password', go: 'Reset password', danger: true, why: function (u) { return 'The password of ' + u.name + ' stops working now, and they are signed out everywhere. They must choose a new one when they sign in with the one you set.'; } },
-    factor: { path: '/api/users/reset-second-factor', title: 'Reset two-step sign-in', go: 'Reset two-step sign-in', danger: true, why: function (u) { return 'This turns off two-step sign-in for ' + u.name + ', removes their recovery codes and known devices, and signs them out everywhere. Their password alone then signs them in, until they set it up again.'; } },
+    factor: { path: '/api/users/reset-second-factor', title: 'Reset two-step sign-in', go: 'Reset two-step sign-in', danger: true, why: function (u) { return 'This turns off two-step sign-in for ' + u.name + ', removes their ' + removed(u) + ', and signs them out everywhere. Their password alone then signs them in, until they set it up again.'; } },
     delete: { path: '/api/users/delete', title: 'Delete user', go: 'Delete', danger: true, why: function (u) { return 'This deletes ' + u.name + ' and signs them out everywhere. It cannot be undone.'; } }
   };
 
@@ -238,10 +267,6 @@
     if (kind === 'role') $('act-role').value = user.role;
     $('act-pw').hidden = kind !== 'password';
     $('act-pw-generate').checked = true;
-    // The server refuses a typed password for an admin.
-    var adminTarget = kind === 'password' && user.role === 'admin';
-    $('act-pw-type-row').hidden = adminTarget;
-    $('act-pw-admin').hidden = !adminTarget;
     syncAct();
     setError('act-error', '', ['act-password']);
     $('act').showModal();

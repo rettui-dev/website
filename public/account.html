@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Account - rettui</title>
-<meta name="description" content="Your account: password and two-step sign-in">
+<meta name="description" content="Your account: password, passkeys and two-step sign-in">
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
@@ -15,6 +15,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
+<script src="/passkey.js" defer></script>
 <script src="/account.js" defer></script>
 <script src="/step-up.js" defer></script>
 <script src="/account-page.js" defer></script>
@@ -71,7 +72,7 @@
         <label for="pw-next">New password</label>
         <input id="pw-next" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required aria-describedby="pw-next-help pw-error">
         <p id="pw-next-help" class="note">At least 12 characters, and not one of the most common passwords. Signing in elsewhere ends when you change it, and every other known device is forgotten.</p>
-        <p id="pw-ask" class="note">When you change it, a pop-up asks for your current password, and for a code from your app if two-step sign-in is on.</p>
+        <p id="pw-ask" class="note">When you change it, a pop-up asks for your current password, and for your passkey or a code from your app if two-step sign-in is on.</p>
         <label for="pw-again">New password again</label>
         <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
         <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
@@ -79,7 +80,7 @@
     </section>
 
     <section class="acct-card" data-after-password aria-labelledby="acct-totp-h">
-      <h2 id="acct-totp-h">Two-step sign-in</h2>
+      <h2 id="acct-totp-h">App code</h2>
       <p id="totp-state"></p>
 
       <div id="totp-off" hidden>
@@ -87,7 +88,7 @@
         <form id="totp-setup-form" class="acct-form" novalidate>
           <p id="totp-setup-error" class="login-error" role="alert"></p>
           <p id="totp-setup-help" class="note">A pop-up asks for your password to start.</p>
-          <div class="login-actions"><button id="totp-setup" type="submit" class="primary">Set up two-step sign-in</button></div>
+          <div class="login-actions"><button id="totp-setup" type="submit" class="primary">Set up an app code</button></div>
         </form>
       </div>
 
@@ -109,9 +110,39 @@
         </form>
       </div>
 
+      <div id="totp-on" hidden>
+        <form id="totp-disable-form" class="acct-form" novalidate>
+          <h3>Turn off the app code</h3>
+          <p id="totp-disable-error" class="login-error" role="alert"></p>
+          <p id="totp-disable-help" class="note">Without the app code, your password alone signs you in, unless you have a passkey. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
+          <div class="login-actions"><button id="totp-disable" type="submit">Turn off</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section id="acct-passkeys" class="acct-card" data-after-password aria-labelledby="acct-passkeys-h" hidden>
+      <h2 id="acct-passkeys-h" tabindex="-1">Passkeys</h2>
+      <p class="note">A passkey is a second step after your password: your phone, computer or security key confirms it is you, with a fingerprint, face or PIN. There is nothing to type.</p>
+      <p id="passkeys-unavailable" class="note" hidden></p>
+      <p id="passkeys-none" class="note" hidden>You have no passkeys.</p>
+      <ul id="passkeys-list" class="acct-passkeys"></ul>
+      <form id="passkey-add-form" class="acct-form" novalidate hidden>
+        <h3>Add a passkey</h3>
+        <p id="passkey-add-error" class="login-error" role="alert"></p>
+        <label for="passkey-name">Name (to tell your passkeys apart)</label>
+        <input id="passkey-name" type="text" autocomplete="off" maxlength="64" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="passkey-add-help passkey-add-error">
+        <p id="passkey-add-help" class="note">Optional, up to 64 characters, such as "Work laptop". A pop-up asks for your password, and for a second step if you have one. Then your device asks you to make the passkey.</p>
+        <div class="login-actions"><button id="passkey-add" type="submit" class="primary">Add a passkey</button></div>
+      </form>
+      <p id="passkeys-full" class="note" hidden></p>
+      <p id="passkeys-browser" class="note" hidden>This browser cannot make or use passkeys, so you cannot add one here. You can still rename or remove the ones you have.</p>
+    </section>
+
+    <section id="acct-recovery" class="acct-card" data-after-password aria-labelledby="acct-recovery-h" hidden>
+      <h2 id="acct-recovery-h">Recovery codes</h2>
       <div id="codes-box" hidden>
         <h3 id="codes-h">Your recovery codes</h3>
-        <p class="note">Each code signs you in once, instead of a code from the app, if you lose your phone. They are shown only now: save them somewhere safe.</p>
+        <p class="note">Each code works once, instead of your passkey or a code from the app, if you lose your phone or key. They are shown only now: save them somewhere safe.</p>
         <ul id="codes-list" class="acct-codes" aria-labelledby="codes-h"></ul>
         <div class="login-actions">
           <button id="codes-copy" type="button">Copy</button>
@@ -120,19 +151,13 @@
         </div>
       </div>
 
-      <div id="totp-on" hidden>
+      <div id="codes-on">
         <p id="codes-left"></p>
         <form id="codes-new-form" class="acct-form" novalidate>
           <h3>New recovery codes</h3>
           <p id="codes-new-error" class="login-error" role="alert"></p>
-          <p id="codes-new-help" class="note">New codes replace all the old ones. A pop-up asks for your password and a code from your app (or a recovery code).</p>
+          <p id="codes-new-help" class="note">New codes replace all the old ones. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
           <div class="login-actions"><button id="codes-new" type="submit">New recovery codes</button></div>
-        </form>
-        <form id="totp-disable-form" class="acct-form" novalidate>
-          <h3>Turn off two-step sign-in</h3>
-          <p id="totp-disable-error" class="login-error" role="alert"></p>
-          <p id="totp-disable-help" class="note">Without two-step sign-in, your password alone signs you in. A pop-up asks for your password and a code from your app (or a recovery code).</p>
-          <div class="login-actions"><button id="totp-disable" type="submit">Turn off</button></div>
         </form>
       </div>
     </section>
@@ -146,7 +171,7 @@
 
     <section class="acct-card" data-after-password aria-labelledby="acct-devices-h">
       <h2 id="acct-devices-h" tabindex="-1">Known devices</h2>
-      <p class="note">Browsers you signed in from. When someone tries many wrong passwords for your name, a known device is not held back by it. It still needs your password, and your code if two-step sign-in is on. Remove a device you no longer use, or do not recognise: removing it also signs it out.</p>
+      <p class="note">Browsers you signed in from. When someone tries many wrong passwords for your name, a known device is not held back by it. It still needs your password, and your second step (passkey or code) if you have one. Remove a device you no longer use, or do not recognise: removing it also signs it out.</p>
       <p id="devices-none" class="note" hidden>No known devices.</p>
       <ul id="devices-list" class="acct-sessions"></ul>
       <div class="login-actions"><button id="devices-others" type="button">Remove all other devices</button></div>

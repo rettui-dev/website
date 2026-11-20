@@ -12,6 +12,7 @@
     "users": "node scripts/users.js"
   },
   "dependencies": {
+    "@simplewebauthn/server": "14.1.0",
     "yaml": "2.9.1"
   }
 }

@@ -6,6 +6,7 @@ import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
 import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
+import { NO_PASSKEYS, createPasskeys, passkeyOriginProblem } from './lib/passkeys.js';
 import { StoreError, UserStore, storeHasUsers } from './lib/users.js';
 import { DB_FILE, NO_KEY, StoreBusyError, openUserDb } from './lib/userdb.js';
 import { KeyError, loadKeys } from './lib/keys.js';
@@ -117,7 +118,11 @@ failures.start();
 const audit = createAudit({ dataDir });
 if (opened.imported !== null) await audit.write('user-store-imported', { users: opened.imported.users, configUsers: opened.imported.configUsers, ...(opened.reimported ? { again: true } : {}) });
 for (const version of opened.addedKeys) await audit.write('key-added', { version });
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures }), releases, mode: siteMode, site });
+// Passkeys work at the site's own address (site.url or SITE_URL) only: without one they are off,
+// and users who have one sign in with their app code or a recovery code.
+const passkeys = site.url ? createPasskeys({ siteUrl: site.url, rpName: site.name ?? 'rettui status', store }) : NO_PASSKEYS;
+if ((users.length || store.hasLocalUsers()) && !passkeys.available) console.log(`passkeys: off, as ${passkeyOriginProblem(site.url)}`);
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

@@ -17,7 +17,7 @@ import { DB_FILE } from '../lib/userdb.js';
 import { Keyring } from '../lib/keys.js';
 import { createAudit, createFailureLog } from '../lib/audit.js';
 import { RECENT_AUTH_MS } from '../lib/account.js';
-import { USER_CHANGES_PER_ADMIN, newOneTimePassword } from '../lib/admin.js';
+import { ADMIN_DELETE_REFUSED, ADMIN_DEMOTE_REFUSED, ADMIN_RESET_REFUSED, USER_CHANGES_PER_ADMIN, newOneTimePassword } from '../lib/admin.js';
 import { base32Decode, totp } from '../lib/totp.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -365,8 +365,9 @@ test('role, delete, password and second factor: config users are read-only, and 
     assert.equal(s.store.factorRecord('bob').recoveryCodes.length, 0);
     assert.equal(s.store.devices('bob').length, 0);
     assert.equal(await alive(s, b.cookie), null);
-    // A config user's second factor can be reset; one's own cannot, here.
-    assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'alice', password: CAROL }, c.cookie)).status, 200);
+    // An admin's second factor (alice, in the config file, is one) is not reset here; one's own
+    // cannot be either.
+    assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'alice', password: CAROL }, c.cookie)).status, 403);
     assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'carol', password: CAROL }, c.cookie)).status, 409);
     // Delete: gone, and signed out.
     b = await logIn(s, 'bob', 'bobs newer password');
@@ -377,7 +378,7 @@ test('role, delete, password and second factor: config users are read-only, and 
     const events = (await auditLines(s)).filter((l) => l.actor === 'carol').map((l) => [l.event, l.user ?? l.target]);
     assert.deepEqual(events, [
       ['user-role-changed', 'bob'], ['user-password-reset', 'bob'], ['user-password-reset', 'bob'],
-      ['user-second-factor-reset', 'bob'], ['admin-reset-admin', 'Alice'], ['user-deleted', 'bob'],
+      ['user-second-factor-reset', 'bob'], ['admin-reset-refused', 'Alice'], ['user-deleted', 'bob'],
     ]);
   } finally {
     await s.close();
@@ -570,45 +571,84 @@ test('every spelling of the users page goes through its gate; every spelling of 
   }
 });
 
-test('an admin cannot take over another admin: their password is only reset to a one-time password, and it is audited apart', async () => {
+test('an admin\'s password and second factor are never reset here, only on the command line; each refusal is audited', async () => {
   const s = await setup({ carol: true });
   try {
     const a = await logIn(s, 'alice', ALICE);
     const before = s.store.find('carol').phc;
-    const typed = await api(s, '/api/users/reset-password', { name: 'carol', newPassword: 'alice knows this one', password: ALICE }, a.cookie);
-    assert.equal(typed.status, 400);
-    assert.equal(typed.json().field, 'newPassword');
-    assert.match(typed.json().error, /one-time password/);
+    // Carol (a website admin) with and without a second factor; every way of asking.
+    const refusedBodies = [
+      ['/api/users/reset-password', { name: 'carol', newPassword: 'alice knows this one', password: ALICE }, 'password'],
+      ['/api/users/reset-password', { name: 'carol', generate: true, password: ALICE }, 'password'],
+      ['/api/users/reset-password', { name: 'CAROL', generate: true }, 'password'],
+      ['/api/users/reset-second-factor', { name: 'carol', password: ALICE }, 'second-factor'],
+    ];
+    const ask = async () => {
+      for (const [p, body] of refusedBodies) {
+        const r = await api(s, p, body, a.cookie);
+        assert.deepEqual([r.status, r.json()], [403, { error: ADMIN_RESET_REFUSED, code: 'admin-target' }], `${p} ${JSON.stringify(body)}`);
+      }
+    };
+    await ask();
+    await s.store.beginTotp('carol');
+    const h = s.store.home('carol');
+    s.store.commit(h.map, h.k, (cur) => ({ ...cur, totp: { ...cur.totp, enabled: true } }));
+    await ask();
     assert.deepEqual(s.store.find('carol').phc, before);
+    assert.equal(s.store.secondFactorEnabled('carol'), true);
     assert.equal((await logIn(s, 'carol', 'alice knows this one')).r.status, 401);
-    const otp = await api(s, '/api/users/reset-password', { name: 'carol', generate: true, password: ALICE }, a.cookie);
-    assert.equal(otp.status, 200);
-    assert.equal((await logIn(s, 'carol', otp.json().oneTimePassword)).r.json().mustChangePassword, true);
-    assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'carol', password: ALICE }, a.cookie)).status, 200);
-    // Other users may still get a typed password.
+    // No password was checked for a refusal.
+    assert.equal(s.login.reauths.count(`session:${s.login.session({ headers: { cookie: a.cookie } }).id}`), 0);
+    // The same with a second factor on the acting admin's side (carol acting on alice, a config admin).
+    s.store.commit(h.map, h.k, (cur) => ({ ...cur, totp: null }));
+    const c = await logIn(s, 'carol', CAROL);
+    const r = await api(s, '/api/users/reset-second-factor', { name: 'alice', password: CAROL }, c.cookie);
+    assert.equal(r.status, 403);
+    // The existing rules stay first: one's own, and a config user's password.
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'alice', generate: true, password: ALICE }, a.cookie)).status, 409);
+    assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'alice', password: ALICE }, a.cookie)).status, 409);
+    // Other users still get a typed or a one-time password, and a reset of their second factor.
     assert.equal((await api(s, '/api/users/reset-password', { name: 'bob', newPassword: 'a typed password for bob', password: ALICE }, a.cookie)).status, 200);
-    const lines = (await auditLines(s)).filter((l) => l.actor === 'Alice');
-    assert.deepEqual(lines.map((l) => [l.event, l.target ?? l.user, l.what]), [['admin-reset-admin', 'carol', 'password'], ['admin-reset-admin', 'carol', 'second-factor'], ['user-password-reset', 'bob', undefined]]);
+    const otp = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, password: ALICE }, a.cookie);
+    assert.equal(otp.status, 200);
+    assert.equal((await api(s, '/api/users/reset-second-factor', { name: 'bob', password: ALICE }, a.cookie)).status, 200);
+    const lines = await auditLines(s);
+    const refused = lines.filter((l) => l.event === 'admin-reset-refused');
+    assert.equal(refused.length, 9);
+    assert.deepEqual({ ...refused[0], time: undefined }, { time: undefined, event: 'admin-reset-refused', actor: 'Alice', target: 'carol', what: 'password', address: '127.0.0.1' });
+    assert.deepEqual(refused.map((l) => l.what), ['password', 'password', 'password', 'second-factor', 'password', 'password', 'password', 'second-factor', 'second-factor']);
+    assert.deepEqual({ ...refused[8], time: undefined }, { time: undefined, event: 'admin-reset-refused', actor: 'carol', target: 'Alice', what: 'second-factor', address: '127.0.0.1' });
+    assert.equal(lines.some((l) => l.event === 'admin-reset-admin'), false);
     assert.equal(JSON.stringify(lines).includes(otp.json().oneTimePassword), false);
-    // Made an admin while a typed reset waits: it is refused, and nothing changed.
-    const h = holdable();
-    const s2 = await setup({ carol: true, hasher: h.hasher });
-    try {
-      const c = await logIn(s2, 'carol', CAROL);
-      const old = s2.store.find('bob').phc;
-      h.hold();
-      const r = api(s2, '/api/users/reset-password', { name: 'bob', newPassword: 'carol knows this one', password: CAROL }, c.cookie);
-      await until(() => h.waiting() === 1);
-      await s2.store.setRole('bob', 'admin');
-      h.let();
-      const done = await r;
-      assert.equal(done.status, 400);
-      assert.deepEqual(s2.store.find('bob').phc, old);
-    } finally {
-      await s2.close();
-    }
   } finally {
     await s.close();
+  }
+});
+
+test('a user made an admin while a reset of them waits is refused, and nothing changed', async () => {
+  for (const [p, extra, what] of [['/api/users/reset-password', { newPassword: 'carol knows this one' }, 'password'], ['/api/users/reset-password', { generate: true }, 'password'], ['/api/users/reset-second-factor', {}, 'second-factor']]) {
+    const h = holdable();
+    const s = await setup({ carol: true, hasher: h.hasher });
+    try {
+      const c = await logIn(s, 'carol', CAROL);
+      await s.store.beginTotp('bob');
+      const home = s.store.home('bob');
+      s.store.commit(home.map, home.k, (cur) => ({ ...cur, totp: { ...cur.totp, enabled: true } }));
+      const old = s.store.find('bob').phc;
+      h.hold();
+      const r = api(s, p, { name: 'bob', ...extra, password: CAROL }, c.cookie);
+      await until(() => h.waiting() === 1);
+      await s.store.setRole('bob', 'admin');
+      h.let();
+      const done = await r;
+      assert.deepEqual([done.status, done.json()], [403, { error: ADMIN_RESET_REFUSED, code: 'admin-target' }], p);
+      assert.deepEqual(s.store.find('bob').phc, old);
+      assert.equal(s.store.secondFactorEnabled('bob'), true);
+      const line = (await auditLines(s)).find((l) => l.event === 'admin-reset-refused');
+      assert.deepEqual([line.actor, line.target, line.what], ['carol', 'bob', what]);
+    } finally {
+      await s.close();
+    }
   }
 });
 
@@ -618,13 +658,128 @@ test('a role change audits the role the user had right before it, also when it c
   try {
     const a = await logIn(s, 'alice', ALICE);
     h.hold();
-    const r = api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: ALICE }, a.cookie);
+    const r = api(s, '/api/users/role', { name: 'bob', role: 'admin', password: ALICE }, a.cookie);
     await until(() => h.waiting() === 1);
-    await s.store.setRole('bob', 'admin');
+    await s.store.setRole('bob', 'viewer');
     h.let();
     assert.equal((await r).status, 200);
     const line = (await auditLines(s)).find((l) => l.event === 'user-role-changed');
-    assert.deepEqual([line.from, line.to], ['admin', 'viewer']);
+    assert.deepEqual([line.from, line.to], ['viewer', 'admin']);
+  } finally {
+    await s.close();
+  }
+});
+
+test('another admin is never demoted here, only on the command line; each refusal is audited', async () => {
+  const s = await setup({ carol: true });
+  try {
+    const a = await logIn(s, 'alice', ALICE);
+    for (const body of [{ name: 'carol', role: 'manage', password: ALICE }, { name: 'CAROL', role: 'viewer', password: ALICE }, { name: 'carol', role: 'viewer' }]) {
+      const r = await api(s, '/api/users/role', body, a.cookie);
+      assert.deepEqual([r.status, r.json()], [403, { error: ADMIN_DEMOTE_REFUSED, code: 'admin-demote' }], JSON.stringify(body));
+    }
+    assert.equal(s.store.lookup('carol').role, 'admin');
+    // Refused before any password was checked; it counts in the hourly budget.
+    assert.equal(s.login.reauths.count(`session:${s.login.session({ headers: { cookie: a.cookie } }).id}`), 0);
+    // Carol still signs in, as an admin: her sessions were not ended.
+    const c = await logIn(s, 'carol', CAROL);
+    assert.equal((await get(s, '/api/users', c.cookie)).status, 200);
+    // The existing rules stay: making someone an admin, other role changes, one's own role, delete.
+    assert.equal((await api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: ALICE }, a.cookie)).status, 200);
+    assert.equal((await api(s, '/api/users/role', { name: 'bob', role: 'admin', password: ALICE }, a.cookie)).status, 200);
+    // Now bob is an admin too, and carol cannot demote him either.
+    assert.equal((await api(s, '/api/users/role', { name: 'bob', role: 'manage', password: CAROL }, c.cookie)).status, 403);
+    assert.equal(s.store.lookup('bob').role, 'admin');
+    // A config admin (alice) is refused as a config user, as before.
+    assert.equal((await api(s, '/api/users/role', { name: 'alice', role: 'viewer', password: CAROL }, c.cookie)).json().code, 'config');
+    // Carol gives herself another role: allowed while another admin exists, and she is signed out.
+    const self = await api(s, '/api/users/role', { name: 'carol', role: 'manage', password: CAROL }, c.cookie);
+    assert.deepEqual([self.status, self.json()], [200, { ok: true, signedOut: true }]);
+    assert.equal(s.store.lookup('carol').role, 'manage');
+    const lines = await auditLines(s);
+    const refused = lines.filter((l) => l.event === 'admin-demote-refused');
+    assert.deepEqual(refused.map((l) => ({ ...l, time: undefined })), [
+      { time: undefined, event: 'admin-demote-refused', actor: 'Alice', target: 'carol', address: '127.0.0.1' },
+      { time: undefined, event: 'admin-demote-refused', actor: 'Alice', target: 'carol', address: '127.0.0.1' },
+      { time: undefined, event: 'admin-demote-refused', actor: 'Alice', target: 'carol', address: '127.0.0.1' },
+      { time: undefined, event: 'admin-demote-refused', actor: 'carol', target: 'bob', address: '127.0.0.1' },
+    ]);
+    assert.deepEqual(lines.filter((l) => l.event === 'user-role-changed').map((l) => [l.actor, l.user, l.from, l.to]), [['Alice', 'bob', 'manage', 'viewer'], ['Alice', 'bob', 'viewer', 'admin'], ['carol', 'carol', 'admin', 'manage']]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a user made an admin while a role change of them waits is refused, and keeps the admin role', async () => {
+  const h = holdable();
+  const s = await setup({ carol: true, hasher: h.hasher });
+  try {
+    const c = await logIn(s, 'carol', CAROL);
+    h.hold();
+    const r = api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: CAROL }, c.cookie);
+    await until(() => h.waiting() === 1);
+    await s.store.setRole('bob', 'admin');
+    h.let();
+    const done = await r;
+    assert.deepEqual([done.status, done.json()], [403, { error: ADMIN_DEMOTE_REFUSED, code: 'admin-demote' }]);
+    assert.equal(s.store.lookup('bob').role, 'admin');
+    const lines = await auditLines(s);
+    assert.equal(lines.some((l) => l.event === 'user-role-changed'), false);
+    const line = lines.find((l) => l.event === 'admin-demote-refused');
+    assert.deepEqual([line.actor, line.target, line.address], ['carol', 'bob', '127.0.0.1']);
+  } finally {
+    await s.close();
+  }
+});
+
+test('another admin is never deleted here, only on the command line; each refusal is audited', async () => {
+  const s = await setup({ carol: true });
+  try {
+    const a = await logIn(s, 'alice', ALICE);
+    const c = await logIn(s, 'carol', CAROL);
+    for (const body of [{ name: 'carol', password: ALICE }, { name: 'CAROL', password: ALICE }, { name: 'carol' }]) {
+      const r = await api(s, '/api/users/delete', body, a.cookie);
+      assert.deepEqual([r.status, r.json()], [403, { error: ADMIN_DELETE_REFUSED, code: 'admin-delete' }], JSON.stringify(body));
+    }
+    assert.equal(s.store.lookup('carol').role, 'admin');
+    // Refused before any password was checked; carol's sessions were not ended.
+    assert.equal(s.login.reauths.count(`session:${s.login.session({ headers: { cookie: a.cookie } }).id}`), 0);
+    assert.notEqual(await alive(s, c.cookie), null);
+    // Each refusal counts in the hourly budget: 30 in all, then 429.
+    for (let i = 3; i < USER_CHANGES_PER_ADMIN; i++) assert.equal((await api(s, '/api/users/delete', { name: 'carol' }, a.cookie)).status, 403);
+    assert.equal((await api(s, '/api/users/delete', { name: 'carol' }, a.cookie)).status, 429);
+    // Other users are deleted as before, and an admin deletes themselves while another admin exists.
+    assert.equal((await api(s, '/api/users/delete', { name: 'bob', password: CAROL }, c.cookie)).status, 200);
+    const self = await api(s, '/api/users/delete', { name: 'carol', password: CAROL }, c.cookie);
+    assert.deepEqual([self.status, self.json()], [200, { ok: true, signedOut: true }]);
+    assert.equal(s.store.lookup('carol'), null);
+    const lines = await auditLines(s);
+    const refused = lines.filter((l) => l.event === 'admin-delete-refused');
+    assert.equal(refused.length, USER_CHANGES_PER_ADMIN);
+    assert.deepEqual({ ...refused[0], time: undefined }, { time: undefined, event: 'admin-delete-refused', actor: 'Alice', target: 'carol', address: '127.0.0.1' });
+    assert.deepEqual(lines.filter((l) => l.event === 'user-deleted').map((l) => [l.actor, l.user]), [['carol', 'bob'], ['carol', 'carol']]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a user made an admin while a delete of them waits is refused, and is still there', async () => {
+  const h = holdable();
+  const s = await setup({ carol: true, hasher: h.hasher });
+  try {
+    const c = await logIn(s, 'carol', CAROL);
+    h.hold();
+    const r = api(s, '/api/users/delete', { name: 'bob', password: CAROL }, c.cookie);
+    await until(() => h.waiting() === 1);
+    await s.store.setRole('bob', 'admin');
+    h.let();
+    const done = await r;
+    assert.deepEqual([done.status, done.json()], [403, { error: ADMIN_DELETE_REFUSED, code: 'admin-delete' }]);
+    assert.equal(s.store.lookup('bob').role, 'admin');
+    const lines = await auditLines(s);
+    assert.equal(lines.some((l) => l.event === 'user-deleted'), false);
+    const line = lines.find((l) => l.event === 'admin-delete-refused');
+    assert.deepEqual([line.actor, line.target, line.address], ['carol', 'bob', '127.0.0.1']);
   } finally {
     await s.close();
   }

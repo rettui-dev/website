@@ -494,6 +494,13 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-codes li { font-family: var(--mono); font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
 .acct-sessions { padding-left: 20px; margin: 8px 0 0; }
 .acct-current { color: var(--green); font-weight: 600; }
+/* Passkeys: one card per passkey, the name first, the buttons under it (they wrap on a phone) */
+.acct-passkeys { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.acct-passkey { display: grid; gap: 4px; padding: 8px 12px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+.acct-passkey-name { font-size: 15px; }
+.acct-passkey-info { color: var(--dim); font-size: 14px; }
+.acct-passkey .login-actions { margin-top: 4px; }
+.acct-passkey .acct-form { max-width: none; }
 /* The users page: a table wide, a stack of cards on a phone (no sideways scroll) */
 .users-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
 .users-table th, .users-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
