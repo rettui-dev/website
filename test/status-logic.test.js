@@ -15,6 +15,7 @@ const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, ru
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
+const { peerSpan, peerSyncText, peerNextText, peerStateText, peerTypeText, peerProblems, peerShortAddress, peerLabel, peerVisible, peerSummaryLine, peerColumns, peerCell } = sandbox.statusLogic;
 const { dayLevel, dayDate, dayTitle, uptimeLabel, incidentSpan } = sandbox.statusLogic;
 
 test('ago words', () => {
@@ -502,4 +503,90 @@ test('backlogPairs names the distinct count and keeps the sum as a second line',
 test('a group shows the summed backlog, since a distinct count does not add up', () => {
   const g = { data: { propagation: { storedMessages: 9, unhandledMessages: 3, unhandledDistinct: 2 } } };
   assert.deepEqual([...groupPropagationPairs(g)].map((f) => [...f]).slice(-1), [['Waiting to send to peers (summed over peers)', '3']]);
+});
+
+// Rows as the server sends them (see lib/propagation.js), made up.
+// The helpers run in another realm: compare plain copies.
+const plain = (v) => JSON.parse(JSON.stringify(v));
+
+const prow = (o = {}) => ({
+  address: 'abcdef0123456789abcdef0123456789', name: 'Harbor', alive: true, static: false, depth: 2, state: 'idle', lastHeardSecondsAgo: 5, lastSyncSecondsAgo: 600,
+  messagesOffered: 1200, unhandled: 3, peeringCost: 18, syncFailures: 0, lastAttemptSecondsAgo: 600, nextAttemptInSeconds: null, hasSync: true, ...o,
+});
+
+test('peer spans are plain and short', () => {
+  assert.equal(peerSpan(0), 'under 1 min');
+  assert.equal(peerSpan(59), 'under 1 min');
+  assert.equal(peerSpan(60), '1 min');
+  assert.equal(peerSpan(720), '12 min');
+  assert.equal(peerSpan(3599), '59 min');
+  assert.equal(peerSpan(3600), '1 h');
+  assert.equal(peerSpan(86399), '23 h');
+  assert.equal(peerSpan(86400), '1 day');
+  assert.equal(peerSpan(86400 * 3 + 5), '3 days');
+  assert.equal(peerSpan(null), 'under 1 min');
+});
+
+test('last sync and next attempt, with older nodes that do not say', () => {
+  assert.equal(peerSyncText(prow({ lastSyncSecondsAgo: 720 })), '12 min ago');
+  assert.equal(peerSyncText(prow({ lastSyncSecondsAgo: null })), 'never');
+  assert.equal(peerSyncText(prow({ lastSyncSecondsAgo: 5 })), 'under 1 min ago');
+  assert.equal(peerSyncText(prow({ hasSync: false, lastSyncSecondsAgo: null })), '-');
+  assert.equal(peerNextText(prow({ nextAttemptInSeconds: null })), 'now');
+  assert.equal(peerNextText(prow({ nextAttemptInSeconds: 0 })), 'now');
+  assert.equal(peerNextText(prow({ nextAttemptInSeconds: 300 })), 'in 5 min');
+  assert.equal(peerNextText(prow({ hasSync: false })), '-');
+});
+
+test('state and type are words, never only a colour', () => {
+  assert.equal(peerStateText(prow()), 'Alive, idle');
+  assert.equal(peerStateText(prow({ alive: false, state: 'link_establishing' })), 'Not alive, connecting');
+  assert.equal(peerStateText(prow({ state: 'some_new_state' })), 'Alive, some new state');
+  assert.equal(peerStateText(prow({ alive: null, state: 'idle' })), 'Idle');
+  assert.equal(peerStateText(prow({ alive: true, state: null })), 'Alive');
+  assert.equal(peerStateText(prow({ alive: null, state: null })), '-');
+  // A state that is a property of every object is still just a word.
+  assert.equal(peerStateText(prow({ state: 'constructor' })), 'Alive, constructor');
+  assert.equal(peerTypeText(prow({ static: true, depth: 1 })), 'Static, depth 1');
+  assert.equal(peerTypeText(prow({ static: false, depth: null })), 'Auto');
+  assert.equal(peerTypeText(prow({ static: null, depth: 0 })), 'depth 0');
+  assert.equal(peerTypeText(prow({ static: null, depth: null })), '-');
+});
+
+test('problems: never synced and failing, said in words', () => {
+  assert.deepEqual(plain(peerProblems(prow())), []);
+  assert.deepEqual(plain(peerProblems(prow({ lastSyncSecondsAgo: null }))), ['Never synced']);
+  assert.deepEqual(plain(peerProblems(prow({ syncFailures: 1 }))), ['Failing: 1 try']);
+  assert.deepEqual(plain(peerProblems(prow({ syncFailures: 3 }))), ['Failing: 3 tries']);
+  assert.deepEqual(plain(peerProblems(prow({ lastSyncSecondsAgo: null, syncFailures: 2 }))), ['Never synced', 'Failing: 2 tries']);
+  // A node that does not send the sync fields is not said to have a problem.
+  assert.deepEqual(plain(peerProblems(prow({ hasSync: false, lastSyncSecondsAgo: null, syncFailures: null }))), []);
+});
+
+test('names and short addresses', () => {
+  assert.equal(peerShortAddress('abcdef0123456789abcdef0123456789'), 'abcdef01\u2026');
+  assert.equal(peerLabel(prow()), 'Harbor');
+  assert.equal(peerLabel(prow({ name: null })), 'abcdef01\u2026');
+});
+
+test('the problem filter keeps the order and the summary line counts', () => {
+  const rows = [prow({ name: 'a', static: true }), prow({ name: 'b', lastSyncSecondsAgo: null, alive: false }), prow({ name: 'c', syncFailures: 4 }), prow({ name: 'd' })];
+  assert.deepEqual(plain(peerVisible(rows, false).map((r) => r.name)), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(plain(peerVisible(rows, true).map((r) => r.name)), ['b', 'c']);
+  assert.deepEqual(plain(peerVisible([], true)), []);
+  assert.equal(peerSummaryLine(rows, 4), '4 peers: 3 alive, 1 static, 1 never synced');
+  assert.equal(peerSummaryLine([prow()], 1), '1 peer: 1 alive, 0 static, 0 never synced');
+  assert.equal(peerSummaryLine(rows, 90), '4 of 90 peers shown: 3 alive, 1 static, 1 never synced');
+  assert.equal(peerSummaryLine([], 0), '0 peers: 0 alive, 0 static');
+  const old = [prow({ hasSync: false, lastSyncSecondsAgo: null })];
+  assert.equal(peerSummaryLine(old, 1), '1 peer: 1 alive, 0 static');
+});
+
+test('an older node shows fewer columns, and the cells say what is missing', () => {
+  assert.deepEqual(plain(peerColumns([prow()]).map((c) => c.label)), ['Name', 'Type', 'State', 'Last sync', 'Offered', 'Waiting', 'Failures', 'Next attempt']);
+  assert.deepEqual(plain(peerColumns([prow({ hasSync: false })]).map((c) => c.label)), ['Name', 'Type', 'State', 'Offered', 'Waiting']);
+  assert.equal(peerCell(prow({ messagesOffered: 12345 }), 'offered'), '12,345');
+  assert.equal(peerCell(prow({ unhandled: null }), 'waiting'), '-');
+  assert.equal(peerCell(prow({ syncFailures: 2 }), 'failures'), '2');
+  assert.equal(peerCell(prow(), 'name'), 'Harbor');
 });
