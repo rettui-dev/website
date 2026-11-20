@@ -53,6 +53,38 @@ pub fn load_or_create_identity(path: &Path) -> Result<Identity, String> {
     Ok(identity)
 }
 
+/// Makes the folder Reticulum keeps its files in (with what it has heard, and its keys for
+/// links) readable by this user only, and warns if one that was there already is not.
+pub fn make_private_dir(dir: &Path) -> Result<(), String> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
+            tracing::warn!("{} can be read by other users; chmod 700 it", dir.display());
+        }
+    }
+    Ok(())
+}
+
+/// Writes a file that only this user can read (on Unix; the mode of one that is there already is
+/// set too).
+pub fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    file.write_all(data)
+}
+
 /// The Reticulum config for a bridge: no sharing with other programs, no transport, and a TCP
 /// client for each entry point. (Entry points are checked words and numbers, so nothing here can
 /// start another section.)
@@ -82,8 +114,8 @@ impl Lxmf {
     pub async fn start(config: &Config) -> Result<Self, String> {
         let identity = load_or_create_identity(&config.identity_file)?;
         let dir: PathBuf = config.identity_file.parent().unwrap_or(Path::new(".")).join("reticulum");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-        std::fs::write(dir.join("config"), reticulum_config(&config.entry_points))
+        make_private_dir(&dir)?;
+        write_private(&dir.join("config"), reticulum_config(&config.entry_points).as_bytes())
             .map_err(|e| format!("cannot write the Reticulum config: {e}"))?;
 
         let mut options = InitOptions::default();
@@ -328,6 +360,25 @@ mod tests {
         assert!(text.contains("share_instance = No") && text.contains("enable_transport = False"));
         // And rsReticulum reads it.
         assert!(rns_runtime::config::Config::parse(&text).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reticulums_folder_and_config_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lxmf-bridge-private-{}", std::process::id()));
+        let folder = dir.join("reticulum");
+        make_private_dir(&folder).unwrap();
+        assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+        let file = folder.join("config");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&file, b"new").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"new");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        // A folder that is there already is kept as it is (and warned about), not an error.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        make_private_dir(&folder).unwrap();
     }
 
     #[cfg(unix)]
