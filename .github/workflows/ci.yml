@@ -45,3 +45,31 @@ jobs:
           push: false
           cache-from: type=gha,scope=ci
           cache-to: type=gha,scope=ci,mode=max
+
+  # The LXMF bridge (bridges/lxmf) is a Rust crate of its own; nothing else in this repository uses it.
+  bridge-lxmf:
+    name: LXMF bridge (Rust)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bridges/lxmf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # rsReticulum and rsLXMF, at the commits rettui pins.
+          submodules: recursive
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridges/lxmf/target
+          key: bridge-lxmf-${{ runner.os }}-${{ hashFiles('bridges/lxmf/Cargo.lock') }}
+          restore-keys: bridge-lxmf-${{ runner.os }}-
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
