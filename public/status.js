@@ -1743,9 +1743,20 @@
     return lead + ': ' + parts.join(', ');
   }
 
+  var PEER_FAILURES = {
+    no_link: 'No link', no_answer: 'No answer', refused_invalid_data: 'Refused the data', bad_key: 'Bad peering key', no_access: 'No access',
+    busy: 'Busy', timeout: 'Timed out', bad_answer: 'Unexpected answer', io: 'Send error'
+  };
+
+  // Why the last try failed, in words: "-" when it did not fail or the node does not say.
+  function peerFailureText(row) {
+    if (!row.lastFailure) return '-';
+    return Object.prototype.hasOwnProperty.call(PEER_FAILURES, row.lastFailure) ? PEER_FAILURES[row.lastFailure] : row.lastFailure.replace(/_/g, ' ');
+  }
+
   var PEER_COLUMNS = [
     { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'state', label: 'State' }, { key: 'sync', label: 'Last sync', needs: 'sync' },
-    { key: 'offered', label: 'Offered' }, { key: 'waiting', label: 'Waiting' }, { key: 'failures', label: 'Failures', needs: 'sync' }, { key: 'next', label: 'Next attempt', needs: 'sync' }
+    { key: 'offered', label: 'Offered' }, { key: 'waiting', label: 'Waiting' }, { key: 'failures', label: 'Failures', needs: 'sync' }, { key: 'why', label: 'Last failure', needs: 'sync' },{ key: 'next', label: 'Next attempt', needs: 'sync' }
   ];
 
   // The columns to show: those the node's rows have the numbers for.
@@ -1761,6 +1772,7 @@
     if (key === 'offered') return known(row.messagesOffered) ? num(row.messagesOffered) : '-';
     if (key === 'waiting') return known(row.unhandled) ? num(row.unhandled) : '-';
     if (key === 'failures') return known(row.syncFailures) ? num(row.syncFailures) : '-';
+    if (key === 'why') return peerFailureText(row);
     if (key === 'next') return peerNextText(row);
     return peerLabel(row);
   }
@@ -2390,7 +2402,7 @@
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
       peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, backlogPairs: backlogPairs, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts, bannerCounts: bannerCounts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
-      peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
+      peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerFailureText: peerFailureText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
       peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
       rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };

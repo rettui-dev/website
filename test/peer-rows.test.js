@@ -50,7 +50,7 @@ test('rows are cleaned: bad addresses and repeats are dropped, wrong types becom
 test('only the known fields are kept, and the strings are cut', () => {
   const [r] = sanitizePropagationPeerRows(auth([{ ...row(1, { name: 'x'.repeat(500), state: 'y'.repeat(60) }), extra: 'secret', html: '<b>' }]));
   assert.deepEqual(Object.keys(r).sort(), [
-    'address', 'alive', 'depth', 'hasSync', 'lastAttemptSecondsAgo', 'lastHeardSecondsAgo', 'lastSyncSecondsAgo', 'messagesOffered', 'name',
+    'address', 'alive', 'depth', 'hasSync', 'lastAttemptSecondsAgo', 'lastFailure', 'lastHeardSecondsAgo', 'lastSyncSecondsAgo', 'messagesOffered', 'name',
     'nextAttemptInSeconds', 'peeringCost', 'state', 'static', 'syncFailures', 'unhandled',
   ]);
   assert.equal(r.name.length, 64);
@@ -278,4 +278,10 @@ test('the saved stats history holds no row and the memory copy is dropped withou
   } finally {
     await s.close();
   }
+});
+
+test('last_failure is kept only as a short lower case token', () => {
+  const rows = sanitizePropagationPeerRows(auth([row(1, { last_failure: 'bad_key' }), row(2, { last_failure: '<b>x</b>' }), row(3, { last_failure: 5 }), row(4)]));
+  const by = Object.fromEntries(rows.map((r) => [r.address, r.lastFailure]));
+  assert.deepEqual([by[addr(1)], by[addr(2)], by[addr(3)], by[addr(4)]], ['bad_key', null, null, null]);
 });

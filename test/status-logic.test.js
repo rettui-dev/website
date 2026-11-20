@@ -15,7 +15,7 @@ const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, ru
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
-const { peerSpan, peerSyncText, peerNextText, peerStateText, peerTypeText, peerProblems, peerShortAddress, peerLabel, peerVisible, peerSummaryLine, peerColumns, peerCell } = sandbox.statusLogic;
+const { peerSpan, peerSyncText, peerNextText, peerFailureText, peerStateText, peerTypeText, peerProblems, peerShortAddress, peerLabel, peerVisible, peerSummaryLine, peerColumns, peerCell } = sandbox.statusLogic;
 const { dayLevel, dayDate, dayTitle, uptimeLabel, incidentSpan } = sandbox.statusLogic;
 
 test('ago words', () => {
@@ -583,7 +583,7 @@ test('the problem filter keeps the order and the summary line counts', () => {
 });
 
 test('an older node shows fewer columns, and the cells say what is missing', () => {
-  assert.deepEqual(plain(peerColumns([prow()]).map((c) => c.label)), ['Name', 'Type', 'State', 'Last sync', 'Offered', 'Waiting', 'Failures', 'Next attempt']);
+  assert.deepEqual(plain(peerColumns([prow()]).map((c) => c.label)), ['Name', 'Type', 'State', 'Last sync', 'Offered', 'Waiting', 'Failures', 'Last failure', 'Next attempt']);
   assert.deepEqual(plain(peerColumns([prow({ hasSync: false })]).map((c) => c.label)), ['Name', 'Type', 'State', 'Offered', 'Waiting']);
   assert.equal(peerCell(prow({ messagesOffered: 12345 }), 'offered'), '12,345');
   assert.equal(peerCell(prow({ unhandled: null }), 'waiting'), '-');
@@ -610,4 +610,11 @@ test('bannerCounts counts nodes and proxies apart, and never a proxy as a node',
   assert.equal(bannerCounts(undefined), 'No nodes.');
   // A host with no role (older data) is a node.
   assert.equal(bannerCounts([{ status: 'up' }, { status: 'up' }]), '2 nodes up.');
+});
+
+test('the last failure is shown in words', () => {
+  assert.equal(peerFailureText(prow({ lastFailure: 'bad_key' })), 'Bad peering key');
+  assert.equal(peerFailureText(prow({ lastFailure: 'some_new_one' })), 'some new one');
+  assert.equal(peerFailureText(prow({ lastFailure: null })), '-');
+  assert.equal(peerCell(prow({ lastFailure: 'timeout' }), 'why'), 'Timed out');
 });

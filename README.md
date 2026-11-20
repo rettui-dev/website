@@ -797,7 +797,8 @@ left out (shown as nothing) and never makes the rest of the stats unavailable.
   cannot happen), or, with only the sum, when the sum is larger than the peered nodes times the
   stored messages. A large backlog on its own is normal and gives no warning. The warning does not
   look at per-peer sync failures: the website keeps only the counts of the peer rows, so
-  `sync_failures`, `last_attempt_seconds_ago` and `next_attempt_in_seconds` are not shown.
+  `sync_failures`, `last_attempt_seconds_ago` and `next_attempt_in_seconds` are not part of it.
+  The peer table does show each peer's `last_failure`.
 - `disk`: the size of the node's data (public on the node) and, only in the answer to a request
   with a token, free and total space of the file system it is on (see "What is public").
 
@@ -839,7 +840,8 @@ synced, counters). In the node's Full details, the Storage tab then has a "Propa
 section: a line such as "12 peers: 9 alive, 3 static, 2 never synced", a "Show only peers with a
 problem" switch, and a table (a stack of cards on a phone) with Name, Type (static or auto, and
 depth), State (in words: "Alive, idle", "Not alive, connecting"), Last sync, Offered, Waiting
-(messages not yet offered to that peer), Failures and Next attempt. A peer that never synced or
+(messages not yet offered to that peer), Failures, Last failure (why the last try failed, in
+words such as "Bad peering key" or "Timed out", or "-") and Next attempt. A peer that never synced or
 whose last tries failed is marked in words ("Never synced", "Failing: 3 tries"), not by colour.
 A peer without a name shows the first 8 characters of its address; the whole address is the
 tooltip. The times are as of the last stats check, not live.
