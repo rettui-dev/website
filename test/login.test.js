@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Keyring } from '../lib/keys.js';
 import { Busy, CODE_MAX_WAIT_MS, CODE_USER_FREE, DEVICE_AUDIT_MS, DEVICE_BURST, DEVICE_INTERVAL_MS, MAX_QUEUED_HASHES, NAME_BACKLOG, NAME_BURST, NAME_INTERVAL_MS, NET48_FREE, NET56_FREE, NameBucket, Sessions, Throttle, clientIp, cookieValue, createLogin, deviceHash, hashGate, ipKey, isFormType, netKeys, newDeviceId, normalIp, sameOrigin, untrustedProxy, waitText } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
 import { LOGIN_WRITE_MS, MAX_DEVICES, UserStore } from '../lib/users.js';
@@ -500,7 +505,7 @@ test('attempt: a busy answer from the gate does not count as a failure', async (
   await holding;
 });
 
-test('attempt: an unknown name is checked with the highest costs of any user', async () => {
+test('attempt: an unknown name is checked with the costs of one of the users, the same each time', async () => {
   const calls = [];
   const counting = async (p) => (calls.push(p), fakeHasher(p));
   const users = [
@@ -509,8 +514,15 @@ test('attempt: an unknown name is checked with the highest costs of any user', a
     { name: 'passes', phc: parsePhc(await hashPassword('c', { ...DEFAULTS, passes: 7, parallelism: 4 }, fakeHasher)) },
   ];
   const l = createLogin({ users, hasher: counting });
-  assert.equal((await l.attempt('nobody', 'x', '192.0.2.1')).reason, 'invalid');
-  assert.deepEqual([calls[0].memory, calls[0].passes, calls[0].parallelism, calls[0].length], [65536, 7, 4, 32]);
+  const costs = (c) => [c.memory, c.passes, c.parallelism, c.length];
+  const stored = users.map((u) => JSON.stringify([u.phc.memory, u.phc.passes, u.phc.parallelism, u.phc.hash.length]));
+  for (const name of ['nobody', 'someone', 'x']) {
+    assert.equal((await l.attempt(name, 'x', '192.0.2.1')).reason, 'invalid');
+    assert.equal((await l.attempt(name, 'y', '192.0.2.2')).reason, 'invalid');
+    const [a, b] = calls.splice(0);
+    assert.ok(stored.includes(JSON.stringify(costs(a))), name);
+    assert.deepEqual(costs(a), costs(b), `${name}: the same costs every time`);
+  }
 });
 
 test('attempt: a hasher that fails is an error, not a login', async () => {
@@ -1028,4 +1040,155 @@ test('sessions: destroyDevices ends the sessions made on those devices only', ()
   assert.equal(s.get(a), null);
   assert.ok(s.get(b) && s.get(none) && s.get(other));
   assert.equal(s.destroyDevices('bob', []), 0);
+});
+
+// A login on a user store on disk with a key, as the server has it: Alice in the config file, bob
+// a website user whose hash was made before there was a key (as users.json had it). Gives every
+// hash worked out in calls, and the audit lines in lines.
+async function keyedLogin({ hasher = fakeHasher, gate } = {}) {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'login-'));
+  const keys = new Keyring(new Map([[1, crypto.randomBytes(32)]]));
+  const users = [{ name: 'Alice', phc: parsePhc(await hashPassword('alices password', undefined, fakeHasher)), role: 'admin' }];
+  const store = await UserStore.open({ dataDir, configUsers: users, keys, warn: () => {} });
+  await store.createUser({ name: 'bob', role: 'viewer', passwordHash: await hashPassword('bobs password!', { ...DEFAULTS, passes: 3 }, fakeHasher), mustChangePassword: true });
+  const calls = [];
+  const lines = [];
+  const logged = [];
+  const audit = { write: async (event, fields) => lines.push([event, fields]), flush: async () => {} };
+  const l = createLogin({ users, store, hasher: async (p) => (calls.push(p), hasher(p)), audit, log: (m) => logged.push(m), sleep: async () => {}, ...(gate ? { gate } : {}) });
+  return { l, store, keys, users, dataDir, calls, lines, logged };
+}
+const settle = async (cond) => {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 2));
+};
+
+test('pepper: a right password moves a website user\'s hash to the current key, in the background; sessions stay', async () => {
+  const { l, store, keys, users, dataDir, calls, lines } = await keyedLogin();
+  const old = store.find('bob').phc;
+  assert.equal(old.keyid, null);
+  // A wrong password moves nothing.
+  assert.equal((await l.attempt('bob', 'wrong', '192.0.2.1')).ok, false);
+  await settle(() => false);
+  assert.equal(calls.length, 1);
+  assert.equal(store.find('bob').phc.keyid, null);
+  // A right one: signed in, and the hash made again with the pepper, at the same costs.
+  const r = await l.attempt('bob', 'bobs password!', '192.0.2.1');
+  assert.equal(r.ok, true);
+  const session = await l.signIn('bob', { epoch: r.epoch, device: r.device });
+  await settle(() => store.find('bob').phc.keyid !== null);
+  const now = store.find('bob').phc;
+  assert.equal(now.keyid, keys.current);
+  assert.deepEqual([now.memory, now.passes, now.parallelism], [old.memory, old.passes, old.parallelism]);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2].secret, keys.pepper(keys.current));
+  // It is not a change: the session, the epoch and the password to change all stay, and nothing is audited.
+  assert.ok(l.sessions.get(session.id));
+  assert.equal(l.epochOf('bob'), 0);
+  assert.equal(store.lookup('bob').mustChangePassword, true);
+  assert.deepEqual(lines.filter(([e]) => e !== 'device-added'), []);
+  // On disk too, and the same password signs in with it, without moving it again.
+  const again = await UserStore.open({ dataDir, configUsers: users, keys, warn: () => {} });
+  assert.equal(again.find('bob').phc.keyid, keys.current);
+  again.close();
+  assert.equal((await l.attempt('bob', 'bobs password!', '192.0.2.2')).ok, true);
+  await settle(() => false);
+  assert.equal(calls.length, 4);
+  assert.equal((await l.attempt('bob', 'wrong', '192.0.2.2')).ok, false);
+  store.close();
+});
+
+test('pepper: a user in the config file is never moved to the key, whose file the server cannot write', async () => {
+  const { l, store, calls } = await keyedLogin();
+  for (let i = 0; i < 3; i++) assert.equal((await l.attempt('alice', 'alices password', '192.0.2.1')).ok, true);
+  await settle(() => false);
+  assert.equal(calls.length, 3, 'one hash for each check, none more');
+  assert.ok(calls.every((c) => c.secret === null));
+  assert.equal(store.find('alice').phc.keyid, null);
+  assert.equal(store.factorRecord('alice'), null, 'nothing was written for her');
+  store.close();
+});
+
+test('pepper: a sign in checked against the old hash while the new one is written still counts', async () => {
+  // The hashes that held(p) says wait until waiting[i]() lets the i-th one go on: at first the
+  // checks against the hash without a pepper, not the new hash.
+  const waiting = [];
+  let held = (p) => p.secret === null;
+  const hasher = async (p) => {
+    if (held(p)) await new Promise((r) => waiting.push(r));
+    return fakeHasher(p);
+  };
+  const { l, store } = await keyedLogin({ hasher });
+  const first = l.attempt('bob', 'bobs password!', '192.0.2.1');
+  const second = l.attempt('bob', 'bobs password!', '192.0.2.2');
+  await settle(() => waiting.length === 2);
+  assert.equal(waiting.length, 2);
+  waiting[0]();
+  assert.equal((await first).ok, true);
+  await settle(() => store.find('bob').phc.keyid !== null);
+  assert.notEqual(store.find('bob').phc.keyid, null, 'the new hash is in place');
+  waiting[1]();
+  assert.equal((await second).ok, true);
+  // A real change after the upgrade is not mistaken for it.
+  held = () => true;
+  const third = l.attempt('bob', 'bobs password!', '192.0.2.3');
+  await settle(() => waiting.length === 3);
+  await store.setPassword('bob', await hashPassword('a whole new password', undefined, fakeHasher, store.currentPepper()));
+  waiting[2]();
+  assert.deepEqual(await third, { ok: false, reason: 'invalid' });
+  store.close();
+});
+
+test('pepper: no move while the hash places are busy, and a move that fails is only logged', async () => {
+  // The gate turns away whatever is not a sign in: the move is skipped, the sign in works.
+  const gate = hashGate(2, 8, 2, { reserved: 1, laneQueue: 0, lanePerKey: 0 });
+  const busy = await keyedLogin({ gate });
+  assert.equal((await busy.l.attempt('bob', 'bobs password!', '192.0.2.1')).ok, true);
+  await settle(() => false);
+  assert.equal(busy.calls.length, 1);
+  assert.equal(busy.store.find('bob').phc.keyid, null);
+  assert.deepEqual(busy.logged, []);
+  busy.store.close();
+  // The store cannot be written: the old hash stays and keeps working.
+  const failing = await keyedLogin();
+  failing.store.upgradePassword = () => {
+    throw new Error('disk full');
+  };
+  assert.equal((await failing.l.attempt('bob', 'bobs password!', '192.0.2.1')).ok, true);
+  await settle(() => failing.logged.length > 0);
+  assert.deepEqual(failing.logged, ["could not move bob's password hash to the current key: disk full"]);
+  assert.equal(failing.store.find('bob').phc.keyid, null);
+  assert.equal((await failing.l.attempt('bob', 'bobs password!', '192.0.2.1')).ok, true);
+  failing.store.close();
+});
+
+test('a user changed by another program is signed out and it is audited; other users are not', async () => {
+  const { l, store, keys, users, dataDir, lines } = await keyedLogin();
+  const sign = async (name, password) => {
+    const r = await l.attempt(name, password, '192.0.2.1');
+    return (await l.signIn(r.name, { epoch: r.epoch, device: r.device })).id;
+  };
+  const bob = await sign('bob', 'bobs password!');
+  const alice = await sign('alice', 'alices password');
+  await settle(() => store.find('bob').phc.keyid !== null);
+  // scripts/users.js changes bob's role while the server runs; the server looks (as watch does).
+  const other = await UserStore.open({ dataDir, configUsers: users, keys, warn: () => {} });
+  await other.setRole('bob', 'manage');
+  other.close();
+  assert.equal(store.refresh(), true);
+  assert.equal(l.sessions.get(bob), null, 'bob was signed out');
+  assert.ok(l.sessions.get(alice), 'alice was not');
+  assert.equal(l.epochOf('bob'), 1, 'a sign in under way for bob ends too');
+  assert.equal(store.lookup('bob').role, 'manage');
+  await settle(() => lines.some(([e]) => e === 'user-changed-elsewhere'));
+  assert.deepEqual(lines.filter(([e]) => e === 'user-changed-elsewhere'), [['user-changed-elsewhere', { user: 'bob', what: ['role'] }]]);
+  // Removed elsewhere: the same, once.
+  const third = await UserStore.open({ dataDir, configUsers: users, keys, warn: () => {} });
+  await third.deleteUser('bob', { force: true });
+  third.close();
+  assert.equal(store.refresh(), true);
+  assert.equal(store.refresh(), false);
+  assert.equal(store.lookup('bob'), null);
+  await settle(() => lines.filter(([e]) => e === 'user-changed-elsewhere').length === 2);
+  assert.deepEqual(lines.filter(([e]) => e === 'user-changed-elsewhere').at(-1), ['user-changed-elsewhere', { user: 'bob', what: ['deleted'] }]);
+  store.close();
 });

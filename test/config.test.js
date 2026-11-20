@@ -54,6 +54,15 @@ test('structure errors', () => {
   bad('nodes: [ {address: a.test:1}, ', /invalid YAML|valid YAML/);
 });
 
+test('a peppered hash in the config file is refused, without repeating it', () => {
+  const plain = '$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc';
+  const peppered = plain.replace('p=1$', 'p=1,keyid=AAAAAQ$');
+  const users = (hash) => `users:\n  - name: alice\n    password_hash: '${hash}'\n${one()}`;
+  assert.equal(loadConfig(users(plain)).users[0].phc.keyid, null);
+  bad(users(peppered), /users\[1\]\.password_hash has a keyid: hashes in the config file cannot be peppered/);
+  assert.throws(() => loadConfig(users(peppered)), (e) => !e.message.includes('c29tZXNhbHQ') && !e.message.includes('AAAAAQ'));
+});
+
 test('wrong types and bad values', () => {
   for (const a of ['5', 'true', 'null', '[a.test:1]', '{a: 1}', '"a.test:1,b.test:2"', 'nohost', '"a.test:0"', '"a.test:99999"', '"a b:80"', '""']) {
     bad(`nodes:\n  - address: ${a}`, /address/);

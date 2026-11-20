@@ -455,3 +455,23 @@ test('X-Forwarded-For from a trusted proxy, or without users, is not warned abou
   }
   assert.deepEqual(warnings, []);
 });
+
+test('while the user store cannot be read, /login answers 503 for everyone and no session counts', async () => {
+  const s = await setup();
+  try {
+    const { cookie } = await logIn(s);
+    assert.deepEqual((await get(s, '/api/session', cookie)).json(), { enabled: true, name: 'Alice' });
+    s.login.store.unreadable = new Error('users row 1.totp does not decrypt');
+    const r = await post(s, '/login', form({ name: 'alice', password: PASSWORD }));
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.json(), { error: 'Signing in is not possible right now. Try again later.' });
+    assert.equal(r.headers['retry-after'], '30');
+    // An unknown name gets the same answer.
+    assert.deepEqual((await post(s, '/login', form({ name: 'nobody', password: 'x' }))).json(), r.json());
+    assert.deepEqual((await get(s, '/api/session', cookie)).json(), { enabled: true, name: null });
+    s.login.store.unreadable = null;
+    assert.equal((await logIn(s)).r.status, 200);
+  } finally {
+    await s.close();
+  }
+});

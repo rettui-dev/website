@@ -9,3 +9,8 @@ config.yaml
 stats-token*.txt
 secrets/
 .env
+# User store databases and their backups: they hold password hashes and second-factor secrets.
+*.db
+*.db-wal
+*.db-shm
+backups/

@@ -136,25 +136,30 @@ for an SVG or no logo. In status-only mode the project pages and their tags do n
 
 ## Run locally
 
-Needs Node.js 24.7 or later (the login uses its built-in Argon2id).
+Needs Node.js 24.7 or later (the login uses its built-in Argon2id, and the user store its
+built-in SQLite, `node:sqlite`).
 
     npm start        # http://localhost:8080
     npm test
     npm run hash-password -- --name alice   # a password_hash for the config file (see "Logins")
-    npm run users -- list                   # the users in users.json (see "Managing users")
+    npm run users -- list                   # the users in the user store (see "Managing users")
+    npm run users -- gen-key                # a user store key (see "The user store key")
 
 ## Docker
 
     docker compose up -d --build
 
-This serves the site on port 8080. History is kept in the `status-data` volume, so it
-survives restarts. The container runs as an unprivileged user with a read-only root
-file system; only `/data` is writable.
+This serves the site on port 8080. History and the user store are kept in the `status-data`
+volume, so they survive restarts. The container runs as an unprivileged user (`node`, uid 1000)
+with a read-only root file system; only `/data` and the `/tmp` in memory are writable. Keep
+`/data` on a named local volume: the user store is a SQLite database, which must not be on NFS,
+SMB or a volume shared between hosts (see "The user store"). With users, the server also needs
+the user store key, as a Docker secret (see "The user store key").
 
 Without compose:
 
     docker build -t rettui-website .
-    docker run -d -p 8080:8080 -v status-data:/data --read-only rettui-website
+    docker run -d -p 8080:8080 -v status-data:/data --read-only --tmpfs /tmp rettui-website
 
 ## Settings
 
@@ -164,7 +169,9 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | ---------------- | --------------------------------- | -------------------------------------------------------- |
 | `PORT`           | `8080`                            | Port to listen on.                                       |
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json`, `uptime.json` and `releases.json` are kept, and the user store `users.json`, `audit.log` and `failures.log` (see "Accounts and second factor"). |
+| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json`, `uptime.json` and `releases.json` are kept, and the user store `users.db`, `audit.log` and `failures.log` (see "Accounts and second factor" and "The user store"). |
+| `USERS_KEY_FILE` | none                              | The file with the user store key (see "The user store key"). Needed as soon as there are users, in the config file or in the user store; without it the server does not start then. Keep it outside `DATA_DIR`. |
+| `USERS_KEY`      | none                              | The user store key itself, instead of `USERS_KEY_FILE` (not both). A file is safer: the environment of a process is easier to read and ends up in more places. |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). Users who can log in can only be set there (see "Logins"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
@@ -175,7 +182,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
-| `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses or networks in CIDR notation (like `172.22.0.0/16`) of the reverse proxies in front of the site (at most 16), for users in `users.json` without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in `users.json`, it is not used and the server says so at start. |
+| `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses or networks in CIDR notation (like `172.22.0.0/16`) of the reverse proxies in front of the site (at most 16), for users in the user store without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in the user store, it is not used and the server says so at start. |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
 server at start with a message.
@@ -528,8 +535,8 @@ send it, so the server prints a warning at start for each such node when `announ
       announce_queue_samples: 3
 
 On SIGINT or SIGTERM the server writes the history and the uptime once more, waiting for any save
-that is running, before it exits. It also waits for the audit lines, the failures summed up so far
-and the writes of `users.json` that are under way.
+that is running, before it exits. It also waits for the audit lines and the failures summed up so
+far. Changes to the user store need no waiting: each is on disk before it is answered.
 
 ## What is public
 
@@ -658,10 +665,11 @@ version stays `1`.
 ## Logins
 
 Some numbers can be kept for people with an account. With no `users` in the config file and none
-in the user store (`users.json`, see "Accounts and second factor") there is no login at all and
+in the user store (`users.db`, see "Accounts and second factor") there is no login at all and
 the page and API are exactly as without this feature: nothing is locked, there is no login button,
-and `/login` does not exist. Users in the config file need the config file. Users in
-`users.json` work with the config file or with the environment variables alone. With a config
+and `/login` does not exist. Any users at all need the user store key (see "The user store
+key"). Users in the config file need the config file. Users in the user store work with the
+config file or with the environment variables alone. With a config
 file, its `login` settings and `require_login` apply to them as to users in the file. With the
 environment variables alone there is no `login` section or `require_login`: every section is
 locked, the session settings keep their defaults, and the trusted proxies are set with
@@ -695,10 +703,13 @@ at least those costs and at most `m=65536,t=16,p=16`; anything else stops the se
 (the message never repeats the hash). The memory cap is 64 MiB because at most three checks run
 at once (two for sign ins from outside, one more kept for signed-in users and known devices), so
 logins never take more than 192 MiB. The config file holds hashes, not passwords, but keep it
-private anyway.
+private anyway: its hashes are never peppered (the server cannot rewrite the file, and a hash
+with a `keyid` in it stops the server at start, "hashes in the config file cannot be peppered").
+To give an admin the pepper, move them into the user store (see "Moving users out of the config
+file").
 
 **What is locked.** `require_login` lists sections, at the top for every node or on a node to
-override it. Without a rule, once there are users (in the config file or in `users.json`), all of
+override it. Without a rule, once there are users (in the config file or in the user store), all of
 them are locked. A rule that names a section while there are no users anywhere stops the server at
 start, and so does a `login` section.
 
@@ -751,8 +762,14 @@ once. One user has at most 20 sessions; a 21st sign in ends that user's own leas
 most, so one account signing in over and over never signs anyone else out.
 
 - A wrong name and a wrong password get the same 401 and the same message. An unknown name is
-  checked against a stand-in hash with the highest costs of any user, so it takes at least as
-  long as a wrong password for any real name.
+  checked against a stand-in hash with the costs of one of the users. The costs are picked from
+  the name among the different costs the users have, with a key derived from the user store key,
+  so the same unknown name always takes as long as one real user's wrong password, also after a
+  restart: its time does not tell whether the name exists. The pick only changes when a set of
+  costs comes or goes (a user with new costs, or the last one with some), not with every user. A
+  website user whose password hash needs a key version the server was not given gets the same
+  answer as a wrong password, after a hash of the same costs, and the server logs an error line
+  naming the user and the version (at most once a minute per user).
 - A password over 1024 bytes, or a name over 64 characters, can never be right: it gets the same
   401 at once, without a hash, and counts nowhere. It is not a guess, so sending many of them
   holds nobody back.
@@ -760,7 +777,7 @@ most, so one account signing in over and over never signs anyone else out.
   is on) sets a second cookie, `__Host-rettui_device`: a random 128-bit id, `HttpOnly`, `Secure`,
   `SameSite=Strict`, `Path=/`, for 180 days. The server keeps only its SHA-256, with the user (at
   most 10 per user; past that the one used least recently is forgotten), and when each was first
-  and last used (the times of sign ins are written to `users.json` at most once a minute per
+  and last used (the times of sign ins are written to the user store at most once a minute per
   user). A browser that sends it with the right name is a known device: it is never paced
   or refused because of other people's failures (below), and has its own place in the check
   queue. It is never a sign in by itself: the password, and the code, are needed as always. Its
@@ -819,7 +836,7 @@ terminates TLS; the server itself does not read `X-Forwarded-Proto`. The proxy m
 `Host` header through (Caddy does; with nginx, `proxy_set_header Host $host;`) for browsers that
 do not send `Sec-Fetch-Site`. Without trusted proxies every request seems to come from the
 proxy, so all visitors share one address for the failed-login waits. List the proxy's address in
-`login.trusted_proxies` in the config file, or, with users in `users.json` and no config file, in
+`login.trusted_proxies` in the config file, or, with users in the user store and no config file, in
 the environment variable `LOGIN_TRUSTED_PROXIES` (comma separated, for example
 `LOGIN_TRUSTED_PROXIES=127.0.0.1,::1`). At most 16 entries, each an IP address or a network in
 CIDR notation, mixed as needed: `172.22.0.0/16`, `10.0.0.0/8`, `fd00:1::/32`. Use a network when
@@ -876,9 +893,11 @@ factor"); there is no account lockout beyond the wait.
   stay private, make each `stats_url` reachable only by this website (a private network, a
   firewall rule, or a reverse proxy in front of the node that asks for a secret).
 
-The Docker image is built `FROM node:24-alpine`, which moves with each Node.js 24 release. To
-build the exact same image every time, pin it by digest (`FROM node:24-alpine@sha256:...`, from
-`docker buildx imagetools inspect node:24-alpine`) and update the digest yourself.
+The Docker image is built from an exact Node.js 24 release, pinned by digest
+(`FROM node:24.22.3-alpine@sha256:...` in the `Dockerfile`), so every build starts from the same
+image. It moves only when the `Dockerfile` is changed: to take a newer Node.js 24 (at least 24.7),
+change the version and the digest together (`docker buildx imagetools inspect
+node:24.x.y-alpine` gives the digest).
 
 ## Accounts and second factor
 
@@ -893,49 +912,62 @@ second factor.
   they did. Their name, password and role are set in the config file only; the account page
   says "Managed by config" and has no password change. Each may have a `role`: `admin`,
   `manage` or `viewer` (the default when it is left out).
-- **The user store**, `users.json` in `DATA_DIR`, for users made on the website's Users page or
+- **The user store**, `users.db` in `DATA_DIR`, for users made on the website's Users page or
   with `scripts/users.js` (see "Managing users"). Each has a name, a role, an Argon2id password
-  hash like those in the config file, the times it was made and last signed in, its second
-  factor, a list of credentials kept for passkeys later, and `mustChangePassword` while the
-  password is one an admin set.
+  hash like those in the config file (peppered, see "The user store"), the times it was made and
+  last signed in, its second factor, and `mustChangePassword` while the password is one an admin
+  set.
 
 When a name is in both, the one in the config file is used and the server logs a warning at
 start; the one in the store cannot sign in, and is left as it is. A user in the config file can
-still turn on a second factor: it is kept in the store under the user's name (`configUsers` in the
-file), with nothing else. Roles are shown on the account page. `admin` opens the Users page (see
-"Managing users"); nothing else depends on the role yet.
+still turn on a second factor: it is kept in the store under the user's name, apart from the
+website users, with nothing else. Roles are shown on the account page. `admin` opens the Users
+page (see "Managing users"); nothing else depends on the role yet.
 
-**The store file.** `users.json` is read once at start and written whole on every change: to a
-temporary file with mode 0600, synced to disk, then renamed over the old one, so a crash never
-leaves half a file. A file that cannot be read (not JSON, an unknown or newer version, a record
-that makes no sense) stops the server at start with a message that says why, and the file is left
-as it is: a broken store never becomes an empty one, which would drop everyone's second factor.
-Fix or move the file and start again. A store that other users can read gets a warning at start.
-The file keeps its owner and group when it is written (so `scripts/users.js` run as root does not
-take it away from the server's user).
+**The store.** `users.db` is a SQLite database (see "The user store" for the key, backups and
+the volume it needs). Every change is one short transaction, written to disk before it is
+answered, so a crash never leaves half a change. A store that cannot be read (damaged, made by a
+newer version, a record that makes no sense, a table, column, trigger or view this version does
+not make, or a key that does not fit) stops the server at start with a message that says why,
+and the file is left as it is: a broken store never becomes an empty one, which would drop
+everyone's second factor. Fix or move the file (or give the right key) and start again. The file
+is made with mode 0600, and a store that other users can read gets a warning at start. A link in
+place of `users.db`, `users.db-wal` or `users.db-shm`, or anything else that is not a plain file,
+is refused before the store is opened. Deleted rows are overwritten in the file (SQLite's
+`secure_delete`), not left in its free space. SQLite keeps the latest changes in `users.db-wal`
+for a while, old pages included; so after a user is deleted, or a password, TOTP secret or
+recovery code is replaced or used, the server also empties `users.db-wal` into `users.db` (a
+checkpoint, at most once a second, and tried again later when another program is reading the
+store just then). The sqlite_stat tables that SQLite's `ANALYZE` makes are allowed; anything else
+this version does not make is not.
 
-The server reads a `users.json` of up to 8 MiB, with up to 500 website users (and as many records
-for users in the config file). That is above the largest file 500 users with everything filled
-in make (about 4.4 MiB, counting a record for 500 config users as well: the longest password hash,
-two-step sign-in, recovery codes and ten known devices each), and
-the server never writes a file it would not read back: a change that would make the file larger,
-or a user past the 500th, is refused (the Users page says "The user store is full", with 409 for
-the user count and 500 for the size) and nothing changes.
+The store holds at most 500 website users (and as many records for users in the config file),
+20 recovery codes and 10 known devices per user. A change past that is refused (the Users page
+says "The user store is full", with 409 for the user count and 500 otherwise) and nothing
+changes.
 
-**One writer at a time.** While the server runs it keeps `users.lock` in `DATA_DIR` (the time it
-started), touches it every 10 seconds and removes it when it stops cleanly; `scripts/users.js`
-refuses to change `users.json` while that file is younger than 30 seconds. The server also notes
-which `users.json` it read or wrote last (its inode, size and modification time) and looks again
-before every write: when the file was changed on disk meanwhile (by `scripts/users.js` with
-`--server-stopped`, or a copy put back), the server never writes over it. It logs
-`users.json changed on disk; restart the website to load it` (at most once a minute), writes
-nothing to the file from then on, and every change that needs a write answers 500 "The user store
-changed on disk": restart the website to load the file. Sign ins still work meanwhile, but their
-times and new devices are not saved.
+**Changes from the command line.** `scripts/users.js` may change the store while the server runs
+(see "Managing users"); there is no lock file and nothing to stop first. The server looks for
+such changes once a second and before each of its own writes, reads the store again, and signs
+out every user who was made, deleted, or given another password, role or second factor there
+(an audit line, `user-changed-elsewhere`, says who and what). A change of its own that runs
+into one of those is given up, the users concerned are signed out first, and it is tried again,
+so a request from a session that was just ended is refused. Each write holds the store for
+milliseconds; a server that finds it held for more than a second answers that change with 500
+"Another program is changing the user store; nothing was changed. Try again."
 
-TOTP secrets are kept in the file as they are (base32), because the server needs them to check a
-code; recovery codes are kept only as SHA-256 hashes. Keep the data directory as private as the
-config file, and back it up with it.
+**When the store cannot be read again.** If what the server finds there cannot be read (a row it
+cannot decrypt with the keys it has, a damaged row, a trigger or table put in by something
+else), what it has in memory may be out of date: a user deleted there could still sign in. So
+the server then turns signing in off (`/login` answers 503 "Signing in is not possible right
+now. Try again later."), ends every session, logs an error line and writes
+`user-store-unreadable` to the audit log. It tries again every second; once the store can be
+read, signing in is back on by itself (`user-store-readable`). Fix what the error line says, or
+restart the server with the right keys.
+
+TOTP secrets are kept encrypted with the user store key, and recovery codes only as a keyed hash
+(see "The user store"), so the database alone gives neither. Keep the data directory as private
+as the config file anyway, and back it up (see "Backups").
 
 **Two-step sign-in (TOTP).** On the account page, Set up two-step sign-in shows a QR code and the
 same key as text, for any authenticator app (RFC 6238: HMAC-SHA1, 6 digits, 30 seconds). The key
@@ -1031,15 +1063,17 @@ other devices** forgets every one but this browser (`POST /api/account/devices/r
 Removing a device also signs it out: every session that was signed in on it ends (the answer
 says how many, `ended`), and removing this browser's own device signs this browser out. A
 removed device is held back like any other browser until it signs in again. Removing takes effect
-at once, also when writing `users.json` fails.
+at once, also when writing the user store fails.
 
 Setting up, turning on and off, new recovery codes and signing out other sessions can each be done
 at most 5 times an hour from one session and 10 times an hour for one user, wrong passwords and
 codes included; past that the answer is 429 with `Retry-After`.
 
-A change is written to `users.json` first and only then made: when the write fails (a full disk,
-a full user store, or a `users.json` changed on disk, see "One writer at a time"), the answer is
-500 and says which, nothing has changed, and nobody was signed out.
+A change is written to the user store first and only then made: when the write fails (a full
+disk, a full user store, or the store held by `scripts/users.js` for longer than a second, see
+"Changes from the command line"), the answer is 500 and says which ("Another program is changing
+the user store; nothing was changed. Try again." for the last), nothing has changed, and nobody
+was signed out.
 
 **The account API.** `GET /api/account` says who is signed in, and never holds a secret. The
 changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enable`,
@@ -1059,7 +1093,14 @@ ended, `ended`). Changes on the Users page add `user-created` (`role`, and `pass
 `generated` or `typed`), `user-role-changed` (`from`, `to`), `user-deleted` (`role`),
 `user-password-reset` (`password`) and `user-second-factor-reset`; each of those has the admin
 who made it (`actor`), the `user` it was made to, how many of their sessions `ended`, and how
-the admin confirmed it (`with`). `user-role-changed` has the role the user had right before the
+the admin confirmed it (`with`). A change made with `scripts/users.js` is
+`user-changed-elsewhere` (`what`: `created`, `deleted`, `password`, `role` or `second-factor`),
+written by the server when it notices it. The server also writes `user-store-imported` when it
+imports `users.json` (with `again: true` when a user store had been made in the data directory
+before, see "From users.json"), `key-added` for each user store key version it sees for the
+first time, and `user-store-unreadable` (`sessionsEnded`) and `user-store-readable` when the
+store cannot be read again and when it can (see "When the store cannot be read again").
+`user-role-changed` has the role the user had right before the
 change, also when another change came in between. Resetting the password or the two-step sign-in
 of another **admin** is `admin-reset-admin` instead, with the `actor`, the `target` admin, `what`
 was reset (`password` or `second-factor`), `ended` and `with`, so that one admin taking over
@@ -1150,60 +1191,325 @@ answers 403.
 page does not exist. Make one in either way:
 
 - give a user in the config file `role: admin` and restart the server, or
-- stop the server, run `node scripts/users.js create NAME --role admin` (it asks for the
-  password twice without showing it, or reads it from stdin), and start the server again.
-  In Docker: `docker compose run --rm -it website node scripts/users.js create NAME --role admin`
-  (the container needs the same data volume). It runs as the image's `node` user, like the
-  server; run as root without a `users.json`, the command warns that the new file is root's
-  (mode 0600), which the server cannot read: `chown` it to the server's user.
+- run `node scripts/users.js create NAME --role admin` (it asks for the password twice without
+  showing it, or reads it from stdin). It needs the user store key first (see "The user store
+  key"). The server may be running: it picks the new user up within a second. But the server
+  turns sign-in on only when it starts with users, so if it was started without any (or without
+  a key), the command says "restart the website to turn on sign-in": restart it once. In Docker:
+  `docker compose exec website node scripts/users.js create NAME --role admin`. That runs in the
+  running container, as the image's `node` user like the server, with its data volume and its
+  key. With the site stopped, `docker compose run --rm website node scripts/users.js ...` does
+  the same.
 
-**The command line, `scripts/users.js`.** It works on `users.json` offline, with the same rules
-as the website (names, roles, password rules, the last admin), writing the file whole with mode
-0600; a `users.json` that cannot be read is left as it is and nothing is done.
+**Run as root** (outside Docker, say), the command first becomes
+the owner of the data directory (the server's user, with that user's groups), before it opens
+anything, the key file included, and says so: the files it makes are then that user's, and
+nothing that user can put in the data directory (a link in place of `users.db-wal`, say) can make
+root write to or take over a file elsewhere. So **the key file must be readable by the owner of
+the data directory** (directly or through one of their groups), as it is for the server; if it
+is not, the command says so and does nothing. A backup is written as that user too, into a
+folder they can write to. It works on the data directory by its real path (links resolved), and
+refuses, changing nothing, when another user could change the way there meanwhile:
+
+- a folder on the way belongs to a user other than root and the owner of the data directory, or
+  others can write to it (unless it has the sticky bit and is root's, as `/tmp` is);
+- the path goes through a link that is not root's, or lies in a folder that is not root's;
+- the data directory does not exist yet, and others can write where it would be made;
+- the data directory is root's and others can write to it (unless it has the sticky bit).
+
+Only when root owns the data directory does the command stay root, and then it warns that the
+new `users.db` is root's and a server running as another user cannot open it.
+
+**The command line, `scripts/users.js`.** It works on the user store with the same rules as the
+website (names, roles, password rules, the last admin), and needs the same key as the server
+(`USERS_KEY_FILE` or `USERS_KEY`). It may run while the server runs: each change is one short
+transaction, the password is hashed (with the pepper of the current key) before it starts, and a
+running server picks the change up within a second and signs that user out. If the server is
+writing at that moment, the command waits up to 10 seconds; after that it says "Another program
+is changing the user store; nothing was changed. Try again." A store that cannot be read is left
+as it is and nothing is done. The command makes `users.db` only for `create`, or to import a
+`users.json`: any other command in a data directory without a store says so and makes nothing
+(`list` says "No users"), so a mistyped `--data-dir` does not leave an empty store behind. A
+`users.db` it made is never removed again, since a server starting at that moment may already
+use it.
+
+The command only uses key versions the server has recorded in the store, which it does when it
+starts: a version added to the key file is used once the server was restarted with it. Until
+then the command uses the newest version the server has, and says that the new one is not in use
+yet, so the running server can always read what the command writes. (In a new store, before the
+server ever started with a key, the command records its keys itself.)
 
     node scripts/users.js [--data-dir DIR] [--config FILE] COMMAND
       list
-      create NAME --role ROLE [--generate] [--must-change] [--server-stopped]
-      set-role NAME ROLE [--force] [--server-stopped]
-      reset-password NAME [--generate] [--must-change] [--server-stopped]
-      reset-2fa NAME [--server-stopped]
-      delete NAME [--force] [--server-stopped]
+      create NAME --role ROLE [--generate] [--must-change]
+      set-role NAME ROLE [--force]
+      reset-password NAME [--generate] [--must-change]
+      reset-2fa NAME
+      delete NAME [--force]
+      backup FILE
+      check
+      rekey
+      retire-users-json [--delete]
+      gen-key [--version N]
 
 `--data-dir` defaults to `DATA_DIR` (else `./data`), `--config` to `CONFIG_FILE`. With the config
 file its admins count for the last-admin rule, its names cannot be taken, and `reset-2fa` works
 for its users; without it, a note says so. `--generate` makes a one-time password, printed once,
 that must be changed at the next sign in (`--must-change` asks the same of a typed one). A
 password is never taken as an argument. `--force` lets the last admin be deleted or demoted, for
-recovery only. **Stop the server first and start it again afterwards:** the server reads
-`users.json` only when it starts and writes it whole from memory (the command says so after every
-change). A change is refused while `users.lock` says the server runs (touched in the last 30
-seconds); give `--server-stopped` only when you know it does not (it was killed, or the lock is on
-a copy of the data directory). A server that is still running anyway does not write over the
-change: it refuses every change until it is restarted (see "One writer at a time"). Restarting
-also ends every session. An unknown option or command is not repeated in the error, since a
-mistyped line may hold a password.
+recovery only. `backup`, `check`, `rekey`, `retire-users-json` and `gen-key` are described in
+"The user store".
+`--server-stopped`, which older versions needed, is still accepted and ignored, with a note. An
+unknown option or command is not repeated in the error, since a mistyped line may hold a
+password.
 
 **Recovery.**
 
-- *Lost the only admin password, or the admin left:* stop the server, then
-  `scripts/users.js reset-password NAME --generate` for a website admin, or
-  `create NEWNAME --role admin`; or give a config user `role: admin`. Start the server.
+- *Lost the only admin password, or the admin left:* `scripts/users.js reset-password NAME
+  --generate` for a website admin, or `create NEWNAME --role admin`; or give a config user
+  `role: admin` and restart the server.
 - *An admin lost their phone:* another admin uses Reset two-step sign-in on the Users page. With
-  no other admin: stop the server, `scripts/users.js reset-2fa NAME` (add `--config` for a user
-  in the config file), start it. Recovery codes work too, if they still have them.
+  no other admin: `scripts/users.js reset-2fa NAME` (add `--config` for a user in the config
+  file). Recovery codes work too, if they still have them.
+- *The user store key is lost:* see "Backups".
+- *The key, or a copy of the data, may have been seen by someone else:* see "What the key does
+  not protect".
 
-**Moving users out of the config file.** Create each user in the store first (on the Users page
-or with `scripts/users.js`), with a name that is not in the config file, or with the same name
-in this order: remove them from `users:` in the config file, restart, then create them in the
-store (on the page or with the command line). While a name is in both, the config file wins:
-the server warns at start and the store user cannot sign in. Make sure an admin is left
-(another one in the store, or the user you are moving) before you take an admin out of the
-config file. A config user's two-step sign-in and devices are kept in `users.json` under
-`configUsers` and are **not** moved: a store user made with the same name starts without
-two-step sign-in and without known devices, and must set it up again on the Account page. The
-old record stays in `configUsers`, unused (the command line mentions it), and would be used again
-only if the name went back into the config file; reset it there first (`reset-2fa` with
-`--config`) if you want it gone.
+**Moving users out of the config file.** Users in the config file never get the pepper (see "The
+user store"); move them, admins first, to give it to them. Create each user in the store first
+(on the Users page or with `scripts/users.js`), with a name that is not in the config file, or
+with the same name in this order: remove them from `users:` in the config file, restart, then
+create them in the store (on the page or with the command line). While a name is in both, the
+config file wins: the server warns at start and the store user cannot sign in. Make sure an
+admin is left (another one in the store, or the user you are moving) before you take an admin
+out of the config file. A config user's two-step sign-in and devices are kept in the store apart
+from the website users and are **not** moved: a store user made with the same name starts
+without two-step sign-in and without known devices, and must set it up again on the Account
+page. The old record stays, unused (the command line mentions it), and would be used again only
+if the name went back into the config file; reset it there first (`reset-2fa` with `--config`)
+if you want it gone.
+
+## The user store
+
+The users made on the website, and the second factor of every user, are kept in `users.db` in
+`DATA_DIR`, a SQLite database (Node.js's built-in `node:sqlite`). The server and
+`scripts/users.js` can both use it at the same time.
+
+**What the key protects.** The user store has a key, which you make and keep apart from the data:
+
+- **Passwords are peppered.** A password hash is made with the key mixed in (the "pepper"), so a
+  stolen `users.db` alone is no use for guessing passwords: without the key, no guess can be
+  checked. Each hash records which key version made it (`keyid` in the hash).
+- **TOTP secrets are encrypted** (AES-256-GCM), each tied to its user, so the secrets of the
+  authenticator apps cannot be read from the file, or moved to another user.
+- **Recovery codes** are kept as a keyed hash (HMAC) of the code.
+
+From the key three separate keys are derived, one for each of these. The key is never stored in
+the database; only a short check value is, so that a wrong key is noticed at start.
+
+Passwords that were in the store before it had a key (imported from `users.json`) have no pepper
+yet. They keep working, and each is peppered the next time its user signs in. **Users in the
+config file are never peppered**, because the server cannot rewrite that file: protect the config
+file as before, and move admins into the store to give them the pepper (see "Moving users out of
+the config file"). Their second factor, kept in the store, is encrypted like everyone's.
+
+**What the key does not protect.**
+
+- **The pepper protects reading, not writing.** Someone who can only read `users.db` learns
+  nothing they can use. Someone who can **write** to it (or to the data directory) can put in a
+  password hash or a user of their own and take over accounts, key or not. Keep the data
+  directory writable by the server's user only.
+- **`users.json` and old backups.** A `users.json` from an older version holds the second-factor
+  secrets unencrypted and password hashes without a pepper, as they were at the import. It stays
+  in the data directory until you retire it (see "From users.json"), and every backup of the data
+  directory or volume made before that holds it too. Treat those backups as secret, and delete
+  them when they are no longer needed.
+- **Key and data seen together.** Whoever has the key and a copy of the data has everything the
+  key protects, and changing the key (see "Changing the key") does not help against them: they
+  already have the secrets. Then also reset every user's second factor (`reset-2fa`, after which
+  they set up two-step sign-in again and get new recovery codes) and password (`reset-password
+  NAME --generate`).
+
+### The user store key
+
+The key is needed as soon as there are users, in the config file or in the store: without it the
+server does not start, and says to set `USERS_KEY_FILE` and that `node scripts/users.js gen-key`
+makes one. A site without logins needs no key.
+
+Give it in a file, `USERS_KEY_FILE` (a path), or inline in `USERS_KEY` (not both; the file is
+safer). The file has one line per key version, `VERSION:KEY`:
+
+    # The user store key. Keep it out of the data directory and its backups.
+    1:KEY-OF-43-CHARACTERS-FROM-GEN-KEY
+
+`VERSION` is a number from 1 to 65535, and `KEY` 32 random bytes in base64url (43 characters).
+Entries can also be separated by commas (handy for `USERS_KEY`), and `#` starts a comment. At
+most 16 entries, and the file at most 4 KiB. The highest version is the current one: new
+passwords, TOTP secrets and recovery codes use it. The others are only read.
+
+When you run `scripts/users.js` as root, it works as the owner of the data directory (see
+"Managing users"), so the key file must be readable by that user (or one of their groups), like
+it is for the server.
+
+**Making one.** `node scripts/users.js gen-key` prints a new line, `1:...`; `--version N` gives
+another version (for a new key, see "Changing the key"). It only prints; the store is not read.
+
+    mkdir -p secrets
+    (umask 077; node scripts/users.js gen-key > secrets/users.key)
+
+Without Node.js on the host, use the image (`-T`, so that only the key line goes to the file):
+
+    (umask 077; docker compose run --rm -T --no-deps website node scripts/users.js gen-key > secrets/users.key)
+
+**In Docker**, give the file to the container as a secret, in `compose.yaml`:
+
+    services:
+      website:
+        environment:
+          USERS_KEY_FILE: /run/secrets/users_key
+        secrets:
+          - users_key
+    secrets:
+      users_key:
+        file: ./secrets/users.key
+
+Compose mounts the file as it is, with its owner and mode, at `/run/secrets/users_key`. The
+server runs as uid 1000, so make the file that user's and readable by nobody else:
+
+    sudo chown 1000 secrets/users.key
+    sudo chmod 400 secrets/users.key
+
+(If the container runs as another user, `user:` in `compose.yaml`, give the file to that uid.)
+
+**Keep the key outside the data directory**, and so outside the data volume: whoever has a copy
+of the data and the key has everything the key protects. The server and the command line warn at
+start when `USERS_KEY_FILE` lies inside `DATA_DIR`, or can be read by other users.
+
+**Losing the key** makes every TOTP secret and every peppered password in the store unusable;
+nothing can bring them back. Keep a copy of the key file somewhere safe, apart from the backups
+of the data (see "Backups").
+
+### Backups
+
+Back up the database and the key **separately**:
+
+- **The database:** `node scripts/users.js backup FILE` writes a consistent copy of the store to
+  `FILE`, a new file (it never writes over one, nor through a link), with mode 0600, while the
+  server runs. It is made in a new private folder next to `FILE`, checked to be the very copy it
+  made (yours, mode 0600), and then put in place, so a failure leaves nothing behind. A folder
+  other users can write to is refused (unless it has the sticky bit, as `/tmp` has). Do not copy `users.db` itself while the server runs: the newest
+  changes may still be in `users.db-wal`. Keep backups out of the repository and out of the
+  image: write them to a folder of their own outside the repository, such as `~/backups`
+  (`backups/`, `*.db`, `*.db-wal` and `*.db-shm` are in `.gitignore` and `.dockerignore` in case
+  one ends up there anyway). In Docker, write it into the data volume and copy it out:
+
+      mkdir -p ~/backups && chmod 700 ~/backups
+      docker compose exec website node scripts/users.js backup /data/users-backup.db
+      docker compose cp website:/data/users-backup.db ~/backups/users-$(date +%F).db
+      docker compose exec website rm /data/users-backup.db
+
+- **The key file**, kept somewhere else (a password manager, an offline copy).
+
+To restore, stop the server, move `users.db`, `users.db-wal` and `users.db-shm` away, put the
+backup in their place as `users.db` (owned by the server's user, mode 0600), and start with the
+same key. **A backup without its key** loses everyone's TOTP secret and every peppered password:
+the server does not start with the wrong key, and without one at all. To recover from that, make a
+new key, move the old `users.db*` away, make a new admin with `scripts/users.js create`, and have
+users made again, or start from a `users.json` (see "From users.json"). A `users.json` is the
+store as it was at the import, long ago perhaps: it brings back users deleted since, and old
+passwords and second factors. After any import of an old `users.json`, check the users
+(`scripts/users.js list`), delete those that should be gone, and reset everyone's two-step
+sign-in (`reset-2fa`) and password (`reset-password NAME --generate`).
+
+`node scripts/users.js check` checks the database (SQLite's `quick_check`), that its schema is
+exactly the one this version makes (no other tables or columns, no triggers or views), and the
+key, and says what each key version still protects; run it after a restore, or now and then.
+
+### Changing the key
+
+Rotate the key when it may have been seen by someone else, or now and then:
+
+1. Add a new line with the next version to the key file, keeping the old line:
+   `(umask 077; node scripts/users.js gen-key --version 2 >> secrets/users.key)`.
+2. Restart the server. It records version 2 in the store when it starts, and new passwords, TOTP
+   secrets and recovery codes now use it. Until then `scripts/users.js` keeps using version 1,
+   so that the running server can read what it writes, and `rekey` refuses: "Restart the
+   website first".
+3. Run `node scripts/users.js rekey` (in Docker: `docker compose exec website node
+   scripts/users.js rekey`). It encrypts every TOTP secret again with the new key, and prints
+   what each version still protects, for example "version 1: 3 password hashes (upgraded at next
+   sign in), 12 recovery codes (replaced when used or regenerated), 0 TOTP secrets; still
+   needed, keep it in the key file".
+4. Remove the old line only when `node scripts/users.js check` says "version 1: unused; it can
+   be removed from the key file". Password hashes move to the new key when their user signs in,
+   and recovery codes when they are used or new ones are made, so this can take a while; a reset
+   (`reset-password --generate`, or new recovery codes) moves them at once. Removing a version
+   that is still needed makes the server stop at start with "the user store needs key version
+   1; it is not in USERS_KEY_FILE": put the line back.
+
+Rotating the key keeps a key that leaks later from opening what was in the store before, but it
+does not help if the old key and a copy of the data were seen together: see "What the key does
+not protect".
+
+The store keeps a check value for each key version it uses, so that a wrong key is noticed. A
+store that has users but no check value at all, or whose data uses a version without its check
+value (something removed them), is refused at start, with the right key as with a wrong one:
+restore it from a backup.
+
+### Where to keep it
+
+Keep `/data` on a **named local volume** (as `compose.yaml` does) or a local disk. The store uses
+SQLite's write-ahead log, which needs shared memory between the server and the command line:
+never put it on NFS, SMB or any volume shared between hosts, where it can be damaged. Run one
+server per store.
+
+The server makes `users.db` with mode 0600, and SQLite makes `users.db-wal` and `users.db-shm`
+next to it with the same mode. Keep all three together: moving or copying `users.db` alone loses
+recent changes. The server also writes `user-store.created` and keeps it: the time the first
+store was made in this data directory, and a second line once a store here had users. That is
+how a later import of `users.json` into a new store is noticed as a step back (see "From
+users.json"). Moving `users.db*` away leaves it, as it should.
+
+### From users.json
+
+Older versions kept the users in `users.json`. At its first start (or the first
+`scripts/users.js` command), this version imports `users.json` into a new `users.db`, once, in
+one transaction: TOTP secrets are encrypted, recovery codes keyed, passwords stay unpeppered
+until their next sign in. It needs the key if `users.json` has users. A `users.json` that
+cannot be read (or is a link, or not a plain file) stops the start and is left as it is; nothing
+is made. `users.json` itself is never changed or removed by the server, and is not read again: a
+warning at start says when it was changed after the import. Fields this version does not keep
+are dropped and named in a warning (names that do not look like field names are only counted).
+
+**Retire it after the import.** `users.json` still holds the second-factor secrets unencrypted and
+password hashes without a pepper. As long as it is in the data directory, every start warns
+about it. Once the import worked (and you have a backup of the store), run `node scripts/users.js
+retire-users-json`: it checks that `users.json` is the very file that was imported, and renames
+it to `users.json.imported` with mode 0600 (it refuses a changed file or an existing
+`users.json.imported`). Every start warns while `users.json.imported` is in the data directory
+too: move it to offline storage, or delete it. `retire-users-json --delete` deletes instead of
+renaming, after the same check: `users.json`, or `users.json.imported` once it was renamed.
+Deleting does not wipe the disk blocks it was on, and backups of the data directory made before
+then still hold it.
+
+**Importing it again** brings the old snapshot back. Moving `users.db*` away and starting imports
+`users.json` again into a new store: every user deleted since comes back, with the password and
+second factor they had then. The server warns loudly when a store with users had been made in
+the data directory before ("users.json is the snapshot of an older import"), and the audit line
+has `again: true`. A first import after a start without users (users.json put in place later) is
+not warned about. After that, check the users, delete those that should be gone, and reset every
+password and two-step sign-in. A `users.json` with users that was never imported (put there after
+the store was made) stops the start when neither the store nor the config file has users, since
+the site would otherwise run without sign-in: move it away, or move `users.db*` away to import it.
+
+**Going back to an older version** reads `users.json`, which is the store as it was at the import:
+every change made since (new users, passwords, second factors) is lost there, and users deleted
+since are back. Rename `users.json.imported` back to `users.json` for that, and reset passwords
+and two-step sign-in afterwards as above. An older version
+also does not know `users.db`, the key or the pepper.
+
+`users.lock`, which older versions kept in `DATA_DIR`, is no longer used and can be removed, and
+the 8 MiB limit on `users.json` applies only to the import now.
 
 ## Node logs
 

@@ -806,8 +806,9 @@ test('qa: real argon2id: a full HTTP login with the default hasher', { skip: !RE
   }
 });
 
-test('qa: real argon2id: an unknown name costs as much as a wrong password for a user with other costs', { skip: !REAL }, async () => {
-  // Alice has the cheap costs and is first; Bob has costs far above them. A wrong name must not be quicker than Bob's wrong password.
+test('qa: real argon2id: an unknown name takes as long as the wrong password of the one user it stands in for', { skip: !REAL }, async () => {
+  // Alice has the cheap costs; Bob has costs far above them. An unknown name always takes as long
+  // as one of them, the same one each time, so its time tells nothing about whether it exists.
   const cheap = await hashPassword('pw-alice');
   // m=65536 is the highest memory cost accepted; 12 passes make the same work as m=131072,t=6.
   const dear = await hashPassword('pw-bob', { memory: 65536, passes: 12, parallelism: 1 });
@@ -819,11 +820,13 @@ test('qa: real argon2id: an unknown name costs as much as a wrong password for a
     assert.equal(r.reason, 'invalid');
     return Number(process.hrtime.bigint() - t0) / 1e6;
   };
-  await time('bob');
-  const median = async (name) => (await Promise.all([0, 1, 2].map(() => 0)), [await time(name), await time(name), await time(name)].sort((a, b) => a - b)[1]);
-  const bob = await median('bob');
+  // Which user stands in for 'nobody' (alice or bob), by its costs.
+  const like = login.store.standIn('nobody').memory === 65536 ? 'bob' : 'alice';
+  await time(like);
+  const median = async (name) => [await time(name), await time(name), await time(name)].sort((a, b) => a - b)[1];
+  const real = await median(like);
   const nobody = await median('nobody');
-  assert.ok(nobody > bob * 0.6, `unknown name took ${nobody.toFixed(0)} ms, Bob's wrong password ${bob.toFixed(0)} ms: the answer time tells which names exist`);
+  assert.ok(nobody > real * 0.6 && nobody < real * 1.6, `unknown name took ${nobody.toFixed(0)} ms, ${like}'s wrong password ${real.toFixed(0)} ms: the answer time tells which names exist`);
 });
 
 // ---------- scripts/hash-password.js ----------

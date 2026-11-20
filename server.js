@@ -6,7 +6,9 @@ import { loadNodes } from './lib/config.js';
 import { createApp } from './lib/app.js';
 import { createAlerter } from './lib/alerts.js';
 import { createLogin } from './lib/login.js';
-import { StoreError, UserStore, readStore, startHeartbeat, storeHasUsers } from './lib/users.js';
+import { StoreError, UserStore, storeHasUsers } from './lib/users.js';
+import { DB_FILE, NO_KEY, StoreBusyError, openUserDb } from './lib/userdb.js';
+import { KeyError, loadKeys } from './lib/keys.js';
 import { createAudit, createFailureLog } from './lib/audit.js';
 import { ReleaseCache, loadReleaseSettings } from './lib/releases.js';
 import { argon2Available } from './lib/password.js';
@@ -25,33 +27,68 @@ const port = parsePort(process.env.PORT ?? '8080');
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(here, 'data'));
 
-// The users made on the website and everyone's second factor. It is read before the config file,
-// whose login settings are allowed once users.json has users. A store that cannot be read stops
-// the server, and is left as it is.
-let stored;
-try {
-  stored = await readStore({ dataDir });
-} catch (err) {
-  if (!(err instanceof StoreError)) throw err;
-  console.error(`cannot start: ${err.message}`);
+// Stops the start with a message for the operator, and no stack trace.
+function refuse(message) {
+  console.error(`cannot start: ${message}`);
   process.exit(1);
 }
 
-const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login, alerts: alertSettings, siteMode, site } = await loadNodes(
-  { ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) },
-  { storeUsers: storeHasUsers(stored.data) },
-);
+// The keys that protect the user store (keys.js), from USERS_KEY_FILE or USERS_KEY, or null.
+let keys;
+try {
+  keys = await loadKeys(process.env, { dataDir });
+} catch (err) {
+  if (!(err instanceof KeyError)) throw err;
+  refuse(err.message);
+}
+
+// The users made on the website and everyone's second factor, in users.db (made, and users.json
+// imported, at the first start). It is read before the config file, whose login settings are
+// allowed once the store has users. A store that cannot be read stops the server, and is left as
+// it is.
+let opened;
+try {
+  opened = await openUserDb({ dataDir, keys, timeoutMs: 1000 });
+} catch (err) {
+  if (!(err instanceof StoreError || err instanceof StoreBusyError || err instanceof KeyError)) throw err;
+  refuse(err.message);
+}
+
+// The config file and the variables. What is wrong with them is said plainly, without a stack trace.
+let config;
+try {
+  config = await loadNodes({ ...process.env, CONFIG_FILE: process.env.CONFIG_FILE && path.resolve(process.env.CONFIG_FILE) }, { storeUsers: storeHasUsers(opened.data) });
+} catch (err) {
+  opened.db.close();
+  refuse(err.message);
+}
+const { targets, statsUrls, nodes, tokens, warnings, defaults, users, login, alerts: alertSettings, siteMode, site } = config;
 for (const w of warnings ?? []) console.warn(w);
+
+// A users.json with users that was never imported, next to a store without users and a config
+// file without users: the site would run without anyone able to sign in, every section public,
+// while the operator meant it to have users.
+if (opened.jsonNotImported && !storeHasUsers(opened.data) && users.length === 0) {
+  opened.db.close();
+  refuse(`users.json in the data directory has users, but was never imported: ${DB_FILE} was made without it and has no users, so the site would run without sign-in. To import it, stop the server, move ${DB_FILE}* away and start; to run without it, move users.json out of the data directory`);
+}
 
 // STATS_SAMPLE_INTERVAL_MS is for testing only: it makes the stats history fill
 // faster than the 5 minute default.
 const sampleIntervalMs = process.env.STATS_SAMPLE_INTERVAL_MS ? Number(process.env.STATS_SAMPLE_INTERVAL_MS) : SAMPLE_INTERVAL_MS;
 if (!Number.isInteger(sampleIntervalMs) || sampleIntervalMs < 1000) throw new Error('STATS_SAMPLE_INTERVAL_MS must be a whole number of at least 1000');
 
-// identity: the users.json that was read, so that one changed on disk meanwhile is never written over.
-const store = new UserStore({ file: stored.file, configUsers: users, data: stored.data, identity: stored.identity });
-// users.lock tells scripts/users.js that the server runs, and that it must not write users.json.
-const heartbeat = await startHeartbeat({ dataDir });
+// Signing in needs a key: second factors are kept encrypted with it, and new passwords peppered.
+// The store refuses users without one already; users only in the config file are refused here.
+if (keys === null && (users.length > 0 || storeHasUsers(opened.data))) {
+  opened.db.close();
+  refuse(NO_KEY);
+}
+
+// opened.keys: the versions users.db has recorded, which here are all of those given.
+const store = new UserStore({ db: opened.db, data: opened.data, configUsers: users, keys: opened.keys });
+// Changes made by scripts/users.js while the server runs are picked up within a second.
+store.watch();
 
 // Checked now rather than at the first login, so a wrong Node.js is noticed at once.
 if ((users.length || store.hasLocalUsers()) && !argon2Available()) throw new Error(`users need Node.js 24.7 or later for Argon2id (this is ${process.version})`);
@@ -78,6 +115,8 @@ if (siteMode === 'full') {
 const failures = createFailureLog({ dataDir });
 failures.start();
 const audit = createAudit({ dataDir });
+if (opened.imported !== null) await audit.write('user-store-imported', { users: opened.imported.users, configUsers: opened.imported.configUsers, ...(opened.reimported ? { again: true } : {}) });
+for (const version of opened.addedKeys) await audit.write('key-added', { version });
 const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures }), releases, mode: siteMode, site });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
@@ -87,14 +126,16 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     alerts?.stop();
     releases?.stop();
     failures.stop();
-    // The last uptime and history, the failures summed up so far, the audit lines and the user
-    // store writes still under way are all written before the process ends.
+    // The last uptime and history, the failures summed up so far and the audit lines are all
+    // written before the process ends. User store writes are done when they return.
     Promise.all([monitor.flush(), failures.flush(), audit.flush(), store.flush()])
       .catch((err) => console.error(`final save failed: ${err.message}`))
-      // Only once the last write of users.json has ended may scripts/users.js write it.
-      .then(() => heartbeat.stop())
       .finally(() => {
-        server.close(() => process.exit(0));
+        // The store is closed once no request can write to it any more.
+        server.close(() => {
+          store.close();
+          process.exit(0);
+        });
         server.closeAllConnections();
       });
   });

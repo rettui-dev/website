@@ -11,7 +11,10 @@ import { loadConfig } from '../lib/config.js';
 import { CODE_EXPIRED, CODE_FAILED, LOGIN_FAILED, createApp } from '../lib/app.js';
 import { CODE_USER_FREE, COOKIE, DEVICE_BURST, DEVICE_COOKIE, PENDING_MS, createLogin, deviceHash, ipKey, newDeviceId } from '../lib/login.js';
 import { hashPassword } from '../lib/password.js';
-import { MAX_DEVICES, STORE_FILE, UserStore } from '../lib/users.js';
+import { DatabaseSync } from 'node:sqlite';
+import { MAX_DEVICES, UserStore } from '../lib/users.js';
+import { DB_FILE } from '../lib/userdb.js';
+import { Keyring } from '../lib/keys.js';
 import { createAudit, createFailureLog } from '../lib/audit.js';
 import { REAUTHS_PER_SESSION, REAUTHS_PER_USER, RECENT_AUTH_MS } from '../lib/account.js';
 import { base32Decode, hotp, stepAt, totp } from '../lib/totp.js';
@@ -21,16 +24,47 @@ const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 
 const NOW = 1_800_000_000_000;
 const PASSWORD = 'correct horse battery';
 const BOB_PASSWORD = 'bobs own password';
+// The user store needs a key once it has users.
+const KEYS = new Keyring(new Map([[1, crypto.randomBytes(32)]]));
 
-async function setup({ users = true, storeUsers = true, mode = 'full', site, hasher = fakeHasher } = {}) {
+// Reads the store on disk, as another program would: the rows of a query.
+function rows(dataDir, query, ...params) {
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
+  try {
+    return sql.prepare(query).all(...params);
+  } finally {
+    sql.close();
+  }
+}
+// A user's row on disk (kind 'config' for the second-factor record of a config user), or null.
+const row = (dataDir, name, kind = 'store') => rows(dataDir, 'SELECT * FROM users WHERE kind = ? AND name_key = ?', kind, name.toLowerCase())[0] ?? null;
+// The devices of a user on disk.
+const diskDevices = (dataDir, name, kind = 'store') => rows(dataDir, 'SELECT d.* FROM devices d JOIN users u ON u.id = d.user_id WHERE u.kind = ? AND u.name_key = ? ORDER BY d.rowid', kind, name.toLowerCase());
+// The bytes of the store on disk, the WAL included (where the last changes are until a checkpoint).
+const diskBytes = async (dataDir) => Buffer.concat(await Promise.all([DB_FILE, `${DB_FILE}-wal`].map((f) => fs.readFile(path.join(dataDir, f)).catch(() => Buffer.alloc(0)))));
+
+// Holds the store's write lock from another connection, as scripts/users.js would mid-change,
+// until the returned function is called.
+function holdLock(dataDir) {
+  const other = new DatabaseSync(path.join(dataDir, DB_FILE));
+  other.exec('BEGIN IMMEDIATE');
+  return () => {
+    other.exec('ROLLBACK');
+    other.close();
+  };
+}
+
+// timeoutMs: how long a write waits for another program that holds the store.
+async function setup({ users = true, storeUsers = true, mode = 'full', site, hasher = fakeHasher, timeoutMs } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'account-'));
   const hash = await hashPassword(PASSWORD, undefined, fakeHasher);
   const config = loadConfig(`${users ? `users:\n  - name: Alice\n    password_hash: '${hash}'\n    role: admin\n` : ''}nodes:\n  - address: a.test:1\n`);
   const clock = { t: NOW };
   const now = () => clock.t;
   const warnings = [];
-  const store = await UserStore.open({ dataDir, configUsers: config.users, warn: (w) => warnings.push(w), now });
-  if (storeUsers) await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashPassword(BOB_PASSWORD, undefined, fakeHasher) });
+  const store = await UserStore.open({ keys: KEYS, dataDir, configUsers: config.users, warn: (w) => warnings.push(w), now, ...(timeoutMs ? { timeoutMs } : {}) });
+  // Peppered as the website makes it, so that no sign in here moves it to the current key.
+  if (storeUsers) await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashPassword(BOB_PASSWORD, undefined, fakeHasher, store.currentPepper()) });
   const audit = createAudit({ dataDir, now });
   const failures = createFailureLog({ dataDir, now });
   // The pace of a name under attack is tested in login.test.js; here it does not hold tests back.
@@ -421,10 +455,13 @@ test('set up gives the secret once, to its owner, and never again; it turns on o
     assert.equal(on.json().recoveryCodes.length, 10);
     assert.equal((await api(s, '/api/account/totp/setup', { password: PASSWORD }, cookie)).status, 409);
     assert.equal((await api(s, '/api/account/totp/enable', { code: '000000' }, cookie)).status, 409);
-    // Kept in the store under the config user's name; the secret is never in the audit log.
-    const disk = JSON.parse(await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8'));
-    assert.equal(disk.configUsers[0].name, 'Alice');
-    assert.equal(disk.configUsers[0].totp.enabled, true);
+    // Kept in the store under the config user's name, encrypted; the secret is never in the audit log.
+    const disk = row(s.dataDir, 'alice', 'config');
+    assert.equal(disk.name, 'Alice');
+    assert.equal(disk.totp_enabled, 1);
+    const raw = base32Decode(secret);
+    assert.equal((await diskBytes(s.dataDir)).includes(raw), false, 'the secret is not on disk as it is');
+    assert.equal((await diskBytes(s.dataDir)).includes(Buffer.from(secret)), false);
     const audit = await fs.readFile(s.audit.file, 'utf8');
     assert.equal(audit.includes(secret), false);
     assert.deepEqual((await changeLines(s)).map((l) => l.event), ['totp-enabled']);
@@ -537,7 +574,7 @@ test('password change: website users only, with the current password; other sess
     assert.equal((await logIn(s, 'bob', BOB_PASSWORD)).r.status, 401);
     assert.equal((await logIn(s, 'bob', 'a brand new one')).r.status, 200);
     // Kept on disk.
-    const again = await UserStore.open({ dataDir: s.dataDir, warn: () => {} });
+    const again = await UserStore.open({ keys: KEYS, dataDir: s.dataDir, warn: () => {} });
     assert.ok(again.find('bob'));
     const lines = await changeLines(s);
     assert.deepEqual(lines.map((l) => [l.event, l.user]), [['password-changed', 'bob']]);
@@ -777,23 +814,24 @@ test('new recovery codes and TOTP changes are limited per session and per user; 
 });
 
 test('a password change whose write fails changes nothing: old password, other sessions and second steps all stay', async () => {
-  const s = await setup();
+  const s = await setup({ timeoutMs: 50 });
   try {
     const b1 = await logIn(s, 'bob', BOB_PASSWORD);
     const b2 = await logIn(s, 'bob', BOB_PASSWORD);
-    // The sign in times are written in the background; those writes end first.
-    await s.store.saving;
-    const file = path.join(s.dataDir, STORE_FILE);
-    await fs.mkdir(`${file}.${process.pid}.tmp`);
-    await fs.writeFile(path.join(`${file}.${process.pid}.tmp`, 'x'), 'x');
-    const r = await api(s, '/api/account/password', { current: BOB_PASSWORD, next: 'a brand new one' }, b1.cookie);
+    // Another program holds the store for longer than a write waits.
+    const release = holdLock(s.dataDir);
+    let r;
+    try {
+      r = await api(s, '/api/account/password', { current: BOB_PASSWORD, next: 'a brand new one' }, b1.cookie);
+    } finally {
+      release();
+    }
     assert.equal(r.status, 500);
-    assert.match(r.json().error, /nothing was changed/);
+    assert.equal(r.json().error, 'Another program is changing the user store; nothing was changed. Try again.');
     assert.equal((await get(s, '/api/session', b2.cookie)).json().name, 'bob');
     assert.equal((await logIn(s, 'bob', 'a brand new one')).r.status, 401);
     assert.equal((await logIn(s, 'bob', BOB_PASSWORD)).r.status, 200);
     assert.deepEqual((await changeLines(s)).map((l) => l.event), []);
-    await fs.rm(`${file}.${process.pid}.tmp`, { recursive: true });
     assert.equal((await api(s, '/api/account/password', { current: BOB_PASSWORD, next: 'a brand new one' }, b1.cookie)).status, 200);
     assert.equal((await get(s, '/api/session', b2.cookie)).json().name, null);
   } finally {
@@ -822,6 +860,17 @@ const until = async (cond) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
   assert.ok(cond());
 };
+// Ends a user's sessions right before the store's next write runs, as if they ended while it
+// waited for the store.
+function endAtNextWrite(s, name) {
+  const db = s.store.db;
+  const tx = db.tx;
+  db.tx = (fn) => {
+    db.tx = tx;
+    s.login.endUser(name);
+    return tx.call(db, fn);
+  };
+}
 const devCookie = (r) => r.headers['set-cookie'].find((c) => c.startsWith(`${DEVICE_COOKIE}=`));
 const both = (a) => `${a.cookie}; ${a.device}`;
 
@@ -831,10 +880,8 @@ test('a sign in sets the known-device cookie; only its SHA-256 is kept; the acco
     const b1 = await logIn(s, 'bob', BOB_PASSWORD);
     assert.match(devCookie(b1.r), new RegExp(`^${DEVICE_COOKIE}=[A-Za-z0-9_-]{22}; Path=/; Max-Age=15552000; HttpOnly; Secure; SameSite=Strict$`));
     const id = b1.device.split('=')[1];
-    const disk = await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8');
-    assert.equal(disk.includes(id), false, 'the id itself is never written');
-    const bob = JSON.parse(disk).users.find((u) => u.name === 'bob');
-    assert.deepEqual(bob.devices.map((d) => d.hash), [crypto.createHash('sha256').update(id).digest('hex')]);
+    assert.equal((await diskBytes(s.dataDir)).includes(id), false, 'the id itself is never written');
+    assert.deepEqual(diskDevices(s.dataDir, 'bob').map((d) => d.hash), [crypto.createHash('sha256').update(id).digest('hex')]);
     // Signing in again with it: the same device, its cookie renewed, no second one.
     s.clock.t += 60_000;
     const again = await logIn(s, 'bob', BOB_PASSWORD, b1.device);
@@ -867,7 +914,7 @@ test('a sign in sets the known-device cookie; only its SHA-256 is kept; the acco
     assert.deepEqual(s.store.devices('bob').map((d) => d.hash), [deviceHash(id)]);
     assert.equal(s.store.hasDevice('bob', deviceHash(b3.device.split('=')[1])), false);
     // On disk too.
-    const after = await UserStore.open({ dataDir: s.dataDir, warn: () => {} });
+    const after = await UserStore.open({ keys: KEYS, dataDir: s.dataDir, warn: () => {} });
     assert.equal(after.devices('bob').length, 1);
     const lines = await auditLines(s);
     // Only the first new device of the day is an audit line; the others are summed up in failures.log.
@@ -894,10 +941,9 @@ test('devices: at most ten per user, the least recently used goes; a config user
     }
     assert.equal(s.store.devices('alice').length, MAX_DEVICES);
     assert.equal(s.store.hasDevice('alice', deviceHash(first.device.split('=')[1])), false);
-    await s.store.saving;
-    const disk = JSON.parse(await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8'));
-    assert.equal(disk.configUsers[0].name, 'Alice');
-    assert.equal(disk.configUsers[0].devices.length, MAX_DEVICES);
+    assert.equal(row(s.dataDir, 'alice', 'config').name, 'Alice');
+    assert.equal(row(s.dataDir, 'alice'), null, 'no website user is made for her');
+    assert.equal(diskDevices(s.dataDir, 'alice', 'config').length, MAX_DEVICES);
   } finally {
     await s.close();
   }
@@ -979,16 +1025,10 @@ test('a session ended while its change is under way changes nothing, hands out n
     assert.equal((await logIn(s, 'bob', 'a brand new one')).r.status, 401);
     b = await logIn(s, 'bob', BOB_PASSWORD);
     assert.equal(b.r.status, 200);
-    // Turning it on: the write waits behind another, and the session ends meanwhile.
+    // Turning it on: the session ends right as the write starts, after the code was found right.
     const { secret } = (await api(s, '/api/account/totp/setup', { password: BOB_PASSWORD }, b.cookie)).json();
-    let unblock;
-    const before = s.store.saving;
-    s.store.saving = new Promise((res) => (unblock = res)).then(() => before);
-    r = api(s, '/api/account/totp/enable', { code: totp(base32Decode(secret), s.clock.t) }, b.cookie);
-    await new Promise((res) => setTimeout(res, 50));
-    s.login.endUser('bob');
-    unblock();
-    r = await r;
+    endAtNextWrite(s, 'bob');
+    r = await api(s, '/api/account/totp/enable', { code: totp(base32Decode(secret), s.clock.t) }, b.cookie);
     assert.equal(r.status, 401);
     assert.equal(r.text.includes('recoveryCodes'), false);
     assert.equal(s.store.secondFactorEnabled('bob'), false);
@@ -1067,7 +1107,7 @@ test('a known device that signs in over and over is paced; its sign in times are
     await s.store.flush();
     let writes = 0;
     const save = s.store.save.bind(s.store);
-    s.store.save = () => (writes++, save());
+    s.store.save = (...args) => (writes++, save(...args));
     for (let i = 0; i < DEVICE_BURST; i++) assert.equal((await logIn(s, 'bob', BOB_PASSWORD, first.device)).r.status, 200);
     const paced = await logIn(s, 'bob', BOB_PASSWORD, first.device);
     assert.equal(paced.r.status, 429);
@@ -1077,10 +1117,8 @@ test('a known device that signs in over and over is paced; its sign in times are
     s.clock.t += 60_000;
     assert.equal((await logIn(s, 'bob', BOB_PASSWORD, first.device)).r.status, 200);
     assert.equal(writes, 1);
-    await s.store.flush();
-    const disk = JSON.parse(await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8')).users.find((u) => u.name === 'bob');
-    assert.equal(disk.lastLogin, new Date(s.clock.t).toISOString());
-    assert.equal(disk.devices[0].lastUsed, new Date(s.clock.t).toISOString());
+    assert.equal(row(s.dataDir, 'bob').last_login, new Date(s.clock.t).toISOString());
+    assert.equal(diskDevices(s.dataDir, 'bob')[0].last_used, new Date(s.clock.t).toISOString());
   } finally {
     await s.close();
   }

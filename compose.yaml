@@ -31,13 +31,23 @@ services:
       # A status-only site (no rettui project pages, no GitHub requests): set site_mode: status in the
       # config file, or without one SITE_MODE: "status". Branding goes in the file's site: section.
       # SITE_MODE: "status"
-      # Logins (users, require_login) need CONFIG_FILE. The cookie is Secure, so serve the
+      # Users in the config file and require_login need CONFIG_FILE. The cookie is Secure, so serve the
       # site over HTTPS through a reverse proxy; see "Logins" in the README.
-      # With users only in users.json and no CONFIG_FILE, the reverse proxy's address or network
+      # Users need the user store key (see "The user store key" in the README). Make it once,
+      # outside the data volume, and give it to the container as a secret (below):
+      #   mkdir -p secrets && (umask 077; docker compose run --rm -T --no-deps website node scripts/users.js gen-key > secrets/users.key)
+      #   sudo chown 1000 secrets/users.key && sudo chmod 400 secrets/users.key
+      # USERS_KEY_FILE: /run/secrets/users_key
+      # With users only in the user store and no CONFIG_FILE, the reverse proxy's address or network
       # (CIDR, like 172.18.0.0/16, only one nothing untrusted connects from), so failed logins are
       # counted per visitor, not per proxy (in the file: login.trusted_proxies):
       # LOGIN_TRUSTED_PROXIES: "172.18.0.1"
+    # The user store key (see USERS_KEY_FILE above). Never put it in the data volume.
+    # secrets:
+    #   - users_key
     volumes:
+      # A named local volume: the user store is a SQLite database, which must not be on NFS,
+      # SMB or a volume shared between hosts.
       - status-data:/data
       # - ./config.yaml:/config/config.yaml:ro
       # One token file per node, each readable by the server only (chmod 600). In
@@ -56,3 +66,7 @@ services:
 
 volumes:
   status-data:
+
+# secrets:
+#   users_key:
+#     file: ./secrets/users.key

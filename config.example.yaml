@@ -13,19 +13,23 @@
 # public_disk_figures: true  # also show exact free and total disk space; default false,
 #                            # when only a level (ok, high, full) and the used share rounded to 5 are shown
 # Optional: people who can log in to see more (see "Logins" in README.md). Without
-# users (here or in users.json in DATA_DIR) there is no login and nothing is locked. Make a password_hash with
+# users (here or in the user store, users.db in DATA_DIR) there is no login and nothing is locked. Make a password_hash with
 #   npm run hash-password -- --name alice
 # (in Docker: docker compose run --rm -it website node scripts/hash-password.js --name alice)
 # users:
 #   - name: alice
 #     password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
 #     role: admin          # optional: admin, manage or viewer (default viewer)
-# An admin opens the Users page (/users) to manage the users kept in users.json. There must be an
-# admin for that page to exist: set role: admin here, or make one with
+# Password hashes here are never peppered (the server cannot rewrite this file): keep it private,
+# or move admins into the user store, whose passwords are peppered with the user store key.
+# An admin opens the Users page (/users) to manage the users kept in the user store. There must be
+# an admin for that page to exist: set role: admin here, or make one with
 #   node scripts/users.js create NAME --role admin
 # (see "Managing users" in README.md). Users here stay read-only on that page.
-# Each user can turn on two-step sign-in (TOTP) on their account page (/account); that is kept in
-# users.json in DATA_DIR, not here (see "Accounts and second factor" in README.md).
+# Each user can turn on two-step sign-in (TOTP) on their account page (/account); that is kept,
+# encrypted, in the user store in DATA_DIR, not here (see "Accounts and second factor" in README.md).
+# Any users at all need the user store key, set in USERS_KEY_FILE (see "The user store key" in
+# README.md); without it the server does not start.
 # What a visitor without a login does not see. With users and no rule, all of these;
 # a node can override it with its own require_login.
 # require_login: [details, storage, peers, disk, versions]

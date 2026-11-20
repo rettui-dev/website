@@ -9,8 +9,12 @@ import { Monitor } from '../lib/monitor.js';
 import { loadConfig } from '../lib/config.js';
 import { createApp } from '../lib/app.js';
 import { createLogin } from '../lib/login.js';
+import crypto from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from '../lib/password.js';
-import { STORE_FILE, UserStore } from '../lib/users.js';
+import { UserStore } from '../lib/users.js';
+import { DB_FILE } from '../lib/userdb.js';
+import { Keyring } from '../lib/keys.js';
 import { createAudit, createFailureLog } from '../lib/audit.js';
 import { RECENT_AUTH_MS } from '../lib/account.js';
 import { USER_CHANGES_PER_ADMIN, newOneTimePassword } from '../lib/admin.js';
@@ -23,19 +27,47 @@ const ALICE = 'correct horse battery';
 const BOB = 'bobs own password';
 const CAROL = 'carols long password';
 const DAVE = 'daves long password';
+// The user store needs a key once it has users.
+const KEYS = new Keyring(new Map([[1, crypto.randomBytes(32)]]));
+
+// A user's row of the store on disk, read as another program would, or null.
+function row(dataDir, name) {
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
+  try {
+    return sql.prepare("SELECT * FROM users WHERE kind = 'store' AND name_key = ?").get(name.toLowerCase()) ?? null;
+  } finally {
+    sql.close();
+  }
+}
+// The bytes of the store on disk, the WAL included (where the last changes are until a checkpoint).
+const diskBytes = async (dataDir) => Buffer.concat(await Promise.all([DB_FILE, `${DB_FILE}-wal`].map((f) => fs.readFile(path.join(dataDir, f)).catch(() => Buffer.alloc(0)))));
+
+// Holds the store's write lock from another connection, as scripts/users.js would mid-change,
+// until the returned function is called.
+function holdLock(dataDir) {
+  const other = new DatabaseSync(path.join(dataDir, DB_FILE));
+  other.exec('BEGIN IMMEDIATE');
+  return () => {
+    other.exec('ROLLBACK');
+    other.close();
+  };
+}
 
 // Alice is in the config file (admin unless aliceRole says otherwise); bob (manage) and, with
-// carol, carol (admin) are website users.
-async function setup({ aliceRole = 'admin', carol = false, hasher = fakeHasher } = {}) {
+// carol, carol (admin) are website users. timeoutMs: how long a write waits for another program
+// that holds the store.
+async function setup({ aliceRole = 'admin', carol = false, hasher = fakeHasher, timeoutMs } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'users-'));
   const hash = await hashPassword(ALICE, undefined, fakeHasher);
   const config = loadConfig(`users:\n  - name: Alice\n    password_hash: '${hash}'\n    role: ${aliceRole}\nnodes:\n  - address: a.test:1\n`);
   const clock = { t: NOW };
   const now = () => clock.t;
   const logs = [];
-  const store = await UserStore.open({ dataDir, configUsers: config.users, warn: () => {}, now, log: (m) => logs.push(m) });
-  await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashPassword(BOB, undefined, fakeHasher) });
-  if (carol) await store.createUser({ name: 'carol', role: 'admin', passwordHash: await hashPassword(CAROL, undefined, fakeHasher) });
+  const store = await UserStore.open({ keys: KEYS, dataDir, configUsers: config.users, warn: () => {}, now, log: (m) => logs.push(m), ...(timeoutMs ? { timeoutMs } : {}) });
+  // Peppered as the website makes them, so that no sign in here moves them to the current key.
+  const pepper = store.currentPepper();
+  await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashPassword(BOB, undefined, fakeHasher, pepper) });
+  if (carol) await store.createUser({ name: 'carol', role: 'admin', passwordHash: await hashPassword(CAROL, undefined, fakeHasher, pepper) });
   const audit = createAudit({ dataDir, now });
   const failures = createFailureLog({ dataDir, now });
   const login = createLogin({ users: config.users, store, settings: config.login, hasher, now, audit, failures, sleep: async () => {}, log: (m) => logs.push(m) });
@@ -245,9 +277,8 @@ test('create: a one-time password is shown once; the new user can only change it
     assert.equal(s.store.lookup('eve').mustChangePassword, true);
     // Never again: the list has no password.
     assert.equal((await get(s, '/api/users', a.cookie)).text.includes(otp), false);
-    const disk = await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8');
-    assert.equal(disk.includes(otp), false);
-    assert.match(disk, /"mustChangePassword": true/);
+    assert.equal((await diskBytes(s.dataDir)).includes(otp), false);
+    assert.equal(row(s.dataDir, 'eve').must_change_password, 1);
     // Signing in: told to change it, and nothing else works until then.
     const e = await logIn(s, 'eve', otp);
     assert.equal(e.r.status, 200);
@@ -264,7 +295,7 @@ test('create: a one-time password is shown once; the new user can only change it
     assert.equal(s.store.lookup('eve').mustChangePassword, false);
     assert.equal((await get(s, '/api/session', e.cookie)).json().mustChangePassword, undefined);
     assert.equal((await get(s, '/api/status', e.cookie)).json().viewer.name, 'eve');
-    assert.doesNotMatch(await fs.readFile(path.join(s.dataDir, STORE_FILE), 'utf8'), /mustChangePassword/);
+    assert.equal(row(s.dataDir, 'eve').must_change_password, 0);
     // A typed first password works the same way.
     assert.equal((await api(s, '/api/users/create', { name: 'frank', role: 'viewer', newPassword: 'franks first password', password: ALICE }, a.cookie)).json().oneTimePassword, undefined);
     assert.equal((await logIn(s, 'frank', 'franks first password')).r.json().mustChangePassword, true);
@@ -439,16 +470,17 @@ test('an admin whose session ends, or who is demoted, while a change is under wa
     assert.equal(r.text.includes('oneTimePassword'), false);
     assert.equal(s.store.lookup('eve'), null);
     await s.store.setRole('carol', 'admin');
-    // The store's guard: the write waits behind another, and the admin's session ends meanwhile.
+    // The store's guard: the admin's session ends right as the write starts, as if it waited for
+    // the store meanwhile.
     c = await logIn(s, 'carol', CAROL);
-    let unblock;
-    const before = s.store.saving;
-    s.store.saving = new Promise((res) => (unblock = res)).then(() => before);
-    r = api(s, '/api/users/delete', { name: 'bob', password: CAROL }, c.cookie);
-    await new Promise((res) => setTimeout(res, 50));
-    s.login.endUser('carol');
-    unblock();
-    r = await r;
+    const db = s.store.db;
+    const tx = db.tx;
+    db.tx = (fn) => {
+      db.tx = tx;
+      s.login.endUser('carol');
+      return tx.call(db, fn);
+    };
+    r = await api(s, '/api/users/delete', { name: 'bob', password: CAROL }, c.cookie);
     assert.equal(r.status, 401);
     assert.ok(s.store.lookup('bob'), 'bob is still there');
     assert.equal((await auditLines(s)).filter((l) => l.event === 'user-deleted').length, 0);
@@ -458,15 +490,22 @@ test('an admin whose session ends, or who is demoted, while a change is under wa
 });
 
 test('a change whose write fails changes nothing and signs nobody out', async () => {
-  const s = await setup({ carol: true });
+  const s = await setup({ carol: true, timeoutMs: 50 });
   try {
     const c = await logIn(s, 'carol', CAROL);
     const b = await logIn(s, 'bob', BOB);
-    // users.json becomes a folder: the rename over it fails.
-    await fs.rm(path.join(s.dataDir, STORE_FILE));
-    await fs.mkdir(path.join(s.dataDir, STORE_FILE, 'x'), { recursive: true });
-    const r = await api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: CAROL }, c.cookie);
+    // Another program holds the store for longer than a write waits.
+    const release = holdLock(s.dataDir);
+    let r;
+    try {
+      r = await api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: CAROL }, c.cookie);
+    } finally {
+      release();
+    }
     assert.equal(r.status, 500);
+    assert.equal(r.json().error, 'Another program is changing the user store; nothing was changed. Try again.');
+    assert.equal(row(s.dataDir, 'bob').role, 'manage');
+    assert.equal((await auditLines(s)).filter((l) => l.event === 'user-role-changed').length, 0);
     assert.equal(s.store.lookup('bob').role, 'manage');
     assert.equal(await alive(s, b.cookie), 'bob');
     assert.ok(s.logs.length === 0 || s.logs.every((l) => !l.includes(CAROL)));
@@ -613,35 +652,49 @@ test('too many hashes at once from the admin\'s own requests (503) do not count 
   }
 });
 
-test('a full user store, or one changed on disk, refuses the change with a 500 that says so, and changes nothing', async () => {
+test('a full user store refuses the change with a 500 that says so, and changes nothing', async () => {
   const s = await setup({ carol: true });
   try {
     const c = await logIn(s, 'carol', CAROL);
-    const file = path.join(s.dataDir, STORE_FILE);
-    s.store.maxBytes = (await fs.stat(file)).size + 10;
+    // The database takes no more users than it has now.
+    const before = await diskBytes(s.dataDir);
+    s.store.db.maxUsers = 2;
     const full = await api(s, '/api/users/create', { name: 'eve', role: 'viewer', generate: true, password: CAROL }, c.cookie);
     assert.equal(full.status, 500);
-    assert.match(full.json().error, /user store is full/);
+    assert.equal(full.json().error, 'The user store is full, so nothing was changed. Delete users that are not needed any more.');
     assert.equal(s.store.lookup('eve'), null);
-    s.store.maxBytes = 8 * 1024 * 1024;
-    // Changed by the command line while the server runs.
-    const other = await UserStore.open({ dataDir: s.dataDir, warn: () => {} });
-    await other.setRole('bob', 'viewer');
-    const theirs = await fs.readFile(file, 'utf8');
-    for (let i = 0; i < 2; i++) {
-      const r = await api(s, '/api/users/role', { name: 'bob', role: 'admin', password: CAROL }, c.cookie);
-      assert.equal(r.status, 500);
-      assert.match(r.json().error, /user store changed on disk.*Restart the website/);
+    assert.equal(row(s.dataDir, 'eve'), null);
+    assert.deepEqual(await diskBytes(s.dataDir), before);
+    assert.equal((await auditLines(s)).filter((l) => l.event === 'user-created').length, 0);
+    s.store.db.maxUsers = 500;
+    assert.equal((await api(s, '/api/users/create', { name: 'eve', role: 'viewer', generate: true, password: CAROL }, c.cookie)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a change made by the command line while the server runs is picked up: the user is signed out, it is audited, and a change on top of it is kept', async () => {
+  const s = await setup({ carol: true });
+  try {
+    const c = await logIn(s, 'carol', CAROL);
+    const b = await logIn(s, 'bob', BOB);
+    const other = await UserStore.open({ keys: KEYS, dataDir: s.dataDir, warn: () => {} });
+    try {
+      await other.setRole('bob', 'viewer');
+    } finally {
+      other.close();
     }
-    assert.equal(s.store.lookup('bob').role, 'manage');
-    // The account page says the same; signing in still works, and writes nothing.
-    const pw = await api(s, '/api/account/password', { password: CAROL, next: 'carols newer password' }, c.cookie);
-    assert.equal(pw.status, 500);
-    assert.match(pw.json().error, /changed on disk/);
-    assert.equal((await logIn(s, 'bob', BOB)).r.status, 200);
-    assert.equal(await fs.readFile(file, 'utf8'), theirs);
-    assert.equal(s.logs.filter((l) => l.includes('users.json changed on disk; restart the website to load it')).length >= 1, true);
-    assert.equal(s.logs.filter((l) => l.startsWith('error: users.json changed on disk')).length, 1, 'once a minute');
+    // Found at the next write (the server also looks once a second).
+    const r = await api(s, '/api/users/role', { name: 'bob', role: 'admin', password: CAROL }, c.cookie);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(s.store.lookup('bob').role, 'admin');
+    assert.equal(row(s.dataDir, 'bob').role, 'admin');
+    assert.equal(await alive(s, b.cookie), null, 'bob was signed out');
+    assert.equal(await alive(s, c.cookie), 'carol', 'nobody else was');
+    const lines = await auditLines(s);
+    assert.deepEqual(lines.filter((l) => l.event === 'user-changed-elsewhere').map((l) => [l.user, l.what]), [['bob', ['role']]]);
+    const changed = lines.find((l) => l.event === 'user-role-changed');
+    assert.deepEqual([changed.from, changed.to], ['viewer', 'admin'], 'made on top of the change made elsewhere');
   } finally {
     await s.close();
   }
