@@ -318,6 +318,11 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 0; }
 .facts dt { color: var(--dim); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
+/* On a phone a label and its value stack, so that a long label cannot push the value out of the dialog. */
+@media (max-width: 600px) {
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: 6px; }
+}
 .versions { margin: 0; padding-left: 18px; }
 .detail .muted { color: var(--dim); }
 .detail .note { margin-top: 8px; }
