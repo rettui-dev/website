@@ -612,6 +612,7 @@ whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB
   "network": {
     "overall": "up" | "degraded" | "down" | "unknown", "checkedAt": ISO time | null,
     "intervalSeconds": n, "nodes": n, "up": n, "down": n, "unknown": n, "reporting": n,
+    "proxies": n, "proxiesUp": n, "proxiesDown": n,
     "clients": n | null, "interfaces": { "total": n | null, "online": n | null },
     "announcesLastMinute": n | null,
     "peersHeardSum": { "total": n | null, "lxmf": ..., "nomad": ..., "propagation": ... }
@@ -620,10 +621,21 @@ whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB
 ```
 
 In `group`, peers heard is a range from the busiest single node (`min`) to the sum (`max`),
-and one number when `exact` is true (see "Proxies and groups"). In `network`, every node counts
-once: the nodes behind a proxy through the proxy's `group`, any other node through its own
-numbers. `peersHeardSum` is an upper bound, as one peer heard by two nodes counts twice.
-`reporting` is the number of nodes with fresh stats.
+and one number when `exact` is true (see "Proxies and groups"). Each entry of `nodes` has a
+`role`, `"proxy"` (it has `proxy_for`) or `"node"`.
+
+In `network`, a proxy is not a node: `nodes`, `up`, `down`, `unknown` and `reporting` count the
+entries with role `node` only, and `proxies`, `proxiesUp` and `proxiesDown` count the proxies.
+A standalone node with no proxy is a node. `overall` still follows every entry, the proxies too,
+because a proxy that is down closes the door for visitors. In the sums, every node counts once:
+the nodes behind a proxy through the proxy's `group`, any other node through its own numbers,
+and a proxy's own numbers only when it has `count_own: true` (inside its `group`), never twice.
+`peersHeardSum` is an upper bound, as one peer heard by two nodes counts twice. `reporting` is
+the number of nodes with fresh stats.
+
+Behaviour change on dev, before any release: `network.nodes` used to count the proxies too, and
+`up`, `down`, `unknown` and `reporting` followed it. The API is new and unreleased, so the
+version stays `1`.
 
 `GET /api/public/incidents`:
 
@@ -942,6 +954,10 @@ Privacy and limits:
 
 - A node with a `name` shows it, with the address beside it; a node without one shows its
   address as the name. Only proxies have a badge ("Proxy").
+- The banner counts nodes and proxies apart, because a proxy is the front door and not a node:
+  `3 nodes up, 1 proxy up`, or `2 of 3 nodes up, proxy down`. The headline and its colour still
+  follow every entry point, so a proxy that is down is an outage even when all nodes are up.
+  A node with no proxy counts as a node.
 - A proxy and the nodes behind it are one card: `Front door [Proxy] passes visitors to 3
   nodes`, then one line (`3 of 3 nodes up · 34 clients · 1,300 to 3,300 peers heard · 33
   announces/min`). Peers heard is a range, and the "?" button explains why; when every node
@@ -966,6 +982,11 @@ other request.
   the middle, and, when any node has `upstreams`, the external peers on the other side. On a
   narrow screen the same tiers are stacked top to bottom. Without a proxy and without `upstreams`
   there is nothing to draw, and the map is not shown.
+- **The proxy** is not drawn like a node: its box is wider and taller, has a double border in the
+  accent colour and the tag "Proxy" in text. The outer border still has the state colour, and the
+  state is still in words and a mark. Its name for screen readers and in "Show as list" starts
+  with "Proxy" (`Proxy Front door, up, passes visitors to 3 nodes, ...`). The heading counts the
+  proxies, nodes and external peers apart (`1 proxy, 3 nodes, 1 external peer, 4 links`).
 - **Nodes** show their name, their state in words and a mark (`● Up`, `✕ Down`, `? Unknown`, so it
   is not colour alone) and a short fact: the clients, when the node's stats are fresh, else the
   connect time. A node that is down shows no clients. Up nodes pulse gently unless the visitor
