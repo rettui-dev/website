@@ -1645,6 +1645,171 @@
     return !!(d.stats && d.stats.data && d.stats.data.disk);
   }
 
+  // ---- The table of a propagation node's peers (Storage tab) ----
+
+  // A span in plain words: "12 min", "3 h", "2 days". Under a minute it is "under 1 min".
+  function peerSpan(sec) {
+    if (!(sec >= 60)) return 'under 1 min';
+    if (sec < 3600) return Math.floor(sec / 60) + ' min';
+    if (sec < 86400) return Math.floor(sec / 3600) + ' h';
+    var days = Math.floor(sec / 86400);
+    return days + (days === 1 ? ' day' : ' days');
+  }
+
+  // When a peer last synced: "never", "12 min ago", or "-" when the node does not say.
+  function peerSyncText(row) {
+    if (!row.hasSync) return '-';
+    return row.lastSyncSecondsAgo === null ? 'never' : peerSpan(row.lastSyncSecondsAgo) + ' ago';
+  }
+
+  // When the next try is: "now" when it is due, "in 5 min", or "-" when the node does not say.
+  function peerNextText(row) {
+    if (!row.hasSync) return '-';
+    return !row.nextAttemptInSeconds ? 'now' : 'in ' + peerSpan(row.nextAttemptInSeconds);
+  }
+
+  var PEER_STATES = { idle: 'Idle', link_establishing: 'Connecting', link_ready: 'Connected', request_sent: 'Waiting for an answer', receiving: 'Receiving', response_received: 'Got an answer', resource_transfer: 'Transferring' };
+
+  // The state in words, never by colour alone: "Alive, idle", "Not alive, connecting".
+  function peerStateText(row) {
+    var alive = row.alive === true ? 'Alive' : row.alive === false ? 'Not alive' : null;
+    var st = null;
+    if (row.state) st = Object.prototype.hasOwnProperty.call(PEER_STATES, row.state) ? PEER_STATES[row.state] : row.state.replace(/_/g, ' ');
+    if (alive && st) return alive + ', ' + st.charAt(0).toLowerCase() + st.slice(1);
+    return alive || st || '-';
+  }
+
+  // "Static" or "Auto", with how far away it is.
+  function peerTypeText(row) {
+    var kind = row.static === true ? 'Static' : row.static === false ? 'Auto' : null;
+    var depth = known(row.depth) ? 'depth ' + row.depth : null;
+    if (kind && depth) return kind + ', ' + depth;
+    return kind || depth || '-';
+  }
+
+  // What is wrong with a peer, as words: [] when nothing is, or the node does not say.
+  function peerProblems(row) {
+    var out = [];
+    if (row.hasSync && row.lastSyncSecondsAgo === null) out.push('Never synced');
+    if (row.syncFailures > 0) out.push('Failing: ' + row.syncFailures + (row.syncFailures === 1 ? ' try' : ' tries'));
+    return out;
+  }
+
+  // The name, or the first 8 characters of the address.
+  function peerShortAddress(address) { return address.slice(0, 8) + '…'; }
+  function peerLabel(row) { return row.name || peerShortAddress(row.address); }
+
+  // The rows to show: all, or only those with a problem (their order is kept).
+  function peerVisible(rows, onlyProblems) {
+    return onlyProblems ? rows.filter(function (r) { return peerProblems(r).length > 0; }) : rows;
+  }
+
+  // "12 peers: 9 alive, 3 static, 2 never synced". total is how many the node listed:
+  // when the table has fewer rows, the line says how many of them it shows.
+  function peerSummaryLine(rows, total) {
+    var alive = 0;
+    var fixed = 0;
+    var never = 0;
+    var synced = false;
+    rows.forEach(function (r) {
+      if (r.alive === true) alive++;
+      if (r.static === true) fixed++;
+      if (r.hasSync) synced = true;
+      if (r.hasSync && r.lastSyncSecondsAgo === null) never++;
+    });
+    var shown = rows.length;
+    var lead = known(total) && total > shown ? shown + ' of ' + total + ' peers shown' : shown + (shown === 1 ? ' peer' : ' peers');
+    var parts = [alive + ' alive', fixed + ' static'];
+    if (synced) parts.push(never + ' never synced');
+    return lead + ': ' + parts.join(', ');
+  }
+
+  var PEER_COLUMNS = [
+    { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'state', label: 'State' }, { key: 'sync', label: 'Last sync', needs: 'sync' },
+    { key: 'offered', label: 'Offered' }, { key: 'waiting', label: 'Waiting' }, { key: 'failures', label: 'Failures', needs: 'sync' }, { key: 'next', label: 'Next attempt', needs: 'sync' }
+  ];
+
+  // The columns to show: those the node's rows have the numbers for.
+  function peerColumns(rows) {
+    var synced = rows.some(function (r) { return r.hasSync; });
+    return PEER_COLUMNS.filter(function (c) { return !c.needs || synced; });
+  }
+
+  function peerCell(row, key) {
+    if (key === 'type') return peerTypeText(row);
+    if (key === 'state') return peerStateText(row);
+    if (key === 'sync') return peerSyncText(row);
+    if (key === 'offered') return known(row.messagesOffered) ? num(row.messagesOffered) : '-';
+    if (key === 'waiting') return known(row.unhandled) ? num(row.unhandled) : '-';
+    if (key === 'failures') return known(row.syncFailures) ? num(row.syncFailures) : '-';
+    if (key === 'next') return peerNextText(row);
+    return peerLabel(row);
+  }
+
+  var peersOnlyProblems = false;
+
+  // The Peers section of a node's Details: a summary line, a switch, and the table.
+  function peerTableSection(d) {
+    var rows = d.stats && d.stats.peerRows;
+    if (!rows || !rows.length) return null;
+    var total = d.stats.peerSummary ? d.stats.peerSummary.listed : rows.length;
+    var s = section('Propagation peers');
+    s.appendChild(elRuns('p', 'total', peerSummaryLine(rows, total)));
+    var anyProblem = peerVisible(rows, true).length > 0;
+    // The switch stays while it is on, so that it can be turned off again.
+    if (anyProblem || peersOnlyProblems) {
+      var toggle = el('button', 'toggle-btn', 'Show only peers with a problem');
+      toggle.type = 'button';
+      toggle.setAttribute('aria-pressed', peersOnlyProblems ? 'true' : 'false');
+      toggle.addEventListener('click', function () {
+        peersOnlyProblems = !peersOnlyProblems;
+        renderDetail(true);
+      });
+      s.appendChild(toggle);
+    }
+    var shown = peerVisible(rows, peersOnlyProblems);
+    if (!shown.length) {
+      s.appendChild(el('p', 'note', 'No peer has a problem.'));
+      return s;
+    }
+    var cols = peerColumns(rows);
+    var table = el('table', 'peer-table');
+    table.appendChild(el('caption', null, 'Peered nodes of this propagation node' + (peersOnlyProblems ? ', only those with a problem' : '')));
+    var head = el('tr');
+    cols.forEach(function (c) {
+      var th = el('th', null, c.label);
+      th.scope = 'col';
+      head.appendChild(th);
+    });
+    table.appendChild(el('thead')).appendChild(head);
+    var tbody = el('tbody');
+    shown.forEach(function (r) {
+      var tr = el('tr');
+      cols.forEach(function (c) {
+        var cell;
+        if (c.key === 'name') {
+          cell = el('th', 'peer-name');
+          cell.scope = 'row';
+          var label = el('span', r.name ? null : 'peer-addr', peerLabel(r));
+          label.title = r.address;
+          cell.appendChild(label);
+          peerProblems(r).forEach(function (w) { cell.appendChild(el('span', 'peer-flag', w)); });
+        } else {
+          cell = el('td', c.key === 'offered' || c.key === 'waiting' || c.key === 'failures' ? 'num' : null, peerCell(r, c.key));
+        }
+        cell.setAttribute('data-label', c.label);
+        tr.appendChild(cell);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    s.appendChild(table);
+    var note = 'Times are as of the last stats check' + (d.stats.fetchedAt ? ' (' + ago(d.stats.fetchedAt) + ')' : '') + '. Hover or long-press a name for the full address.';
+    s.appendChild(el('p', 'note', note));
+    if (total > rows.length) s.appendChild(el('p', 'note', 'Only the first ' + rows.length + ' of ' + total + ' peers are listed: static peers first, then the most recently synced.'));
+    return s;
+  }
+
   function storageTab(d, ser, width, collecting) {
     var out = [];
     var facts = section('Message store');
@@ -1654,6 +1819,8 @@
       facts.appendChild(elRuns('p', 'note', 'Peered nodes it lists: ' + d.stats.peerSummary.listed + ' (' + d.stats.peerSummary.alive + ' alive, ' + d.stats.peerSummary.unhandled + ' messages waiting to send to them).'));
     }
     out.push(facts);
+    var peerTable = d.view === 'combined' ? null : peerTableSection(d);
+    if (peerTable) out.push(peerTable);
     var p = ser.propagation;
     if (!p || collecting) return out;
     // The size is in the tooltip, so one graph carries both.
@@ -2206,6 +2373,8 @@
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
       peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, backlogPairs: backlogPairs, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
+      peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
+      peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
       rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };
     return;

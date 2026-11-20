@@ -305,6 +305,27 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .section-pick { display: none; align-items: center; gap: 8px; margin: 10px 0; }
 .toggle-btn { font-size: 14px; margin: 0 0 6px; }
 .toggle-btn[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+/* Table of a propagation node's peers: a table wide, a stack of cards on a phone (no sideways scroll) */
+.peer-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
+.peer-table caption { text-align: left; color: var(--dim); font-size: 13px; padding-bottom: 4px; }
+.peer-table th, .peer-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.peer-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; }
+.peer-table th.peer-name { font-weight: 500; }
+.peer-table td.num { text-align: right; }
+.peer-addr { font-family: var(--mono); font-size: 13px; }
+.peer-flag { display: block; font-size: 13px; font-weight: 600; color: var(--red); }
+.peer-flag::before { content: "\26A0\FE0E\00a0"; }
+@media (max-width: 700px) {
+  .peer-table, .peer-table caption, .peer-table tbody, .peer-table tr, .peer-table th, .peer-table td { display: block; }
+  .peer-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .peer-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .peer-table th, .peer-table td { border: 0; padding: 3px 10px; }
+  .peer-table td { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; }
+  .peer-table td.num { text-align: left; }
+  .peer-table td::before { content: attr(data-label); color: var(--dim); }
+  .peer-table th.peer-name { font-size: 15px; }
+}
 .band { fill: var(--accent); fill-opacity: 0.18; stroke: none; pointer-events: none; }
 @media (max-width: 600px) {
   .tabs { display: none; }
