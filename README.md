@@ -675,7 +675,7 @@ section while there are no users stops the server at start, and so does a `login
 | ---------- | ------------------------------------------- |
 | `details`  | the Full details view and its graphs (`/api/stats` answers 401), and the node's place in a proxy's combined view |
 | `storage`  | the message store of a propagation node: stored messages and size, message counters, the backlog waiting to send to peers, and their graphs |
-| `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists, and their graph; also the messages sent to, received from and offered to peers, and the peer message flow graph (these go with `storage` too) |
+| `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists and their table in the Full details, and their graph; also the messages sent to, received from and offered to peers, and the peer message flow graph (these go with `storage` too) |
 | `disk`     | the disk level and share, free space, and data size; also the size of the message store (its bytes and graph), which on a propagation node is most of the data size |
 | `versions` | the rettui version a node runs, and the versions seen |
 
@@ -821,13 +821,39 @@ nodes (alive and total) and, on a propagation node, message flow to and from pee
 section shows the disk level and data size as facts, and draws the free space graph only when
 `public_disk_figures` is on.
 
-**Peered nodes are not shown.** With a stats token (see "Exact peer counts") a node also lists
-the propagation nodes it peers with (`propagation_peers`: address, name, state, how long ago it
-was heard or synced, counters). That list identifies other nodes, so the website only counts it
-(up to 256 entries, valid 32 character hex addresses, each counted once) and keeps nothing else:
-no address, name or state is stored, even in memory, or returned by the API or written to disk.
-`stats.peerSummary` is `{listed, alive, static, unhandled, truncated}`. Text from a node (such as
-its version) loses control, bidirectional and zero-width characters before it is shown or saved.
+**Peers table.** With a stats token (see "Exact peer counts") a node also lists the propagation
+nodes it peers with (`propagation_peers`: address, name, state, how long ago it was heard or
+synced, counters). In the node's Full details, the Storage tab then has a "Propagation peers"
+section: a line such as "12 peers: 9 alive, 3 static, 2 never synced", a "Show only peers with a
+problem" switch, and a table (a stack of cards on a phone) with Name, Type (static or auto, and
+depth), State (in words: "Alive, idle", "Not alive, connecting"), Last sync, Offered, Waiting
+(messages not yet offered to that peer), Failures and Next attempt. A peer that never synced or
+whose last tries failed is marked in words ("Never synced", "Failing: 3 tries"), not by colour.
+A peer without a name shows the first 8 characters of its address; the whole address is the
+tooltip. The times are as of the last stats check, not live.
+
+- **Who sees it.** Only the node's own Full details, and only when the node has a stats token.
+  The rows follow the `peers` section of `require_login`, like the peered nodes count: a visitor
+  without a login gets no rows (and the usual "Log in to see more"); `details` locked or
+  `public_details: false` hide the whole view as before. A proxy's combined view shows no
+  per-peer rows, and neither do `/api/status` and `/api/public/stats`: the rows are in
+  `/api/stats?host=...` (node view) as `stats.peerRows`, next to `stats.peerSummary`
+  (`{listed, alive, static, unhandled, truncated}`).
+- **Kept.** The current rows only, in memory: they are replaced at every fetch, dropped when a
+  fetch has no list, and never written to `stats-history.json` or any other file.
+- **Caps.** At most 256 entries of the node's answer are looked at; a row needs a valid 32
+  character lower case hex address (a repeated address counts once, bad rows are dropped); at
+  most 64 rows are kept, in this order: static peers first, then the most recently synced
+  (never synced last), then by name, then by address. The summary line says "64 of 90 peers
+  shown" when rows were left out. A name loses control, bidirectional and zero-width characters
+  and is cut to 64 characters; a state is a short lower case word or `null`; numbers are whole,
+  non-negative and at most 10^12; a field of the wrong type becomes `null`.
+- **Versions.** The rows need the stats token. The sync columns (Last sync, Failures, Next
+  attempt, and the "never synced" count) need rettui 2.1.0 or later; a node on an older version
+  sends rows without them, and the table then has fewer columns and no problem marks.
+
+Text from a node (such as its version) loses control, bidirectional and zero-width characters
+before it is shown or saved.
 
 ## Proxies and groups
 
