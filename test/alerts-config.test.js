@@ -111,7 +111,7 @@ test('webhook mistakes', () => {
   bad(w('    url: https://user:pw@h.example/x'), /url is not an http\(s\) URL without a user name or password/);
   bad(w('    url: https://user@h.example/x'), /without a user name or password/);
   bad(w('    url: http://hooks.example.com/x'), /plain http, which is only allowed for loopback and private addresses/);
-  bad(w('    url: https://h.example/x\n    format: teams'), /format must be one of generic, ntfy, discord, slack/);
+  bad(w('    url: https://h.example/x\n    format: teams'), /format must be one of generic, ntfy, discord, slack, apprise/);
   bad(w('    url: https://h.example/x\n    secret: short'), /secret must be 16 to 256 printable characters/);
   bad(w('    url: https://h.example/x\n    secret: 0123456789abcdef0123\n    secret_file: s'), /has both secret and secret_file/);
   bad(w('    url: https://h.example/x\n    secret_file: ""'), /secret_file must be a file path/);
@@ -127,6 +127,16 @@ test('private hosts may use plain http, public ones may not', () => {
   for (const host of ['8.8.8.8', '172.32.0.1', 'example.com']) {
     assert.throws(() => loadConfig(withAlerts(`channels:\n  - type: webhook\n    url: http://${host}/x`)), /plain http/, host);
   }
+});
+
+test('the apprise format follows the same url rules as the others', () => {
+  const ch = (url) => `channels:\n  - type: webhook\n    format: apprise\n    url: ${url}`;
+  assert.equal(loadConfig(withAlerts(ch('http://172.28.0.20:8000/notify/rettui'))).alerts.channels[0].format, 'apprise');
+  assert.equal(loadConfig(withAlerts(ch('https://apprise.example/notify/rettui'))).alerts.channels[0].format, 'apprise');
+  // A compose service name is not an address: it needs https, or a fixed IP on the compose network.
+  assert.throws(() => loadConfig(withAlerts(ch('http://apprise:8000/notify/rettui'))), /plain http/);
+  assert.throws(() => loadConfig(withAlerts(ch('http://apprise.example/notify/rettui'))), /plain http/);
+  assert.throws(() => loadConfig(withAlerts(ch('https://user:pw@apprise.example/notify/rettui'))), /without a user name or password/);
 });
 
 test('email mistakes', () => {

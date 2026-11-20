@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import { Alerter, alertText, alertSubject, spanText, utcTime, sendWebhook, webhookBody, createQueueWatch, createAlerter, MAX_ATTEMPTS } from '../lib/alerts.js';
+import { Alerter, alertText, alertSubject, spanText, utcTime, sendWebhook, webhookBody, createQueueWatch, createAlerter, appriseType, MAX_ATTEMPTS } from '../lib/alerts.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -133,6 +133,51 @@ test('the other formats', () => {
   assert.deepEqual(JSON.parse(webhookBody('discord', e, text)), { content: text });
   assert.equal(webhookBody('ntfy', e, text), text);
   assert.equal(JSON.parse(webhookBody('generic', { ...e, repeat: true }, text)).event, 'still_down');
+});
+
+test('apprise gets title, body and type, and the type follows the event', async () => {
+  const cases = [
+    [{ ...down(), name: 'Front' }, 'failure', '[rettui] Front is down'],
+    [{ ...down({ repeat: true }), name: 'Front' }, 'failure', '[rettui] Front is down'],
+    [{ ...back(), name: 'Front' }, 'success', '[rettui] Front is back up'],
+    [{ type: 'queue_full', key: K, name: 'Front', start: T0, end: null, at: T0, queued: 4096 }, 'warning', '[rettui] Front announce queue is full'],
+    [{ type: 'queue_cleared', key: K, name: 'Front', start: T0, end: T0 + MIN, at: T0 + MIN }, 'success', '[rettui] Front announce queue is clear'],
+  ];
+  for (const [event, type, title] of cases) {
+    const text = alertText(event);
+    assert.equal(appriseType(event), type);
+    // Exactly these three fields: nothing of the channel or the node's address beyond the text goes along.
+    assert.deepEqual(JSON.parse(webhookBody('apprise', event, text)), { title, body: text, type });
+  }
+});
+
+test('an apprise channel posts JSON to its url, signed when it has a secret, and leaks nothing', async () => {
+  const url = 'http://172.28.0.20:8000/notify/KEY-IN-THE-PATH';
+  const { a, fetchFn, logs } = make({ channels: [{ type: 'webhook', url, format: 'apprise', secret: SECRET }] });
+  a.notify({ ...down(), name: 'Front' });
+  await a.idle();
+  const { url: sent, init } = fetchFn.calls[0];
+  assert.equal(sent, url);
+  assert.equal(init.method, 'POST');
+  assert.equal(init.redirect, 'error');
+  assert.equal(init.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(init.body), { title: '[rettui] Front is down', body: 'Front (front.test:4242) is down since 12:03 UTC.', type: 'failure' });
+  const ts = init.headers['X-Rettui-Timestamp'];
+  assert.equal(ts, String((T0 + 30_000) / 1000));
+  assert.equal(init.headers['X-Rettui-Signature'], `sha256=${crypto.createHmac('sha256', SECRET).update(`${ts}.${init.body}`).digest('hex')}`);
+  assert.equal(init.body.includes(SECRET), false);
+  // Without a secret there are no signature headers.
+  const plain = make({ channels: [{ type: 'webhook', url, format: 'apprise' }] });
+  plain.a.notify(down());
+  await plain.a.idle();
+  assert.equal('X-Rettui-Signature' in plain.fetchFn.calls[0].init.headers, false);
+  // A failure is logged without the address, the key in it or the secret.
+  const bad = make({ channels: [{ type: 'webhook', url, format: 'apprise', secret: SECRET }], fetchFn: fakeFetch([404]) });
+  bad.a.notify(down());
+  await bad.a.idle();
+  assert.equal(bad.logs.length, 1);
+  assert.match(bad.logs[0], /failed \(http 404\), giving up/);
+  for (const line of [...logs, ...bad.logs]) assert.doesNotMatch(line, /KEY-IN-THE-PATH|172\.28|webhook-secret/);
 });
 
 test('ntfy gets plain text and fixed ASCII header words, even for a name with other characters', async () => {
