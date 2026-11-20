@@ -49,11 +49,17 @@ pub fn check_timestamp(header: &str, now: u64, max_age: u64) -> Result<u64, Reje
     }
 }
 
+/// The bytes of a signature header, which must be `sha256=` and 64 hex digits. This needs no
+/// secret, so it can be checked before the body is waited for.
+pub fn parse_signature(header: &str) -> Result<[u8; 32], Reject> {
+    let wanted = header.strip_prefix("sha256=").ok_or(Reject::Malformed)?;
+    hex::decode(wanted).ok().and_then(|bytes| bytes.try_into().ok()).ok_or(Reject::Malformed)
+}
+
 /// Checks the signature of `<timestamp header>.<body>` in constant time. Returns the signature's
 /// bytes, for the replay check.
 pub fn check_signature(secret: &[u8], timestamp: &str, body: &[u8], header: &str) -> Result<[u8; 32], Reject> {
-    let wanted = header.strip_prefix("sha256=").ok_or(Reject::Malformed)?;
-    let given: [u8; 32] = hex::decode(wanted).ok().and_then(|bytes| bytes.try_into().ok()).ok_or(Reject::Malformed)?;
+    let given = parse_signature(header)?;
     // `verify_slice` compares in constant time.
     mac_of(secret, timestamp, body).verify_slice(&given).map_err(|_| Reject::BadSignature)?;
     Ok(given)

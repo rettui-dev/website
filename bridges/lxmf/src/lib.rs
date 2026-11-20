@@ -24,7 +24,8 @@ use queue::{QUEUE_LEN, Retry, Sender};
 /// `stop` finishes.
 pub async fn run<S: Sender>(config: &Config, secret: Vec<u8>, listener: TcpListener, sender: Arc<S>, retry: Retry, stop: impl Future) {
     let (alerts, queued) = mpsc::channel(QUEUE_LEN);
-    let settings = http::Settings::new(secret, config.max_age_seconds, config.max_body_bytes);
+    let mut settings = http::Settings::new(secret, config.max_age_seconds, config.max_body_bytes);
+    settings.allow_from = config.allow_from.clone();
     let server = http::Server::new(settings, alerts);
     tokio::spawn(queue::run(queued, sender, config.recipients.clone(), retry));
     tokio::select! {

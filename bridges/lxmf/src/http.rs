@@ -5,6 +5,8 @@
 //! Requests are read with fixed limits and time limits, and an alert is not looked at as JSON
 //! until its time and signature have been checked.
 
+use std::fmt;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,25 +19,42 @@ use crate::verify::{self, Reject, Replay};
 
 /// The most a request line and its headers may take.
 pub const MAX_HEAD_BYTES: usize = 8 * 1024;
-/// How long a client has to send its headers, and then its body.
-pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a client has to send its headers, and then its body. Short, as anyone can connect.
+pub const HEAD_TIMEOUT: Duration = Duration::from_secs(3);
+pub const BODY_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Connections served at once; more are closed at once.
 const MAX_CONNECTIONS: usize = 64;
 
 /// What the server needs to know.
-#[derive(Debug)]
 pub struct Settings {
     pub secret: Vec<u8>,
     pub max_age_seconds: u64,
     pub max_body_bytes: usize,
     /// How long the headers may take to arrive, and then the body.
-    pub read_timeout: Duration,
+    pub head_timeout: Duration,
+    pub body_timeout: Duration,
+    /// The addresses that may connect; empty means any. Others are closed as soon as they connect.
+    pub allow_from: Vec<IpAddr>,
+}
+
+// By hand, so that the secret is never printed.
+impl fmt::Debug for Settings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Settings")
+            .field("secret", &"<hidden>")
+            .field("max_age_seconds", &self.max_age_seconds)
+            .field("max_body_bytes", &self.max_body_bytes)
+            .field("head_timeout", &self.head_timeout)
+            .field("body_timeout", &self.body_timeout)
+            .field("allow_from", &self.allow_from)
+            .finish()
+    }
 }
 
 impl Settings {
     pub fn new(secret: Vec<u8>, max_age_seconds: u64, max_body_bytes: usize) -> Self {
-        Self { secret, max_age_seconds, max_body_bytes, read_timeout: READ_TIMEOUT }
+        Self { secret, max_age_seconds, max_body_bytes, head_timeout: HEAD_TIMEOUT, body_timeout: BODY_TIMEOUT, allow_from: Vec::new() }
     }
 }
 
@@ -60,11 +79,16 @@ impl Server {
     pub async fn serve(self: Arc<Self>, listener: TcpListener) {
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
+            let Ok((stream, peer)) = listener.accept().await else {
                 // A failed accept (out of descriptors, say) is not the end of the server.
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
+            // Others than the listed addresses are let go before they cost anything.
+            let allowed = &self.settings.allow_from;
+            if !allowed.is_empty() && !allowed.contains(&peer.ip().to_canonical()) {
+                continue;
+            }
             let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
             let server = self.clone();
             tokio::spawn(async move {
@@ -108,7 +132,7 @@ impl Server {
 
     /// Reads one request and decides: the status and the text to answer with.
     async fn request<T: AsyncRead + Unpin>(&self, stream: &mut T) -> Result<(u16, &'static str), u16> {
-        let (head, mut body) = read_head(stream, self.settings.read_timeout).await?;
+        let (head, mut body) = read_head(stream, self.settings.head_timeout).await?;
         let head = Head::parse(&head)?;
         match (head.method, head.path) {
             ("GET", "/healthz") => return Ok((200, "ok\n")),
@@ -119,6 +143,8 @@ impl Server {
         let now = unix_now();
         let (Some(timestamp), Some(signature)) = (head.timestamp, head.signature) else { return Err(401) };
         let sent = verify::check_timestamp(timestamp, now, self.settings.max_age_seconds).map_err(|why| refuse(why, "timestamp"))?;
+        // Everything that can be refused without the body is, before waiting for it.
+        verify::parse_signature(signature).map_err(|why| refuse(why, "signature"))?;
         let length = head.length.ok_or(411u16)?;
         if length > self.settings.max_body_bytes {
             return Err(413);
@@ -129,7 +155,7 @@ impl Server {
         if missing > 0 {
             let start = body.len();
             body.resize(length, 0);
-            tokio::time::timeout(self.settings.read_timeout, stream.read_exact(&mut body[start..]))
+            tokio::time::timeout(self.settings.body_timeout, stream.read_exact(&mut body[start..]))
                 .await
                 .map_err(|_| 408u16)?
                 .map_err(|_| 400u16)?;
@@ -235,6 +261,14 @@ impl<'a> Head<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_secret_is_never_printed() {
+        let settings = Settings::new(b"very-secret-value-1234".to_vec(), 300, 1024);
+        let shown = format!("{settings:?} {settings:#?}");
+        assert!(!shown.contains("very-secret") && !shown.contains("118, 101"), "{shown}");
+        assert!(shown.contains("max_age_seconds"));
+    }
 
     #[test]
     fn a_head_is_read() {

@@ -13,6 +13,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 const SECRET: &[u8] = b"integration-test-secret";
+/// A well-formed signature (not a right one).
+const SIG: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const BODY: &str = r#"{"event":"down","host":"a:1","name":"Front","message":"Front (a:1) is down since 12:03 UTC."}"#;
 
 #[derive(Default)]
@@ -37,11 +39,15 @@ struct Bridge {
     fake: Arc<Fake>,
 }
 
-async fn start(fake: Fake, recipients: Vec<Hash>, max_body: usize, read_timeout: Duration) -> Bridge {
+async fn start(fake: Fake, recipients: Vec<Hash>, max_body: usize, timeout: Duration) -> Bridge {
+    start_with(fake, recipients, max_body, timeout, vec![]).await
+}
+
+async fn start_with(fake: Fake, recipients: Vec<Hash>, max_body: usize, timeout: Duration, allow_from: Vec<std::net::IpAddr>) -> Bridge {
     let fake = Arc::new(fake);
     let (alerts, queued) = mpsc::channel(QUEUE_LEN);
     let mut settings = Settings::new(SECRET.to_vec(), 300, max_body);
-    settings.read_timeout = read_timeout;
+    (settings.head_timeout, settings.body_timeout, settings.allow_from) = (timeout, timeout, allow_from);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(queue::run(queued, fake.clone(), recipients, Retry { waits: vec![] }));
@@ -188,14 +194,15 @@ async fn size_limits_are_enforced_before_the_body_is_read() {
     let bridge = start(Fake::default(), vec![[1; 16]], 1024, Duration::from_secs(5)).await;
     let ts = unix_now().to_string();
     // Over the limit: refused from the header alone, without sending the body.
-    let head = format!("POST /alert HTTP/1.1\r\nContent-Length: 1025\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: sha256=00\r\n\r\n");
+    let head =
+        format!("POST /alert HTTP/1.1\r\nContent-Length: 1025\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: sha256={SIG}\r\n\r\n");
     assert_eq!(exchange(bridge.addr, head.as_bytes()).await.0, 413);
     let huge = format!(
-        "POST /alert HTTP/1.1\r\nContent-Length: 99999999999999999999\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: x\r\n\r\n"
+        "POST /alert HTTP/1.1\r\nContent-Length: 99999999999999999999\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: sha256={SIG}\r\n\r\n"
     );
     assert_eq!(exchange(bridge.addr, huge.as_bytes()).await.0, 413);
     // No length at all.
-    let none = format!("POST /alert HTTP/1.1\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: x\r\n\r\n{{}}");
+    let none = format!("POST /alert HTTP/1.1\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: sha256={SIG}\r\n\r\n{{}}");
     assert_eq!(exchange(bridge.addr, none.as_bytes()).await.0, 411);
     // Headers that never end.
     let mut long = b"GET /healthz HTTP/1.1\r\nX-Long: ".to_vec();
@@ -212,7 +219,8 @@ async fn a_client_that_stalls_or_leaves_early_is_let_go() {
     assert_eq!(read_answer(stream).await.0, 408);
     // A body that does not arrive.
     let ts = unix_now().to_string();
-    let head = format!("POST /alert HTTP/1.1\r\nContent-Length: 100\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: x\r\n\r\nabc");
+    let head =
+        format!("POST /alert HTTP/1.1\r\nContent-Length: 100\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: sha256={SIG}\r\n\r\nabc");
     let mut stream = TcpStream::connect(bridge.addr).await.unwrap();
     stream.write_all(head.as_bytes()).await.unwrap();
     assert_eq!(read_answer(stream).await.0, 408);
@@ -253,4 +261,60 @@ async fn a_full_queue_is_told_to_try_again_later() {
     assert_eq!(codes.iter().filter(|c| **c == 202).count(), 133, "{codes:?}");
     assert!(codes[133..].iter().all(|c| *c == 503), "{codes:?}");
     assert_eq!(exchange(bridge.addr, b"GET /healthz HTTP/1.1\r\n\r\n").await.0, 200);
+}
+
+#[tokio::test]
+async fn what_can_be_refused_without_the_body_is_refused_before_waiting_for_it() {
+    // A long timeout: an answer that comes at once did not wait for the body.
+    let bridge = start(Fake::default(), vec![[1; 16]], 1024, Duration::from_secs(30)).await;
+    let now = unix_now();
+    let head = |ts: u64, sig: &str| {
+        format!("POST /alert HTTP/1.1\r\nContent-Length: 50\r\nX-Rettui-Timestamp: {ts}\r\nX-Rettui-Signature: {sig}\r\n\r\n").into_bytes()
+    };
+    let good = format!("sha256={SIG}");
+    let cases = [
+        ("stale", head(now - 400, &good)),
+        ("future", head(now + 400, &good)),
+        ("no prefix", head(now, SIG)),
+        ("short", head(now, "sha256=abcd")),
+        ("long", head(now, &format!("sha256={SIG}00"))),
+        ("not hex", head(now, &format!("sha256={}", "z".repeat(64)))),
+    ];
+    for (what, bytes) in cases {
+        let started = std::time::Instant::now();
+        assert_eq!(exchange(bridge.addr, &bytes).await.0, 401, "{what}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{what} waited for the body");
+    }
+}
+
+#[tokio::test]
+async fn only_the_listed_addresses_may_connect() {
+    let loopback: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let other: std::net::IpAddr = "10.9.8.7".parse().unwrap();
+    let open = start_with(Fake::default(), vec![[1; 16]], 1024, Duration::from_secs(5), vec![loopback]).await;
+    assert_eq!(exchange(open.addr, &signed(BODY, unix_now())).await.0, 202);
+    // Another address is closed on without an answer, even for /healthz.
+    let shut = start_with(Fake::default(), vec![[1; 16]], 1024, Duration::from_secs(5), vec![other]).await;
+    let mut stream = TcpStream::connect(shut.addr).await.unwrap();
+    let _ = stream.write_all(&signed(BODY, unix_now())).await;
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer).await;
+    assert!(answer.is_empty());
+    assert_eq!(sent_count(&shut.fake, 1).await, 0);
+}
+
+#[tokio::test]
+async fn stalled_connections_do_not_hold_the_server() {
+    // With the real limits: a head that never arrives is let go after a few seconds.
+    let bridge = start(Fake::default(), vec![[1; 16]], 1024, lxmf_bridge::http::HEAD_TIMEOUT).await;
+    let mut stalled = Vec::new();
+    for _ in 0..60 {
+        stalled.push(TcpStream::connect(bridge.addr).await.unwrap());
+    }
+    let started = std::time::Instant::now();
+    for stream in stalled {
+        assert_eq!(read_answer(stream).await.0, 408);
+    }
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(exchange(bridge.addr, &signed(BODY, unix_now())).await.0, 202);
 }

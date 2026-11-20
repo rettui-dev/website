@@ -4,7 +4,7 @@
 //! repeats the secret.
 
 use std::fmt;
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -14,6 +14,7 @@ pub type Hash = [u8; 16];
 
 pub const MAX_RECIPIENTS: usize = 16;
 pub const MAX_ENTRY_POINTS: usize = 8;
+pub const MAX_ALLOW_FROM: usize = 16;
 /// The most a config file may hold. It is read whole, so it is capped first.
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 /// The most a secret file may hold. The website's secrets are 16 to 256 characters.
@@ -60,6 +61,7 @@ struct Raw {
     propagation_node: Option<String>,
     max_age_seconds: Option<u64>,
     max_body_bytes: Option<usize>,
+    allow_from: Option<Vec<String>>,
 }
 
 /// The checked settings.
@@ -74,6 +76,8 @@ pub struct Config {
     pub propagation_node: Option<Hash>,
     pub max_age_seconds: u64,
     pub max_body_bytes: usize,
+    /// Addresses allowed to connect; empty means any.
+    pub allow_from: Vec<IpAddr>,
 }
 
 impl Config {
@@ -127,6 +131,17 @@ impl Config {
         if !(256..=1024 * 1024).contains(&max_body_bytes) {
             return fail("max_body_bytes: 256 to 1048576");
         }
+        let allow = raw.allow_from.unwrap_or_default();
+        if allow.len() > MAX_ALLOW_FROM {
+            return fail(format!("allow_from: at most {MAX_ALLOW_FROM} addresses"));
+        }
+        let allow_from = allow
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                text.parse::<IpAddr>().map(|ip| ip.to_canonical()).or_else(|_| fail(format!("allow_from[{i}]: not an IP address")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if raw.secret_file.is_empty() || raw.identity_file.is_empty() {
             return fail("secret_file and identity_file must be paths");
         }
@@ -140,6 +155,7 @@ impl Config {
             propagation_node,
             max_age_seconds,
             max_body_bytes,
+            allow_from,
         })
     }
 }
@@ -232,6 +248,16 @@ mod tests {
         assert_eq!((config.max_age_seconds, config.max_body_bytes), (300, 16384));
         assert_eq!(config.recipients, [parse_hash(HASH).unwrap()]);
         assert_eq!(config.propagation_node, None);
+        assert!(config.allow_from.is_empty());
+    }
+
+    #[test]
+    fn allow_from_takes_exact_addresses_and_at_most_sixteen() {
+        let config = with_recipient("allow_from = [\"172.28.0.5\", \"::ffff:10.0.0.1\", \"fd00::1\"]").unwrap();
+        // An IPv4 address written in IPv6 form is the IPv4 address.
+        assert_eq!(config.allow_from, ["172.28.0.5".parse::<IpAddr>().unwrap(), "10.0.0.1".parse().unwrap(), "fd00::1".parse().unwrap()]);
+        let many = (0..17).map(|i| format!("\"10.0.0.{i}\"")).collect::<Vec<_>>().join(", ");
+        assert!(with_recipient(&format!("allow_from = [{many}]")).is_err());
     }
 
     #[test]
@@ -266,6 +292,8 @@ mod tests {
             (&format!("recipients = [\"{HASH}\"]\nmax_body_bytes = 10"), "max_body_bytes"),
             (&format!("recipients = [\"{HASH}\"]\ndisplay_name = \"\""), "display_name"),
             (&format!("recipients = [\"{HASH}\"]\ncolour = 1"), "colour"),
+            (&format!("recipients = [\"{HASH}\"]\nallow_from = [\"10.0.0.0/8\"]"), "allow_from[0]"),
+            (&format!("recipients = [\"{HASH}\"]\nallow_from = [\"nope\"]"), "allow_from[0]"),
         ];
         for (extra, wanted) in cases {
             let error = parse(extra).expect_err(extra).to_string();
