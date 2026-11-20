@@ -31,10 +31,10 @@ const statsData = () => ({
   propagation: {
     enabled: true, storedMessages: 4242, storedBytes: 4343, storageLimitBytes: null, peersConnected: null, peersTotal: 4444, peersAlive: 4545, peersStatic: null,
     peersAuto: null, peerLimit: null, staticPeers: null, autopeerDepth: null, messagesReceived: null, messagesServed: null, messagesSentToPeers: 4646,
-    messagesReceivedFromPeers: 4747, messagesOfferedToPeers: null, unhandledMessages: 4848, autopeer: null,
+    messagesReceivedFromPeers: 4747, messagesOfferedToPeers: null, unhandledMessages: 4848, unhandledDistinct: 4949, autopeer: null,
   },
 });
-const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '9.8.7', 'usedPercent', 'fsFreeBytes', 'peerSummary'];
+const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '4949', '9.8.7', 'usedPercent', 'fsFreeBytes', 'peerSummary'];
 
 async function setup({ top = '', nodeA = '', nodeB = '', nodeP = '', hasher = fakeHasher, gate, extraUsers = '', clock: startClock } = {}) {
   const hash = await hashPassword(PASSWORD, undefined, fakeHasher);

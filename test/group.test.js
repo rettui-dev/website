@@ -158,6 +158,7 @@ test('aggregateGroup adds up the propagation numbers and reports the fullest dis
   assert.equal(g.propagation.peersAlive, 4);
   assert.equal(g.propagation.messagesSentToPeers, 140);
   assert.equal(g.propagation.unhandledMessages, 2);
+  assert.equal(g.propagation.unhandledDistinct, null);
   assert.equal(g.disk.nodes, 2);
   assert.equal(g.disk.dataBytes, 800);
   assert.deepEqual(g.disk.lowestFree, { percent: 10, freeBytes: 200, totalBytes: 2000, node: 'b' });
@@ -177,4 +178,12 @@ test('members that are down or stale are left out of the storage sums', () => {
   const a = member('a', data({ propagation: prop() }));
   const down = member('d', data({ propagation: prop({ storedMessages: 999 }) }), { status: 'down' });
   assert.equal(aggregateGroup([a, down]).data.propagation.storedMessages, 100);
+});
+
+test('aggregateGroup reports the largest distinct backlog of one node, never a sum', () => {
+  const a = member('a', data({ propagation: prop({ unhandledDistinct: 7 }) }));
+  const b = member('b', data({ propagation: prop({ unhandledDistinct: 12 }) }));
+  const c = member('c', data({ propagation: prop({ unhandledDistinct: null }) }));
+  assert.equal(aggregateGroup([a, b, c]).data.propagation.unhandledDistinct, 12);
+  assert.equal(aggregateGroup([c]).data.propagation.unhandledDistinct, null);
 });

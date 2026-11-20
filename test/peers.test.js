@@ -579,7 +579,7 @@ import { cleanText, optCount, sanitizeDisk, sanitizePropagation, summarizePropag
 const prop = (o = {}) => ({
   enabled: true, stored_messages: 1200, stored_bytes: 3_000_000, storage_limit_bytes: 500_000_000, peers_connected: 2, peers_total: 8, peers_alive: 5,
   peers_static: 3, peers_auto: 5, peer_limit: 20, static_peers: 3, autopeer: true, autopeer_depth: 4, messages_received: 10, messages_served: 20,
-  messages_sent_to_peers: 30, messages_received_from_peers: 40, messages_offered_to_peers: 50, unhandled_messages: 6, ...o,
+  messages_sent_to_peers: 30, messages_received_from_peers: 40, messages_offered_to_peers: 50, unhandled_messages: 6, unhandled_distinct: 4, ...o,
 });
 const disk = (o = {}) => ({ data_bytes: 5000, fs_total_bytes: 100_000, fs_free_bytes: 40_000, ...o });
 
@@ -588,7 +588,7 @@ test('sanitizeStats keeps the optional propagation and disk objects, and nothing
   assert.deepEqual(d.propagation, {
     enabled: true, storedMessages: 1200, storedBytes: 3_000_000, storageLimitBytes: 500_000_000, peersConnected: 2, peersTotal: 8, peersAlive: 5,
     peersStatic: 3, peersAuto: 5, peerLimit: 20, staticPeers: 3, autopeerDepth: 4, messagesReceived: 10, messagesServed: 20,
-    messagesSentToPeers: 30, messagesReceivedFromPeers: 40, messagesOfferedToPeers: 50, unhandledMessages: 6, autopeer: true,
+    messagesSentToPeers: 30, messagesReceivedFromPeers: 40, messagesOfferedToPeers: 50, unhandledMessages: 6, unhandledDistinct: 4, autopeer: true,
   });
   assert.deepEqual(d.disk, { dataBytes: 5000, fsTotalBytes: 100_000, fsFreeBytes: 40_000 });
   assert.equal(JSON.stringify(d).includes('secret'), false);
@@ -605,7 +605,7 @@ test('an old node without the new keys gives the same stats as before', () => {
 test('propagation: missing counters become null, wrong types drop only that object', () => {
   const missing = sanitizeStats({ ...stats(), propagation: { enabled: true, stored_messages: 5, stored_bytes: 'lots', peers_alive: NaN, autopeer: 'yes' } }).propagation;
   assert.equal(missing.storedMessages, 5);
-  for (const k of ['storedBytes', 'peersAlive', 'peersTotal', 'autopeer', 'unhandledMessages']) assert.equal(missing[k], null, k);
+  for (const k of ['storedBytes', 'peersAlive', 'peersTotal', 'autopeer', 'unhandledMessages', 'unhandledDistinct']) assert.equal(missing[k], null, k);
   for (const bad of [null, 5, 'x', [], { enabled: false, stored_messages: 1 }, { enabled: 'true' }, { stored_messages: 1 }, {}]) {
     const d = sanitizeStats({ ...stats(), propagation: bad });
     assert.equal('propagation' in d, false, JSON.stringify(bad));
@@ -698,4 +698,17 @@ test('the peered nodes are counted only with a token, and no address or name rea
   } finally {
     await s.close();
   }
+});
+
+test('unhandled_distinct is a bounded whole number; a wrong type or an old node leaves it null', () => {
+  const d = (v) => sanitizeStats({ ...stats(), propagation: prop({ unhandled_distinct: v }) }).propagation.unhandledDistinct;
+  assert.equal(d(7), 7);
+  assert.equal(d(7.9), 7);
+  assert.equal(d(0), 0);
+  assert.equal(d(-3), 0);
+  assert.equal(d(1e300), Number.MAX_SAFE_INTEGER);
+  for (const bad of ['5', null, NaN, Infinity, [], {}, true, undefined]) assert.equal(d(bad), null, String(bad));
+  const old = prop();
+  delete old.unhandled_distinct;
+  assert.equal(sanitizeStats({ ...stats(), propagation: old }).propagation.unhandledDistinct, null);
 });

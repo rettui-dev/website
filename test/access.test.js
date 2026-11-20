@@ -103,7 +103,7 @@ const data = () => ({
   interfaces: { total: 1, online: 1, clients: 3, rxBytes: 1, txBytes: 1 },
   peersHeard: { total: 7, lxmf: 1, nomad: 1, propagation: 1 }, announcesLastMinute: 2,
   disk: { dataBytes: 9, level: 'high', usedPercent: 80 },
-  propagation: { enabled: true, storedMessages: 11, storedBytes: 12, peersAlive: 13, peersTotal: 14, autopeer: true, unhandledMessages: 15 },
+  propagation: { enabled: true, storedMessages: 11, storedBytes: 12, peersAlive: 13, peersTotal: 14, autopeer: true, unhandledMessages: 15, unhandledDistinct: 9 },
 });
 
 test('stripStats leaves out each hidden section and nothing else', () => {
@@ -118,7 +118,7 @@ test('stripStats leaves out each hidden section and nothing else', () => {
   const storage = stripStats(stats, new Set(['storage'])).data.propagation;
   assert.deepEqual(storage, { enabled: true, peersAlive: 13, peersTotal: 14, autopeer: true });
   const peers = stripStats(stats, new Set(['peers']));
-  assert.deepEqual(peers.data.propagation, { enabled: true, storedMessages: 11, storedBytes: 12, unhandledMessages: 15 });
+  assert.deepEqual(peers.data.propagation, { enabled: true, storedMessages: 11, storedBytes: 12, unhandledMessages: 15, unhandledDistinct: 9 });
   assert.equal('peerSummary' in peers, false);
   assert.equal(stripStats(stats, new Set(['versions'])).data.rettuiVersion, undefined);
   assert.equal(stripStats({ ok: false, error: 'x' }, new Set(SECTIONS)).ok, false);

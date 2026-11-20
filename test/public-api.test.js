@@ -26,12 +26,12 @@ const statsData = () => ({
   propagation: {
     enabled: true, storedMessages: 4242, storedBytes: 4343, storageLimitBytes: null, peersConnected: null, peersTotal: 4444, peersAlive: 4545, peersStatic: null,
     peersAuto: null, peerLimit: null, staticPeers: null, autopeerDepth: null, messagesReceived: null, messagesServed: null, messagesSentToPeers: 4646,
-    messagesReceivedFromPeers: 4747, messagesOfferedToPeers: null, unhandledMessages: 4848, autopeer: null,
+    messagesReceivedFromPeers: 4747, messagesOfferedToPeers: null, unhandledMessages: 4848, unhandledDistinct: 4949, autopeer: null,
   },
 });
 
 // Things only a logged-in visitor (or nobody) may see, as they appear in JSON.
-const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '9.8.7', 'peerSummary', 'fsFreeBytes', 'fsTotalBytes', 'dataBytes', TOKEN, os.tmpdir(), 'stats_url', 'https://'];
+const SECRET = ['4242', '4343', '4444', '4545', '4646', '4747', '4848', '4949', '9.8.7', 'peerSummary', 'fsFreeBytes', 'fsTotalBytes', 'dataBytes', TOKEN, os.tmpdir(), 'stats_url', 'https://'];
 
 async function setup({ top = '', users = false, nodes, createOptions = {}, statsFn } = {}) {
   const hash = users ? await hashPassword('correct horse battery', undefined, fakeHasher) : null;
