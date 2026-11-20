@@ -104,6 +104,8 @@ test('end to end: a webhook goes out for the down and the recovery, and the prob
     channels: [{ type: 'webhook', url: 'https://hooks.example/SECRETPATH', format: 'generic', secret: 'secret-0123456789abcdef' }],
     names: new Map([[K, 'Front']]),
     cooldownMs: 60_000,
+    // The alert text shows the date unless the time is today, so the alerter has to run on the monitor's test clock.
+    now: () => T0 + 5 * 30_000,
     fetchFn: async (url, init) => {
       bodies.push(JSON.parse(init.body));
       await gate;

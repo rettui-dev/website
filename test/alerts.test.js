@@ -57,6 +57,22 @@ test('the words of an alert are plain and concrete', () => {
   assert.equal(alertSubject({ ...back(), name: null }), '[rettui] front.test:4242 is back up');
 });
 
+test('the text shows the date only when the time is not on the day of the alerter clock', async () => {
+  const texts = [];
+  const mk = (now) => new Alerter({ channels: [{ type: 'webhook', url: 'https://x.test/h', format: 'generic' }], now: () => now, fetchFn: async (_u, init) => (texts.push(JSON.parse(init.body).message), new Response('')), log: () => {} });
+  const sameDay = mk(T0 + 30_000);
+  sameDay.notify({ ...down(), name: 'Front' });
+  await sameDay.idle();
+  const nextDay = mk(T0 + 24 * 60 * MIN);
+  nextDay.notify({ ...down(), name: 'Front' });
+  await nextDay.idle();
+  assert.deepEqual(texts, ['Front (front.test:4242) is down since 12:03 UTC.', 'Front (front.test:4242) is down since 2026-11-19 12:03 UTC.']);
+  // Midnight UTC is the edge between the two.
+  const midnight = Date.UTC(2026, 10, 20);
+  assert.equal(utcTime(midnight - 1, midnight), '2026-11-19 23:59 UTC');
+  assert.equal(utcTime(midnight, midnight), '00:00 UTC');
+});
+
 test('spanText and utcTime', () => {
   assert.equal(spanText(0), '0s');
   assert.equal(spanText(-5), '0s');
