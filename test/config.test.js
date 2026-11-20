@@ -154,6 +154,24 @@ test('loadNodes: the environment variables work as before when there is no confi
   assert.equal((await loadNodes({ STATUS_TARGETS: '', STATS_URLS: '' })).targets.length, 4);
 });
 
+test('loadNodes: LOGIN_TRUSTED_PROXIES sets the trusted proxies without a config file, checked like trusted_proxies', async () => {
+  const env = await loadNodes({ LOGIN_TRUSTED_PROXIES: '127.0.0.1, 0:0:0:0:0:0:0:1' }, { storeUsers: true });
+  assert.deepEqual(env.login.trustedProxies, ['127.0.0.1', '::1']);
+  assert.deepEqual(env.warnings, []);
+  assert.deepEqual((await loadNodes({}, { storeUsers: true })).login.trustedProxies, []);
+  // Without users in users.json it is not used, and the operator is told.
+  const unused = await loadNodes({ LOGIN_TRUSTED_PROXIES: '10.0.0.1' });
+  assert.match(unused.warnings.join('\n'), /LOGIN_TRUSTED_PROXIES is set, but users.json has no users/);
+  await assert.rejects(loadNodes({ LOGIN_TRUSTED_PROXIES: '' }), /LOGIN_TRUSTED_PROXIES is empty/);
+  await assert.rejects(loadNodes({ LOGIN_TRUSTED_PROXIES: '10.0.0.1,proxy.local' }), /LOGIN_TRUSTED_PROXIES: entry 2 is not an IP address/);
+  await assert.rejects(loadNodes({ LOGIN_TRUSTED_PROXIES: '10.0.0.1,' }), /entry 2 is not an IP address/);
+  await assert.rejects(loadNodes({ LOGIN_TRUSTED_PROXIES: Array.from({ length: 17 }, (_, i) => `10.0.0.${i}`).join(',') }), /at most 16/);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  const file = path.join(dir, 'c.yaml');
+  await fs.writeFile(file, ok);
+  await assert.rejects(loadNodes({ CONFIG_FILE: file, LOGIN_TRUSTED_PROXIES: '10.0.0.1' }), /login\.trusted_proxies/);
+});
+
 test('loadNodes: CONFIG_FILE replaces the variables and setting both is an error', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
   const file = path.join(dir, 'c.yaml');

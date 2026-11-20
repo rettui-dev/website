@@ -81,7 +81,7 @@ function request(port, { method = 'GET', path: p, headers = {}, body }) {
   });
 }
 
-const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin' };
+const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
 const form = (o) => new URLSearchParams(o).toString();
 const post = (s, p, body, headers = FORM) => request(s.port, { method: 'POST', path: p, headers, body });
 const get = (s, p, cookie) => request(s.port, { path: p, headers: cookie ? { Cookie: cookie } : {} });
@@ -298,9 +298,12 @@ test('login requests from other sites, with other content types or too large are
       [{ 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-site' }, 403],
       [{ 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://evil.test' }, 403],
       [{ 'Content-Type': 'application/x-www-form-urlencoded' }, 403],
-      [{ 'Content-Type': 'text/plain', 'Sec-Fetch-Site': 'same-origin' }, 415],
-      [{ 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' }, 415],
-      [{ 'Sec-Fetch-Site': 'same-origin' }, 415],
+      // The page sends X-Rettui-Request, which a form on another site cannot.
+      [{ 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin' }, 403],
+      [{ 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '0' }, 403],
+      [{ 'Content-Type': 'text/plain', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' }, 415],
+      [{ 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' }, 415],
+      [{ 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' }, 415],
     ];
     for (const [headers, status] of cases) {
       const r = await post(s, '/login', body, headers);
@@ -309,7 +312,7 @@ test('login requests from other sites, with other content types or too large are
     }
     // An older browser without Sec-Fetch-Site: the Origin must name this host.
     const host = `127.0.0.1:${s.port}`;
-    const old = await post(s, '/login', body, { 'Content-Type': 'application/x-www-form-urlencoded', Origin: `http://${host}`, Host: host });
+    const old = await post(s, '/login', body, { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Rettui-Request': '1', Origin: `http://${host}`, Host: host });
     assert.equal(old.status, 200);
     const big = await post(s, '/login', form({ name: 'alice', password: 'x'.repeat(5000) }));
     assert.equal(big.status, 413);
@@ -318,7 +321,13 @@ test('login requests from other sites, with other content types or too large are
     assert.equal((await post(s, '/login', '')).status, 400);
     // Logout takes the same checks.
     assert.equal((await post(s, '/logout', '', { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'cross-site' })).status, 403);
-    assert.equal((await post(s, '/logout', '', { 'Sec-Fetch-Site': 'same-origin' })).status, 415);
+    assert.equal((await post(s, '/logout', '', { 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' })).status, 415);
+    // Without the header, logout and the code step are refused too, and the session stays.
+    const { cookie } = await logIn(s);
+    const noHeader = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', Cookie: cookie };
+    assert.equal((await post(s, '/logout', '', noHeader)).status, 403);
+    assert.equal((await post(s, '/login/code', form({ pending: 'x', code: '123456' }), noHeader)).status, 403);
+    assert.equal((await get(s, '/api/session', cookie)).json().name, 'Alice');
     // Only POST.
     assert.equal((await request(s.port, { method: 'PUT', path: '/login', headers: FORM, body })).status, 405);
     assert.equal((await get(s, '/login')).status, 404);
@@ -411,7 +420,7 @@ test('X-Forwarded-For from a local proxy that is not trusted is warned about onc
     assert.deepEqual(warnings, [], 'quiet without X-Forwarded-For');
     for (let i = 0; i < 3; i++) await request(s.port, { path: '/api/status', headers: { 'X-Forwarded-For': '203.0.113.7' } });
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /127\.0\.0\.1 .*not in login\.trusted_proxies/);
+    assert.match(warnings[0], /^WARNING: .*127\.0\.0\.1 is not a trusted proxy.*login\.trusted_proxies.*LOGIN_TRUSTED_PROXIES/);
     assert.equal(warnings[0].includes('203.0.113.7'), false);
   } finally {
     await s.close();

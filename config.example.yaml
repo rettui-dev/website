@@ -13,12 +13,15 @@
 # public_disk_figures: true  # also show exact free and total disk space; default false,
 #                            # when only a level (ok, high, full) and the used share rounded to 5 are shown
 # Optional: people who can log in to see more (see "Logins" in README.md). Without
-# users there is no login and nothing is locked. Make a password_hash with
+# users (here or in users.json in DATA_DIR) there is no login and nothing is locked. Make a password_hash with
 #   npm run hash-password -- --name alice
 # (in Docker: docker compose run --rm -it website node scripts/hash-password.js --name alice)
 # users:
 #   - name: alice
 #     password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
+#     role: admin          # optional: admin, manage or viewer (default viewer)
+# Each user can turn on two-step sign-in (TOTP) on their account page (/account); that is kept in
+# users.json in DATA_DIR, not here (see "Accounts and second factor" in README.md).
 # What a visitor without a login does not see. With users and no rule, all of these;
 # a node can override it with its own require_login.
 # require_login: [details, storage, peers, disk, versions]

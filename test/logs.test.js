@@ -279,7 +279,7 @@ function request(port, { method = 'GET', path: p, headers = {}, body }) {
     req.end();
   });
 }
-const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin' };
+const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
 const get = (s, p, cookie) => request(s.port, { path: p, headers: cookie ? { Cookie: cookie } : {} });
 async function logIn(s) {
   const r = await request(s.port, { method: 'POST', path: '/login', headers: FORM, body: new URLSearchParams({ name: 'alice', password: 'correct horse battery' }).toString() });

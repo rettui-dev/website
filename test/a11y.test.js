@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 // that loses its language, skip link, landmark or alt text, and a theme colour that stops being readable.
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (name) => fs.readFile(path.join(publicDir, name), 'utf8');
-const PAGES = ['index.html', 'status.html', 'join.html', 'downloads.html'];
+const PAGES = ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html'];
+// Pages that are in no menu: their nav marks no page as current.
+const OFF_MENU = ['account.html'];
 
 test('every page has a language, a viewport that allows zoom, and a title', async () => {
   for (const name of PAGES) {
@@ -52,7 +54,7 @@ test('the nav marks exactly one page as current, and buttons and inputs have nam
   for (const name of PAGES) {
     const html = await read(name);
     const nav = /<nav class="links"[^>]*>([\s\S]*?)<\/nav>/.exec(html)[1];
-    assert.equal((nav.match(/aria-current="page"/g) ?? []).length, 1, name);
+    assert.equal((nav.match(/aria-current="page"/g) ?? []).length, OFF_MENU.includes(name) ? 0 : 1, name);
     // Every button has its words in the file (the sign in buttons too: account.js only changes them).
     for (const [, inner] of html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)) {
       assert.ok(inner.replace(/<[^>]*>/g, '').trim().length > 0, `${name}: empty button`);

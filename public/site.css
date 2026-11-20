@@ -461,6 +461,44 @@ dialog.login::backdrop { background: rgba(0, 0, 0, 0.6); }
 .login-actions button { min-height: 40px; padding: 4px 16px; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button:disabled { opacity: 0.7; cursor: progress; }
+/* The second step of the sign in shows one form, and one of its two inputs, at a time. */
+.login-form[hidden], .login-form [hidden] { display: none; }
+.login-swap { justify-self: start; }
+.signin-link { color: var(--dim); text-decoration: none; }
+.signin-link:hover, .signin-link[aria-current=page] { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* The account page */
+.acct-page h1 { margin: 0 0 8px; }
+.acct-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px 16px; margin: 16px 0; }
+.acct-card[hidden], #acct[hidden], .acct-page [hidden] { display: none; }
+.acct-card h2 { margin: 0 0 8px; font-size: 17px; }
+.acct-card h3 { margin: 16px 0 6px; font-size: 15px; }
+.acct-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.acct-facts dt { color: var(--dim); }
+.acct-facts dd { margin: 0; overflow-wrap: anywhere; }
+.acct-form { display: grid; gap: 6px; max-width: 360px; }
+.acct-form label { margin-top: 6px; font-weight: 500; font-size: 14px; }
+.acct-form input {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%;
+}
+.acct-form input:hover { border-color: var(--accent); }
+.acct-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
+.acct-form .note { margin: 0; }
+.acct-steps { padding-left: 20px; }
+.acct-steps li { margin: 4px 0; }
+.acct-key { overflow-wrap: anywhere; font-size: 15px; letter-spacing: 0.05em; }
+/* The QR code keeps its white background in both themes: readers need dark on light. */
+.acct-qr svg { display: block; width: 216px; max-width: 100%; height: auto; margin: 8px 0 12px; border-radius: 4px; }
+.acct-codes { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 24px; padding: 8px 12px; margin: 8px 0; list-style: none; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; width: max-content; max-width: 100%; }
+.acct-codes li { font-family: var(--mono); font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
+.acct-sessions { padding-left: 20px; margin: 8px 0 0; }
+.acct-current { color: var(--green); font-weight: 600; }
+@media (max-width: 560px) {
+  .acct-codes { grid-template-columns: max-content; }
+  .acct-card { padding: 10px 12px 14px; }
+  .acct-form { max-width: none; }
+}
 
 /* Network map */
 .netmap { margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 0 12px; }

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Account - rettui</title>
+<meta name="description" content="Your account: password and two-step sign-in">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/account.js" defer></script>
+<script src="/account-page.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status">Status</a>
+      <a href="/join">Join</a>
+      <a href="/downloads">Downloads</a>
+      <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
+  </div>
+</header>
+<main id="main" tabindex="-1" class="wrap acct-page">
+  <h1>Account</h1>
+  <noscript><p class="note">The account page needs JavaScript.</p></noscript>
+  <p id="acct-status" class="note" role="status">Loading your account...</p>
+
+  <div id="acct-signin" class="acct-card" hidden>
+    <p>Sign in to see your account.</p>
+    <button id="acct-signin-btn" type="button" class="primary">Sign in</button>
+  </div>
+
+  <div id="acct" hidden>
+    <section class="acct-card" aria-labelledby="acct-profile-h">
+      <h2 id="acct-profile-h">Profile</h2>
+      <dl class="acct-facts">
+        <dt>Name</dt><dd id="acct-name"></dd>
+        <dt>Role</dt><dd id="acct-role"></dd>
+        <dt>Last sign in</dt><dd id="acct-last"></dd>
+      </dl>
+      <p id="acct-config-note" class="note" hidden>Managed by config: the name, password and role of this account are set in the site's config file, not here.</p>
+    </section>
+
+    <section class="acct-card" aria-labelledby="acct-pw-h">
+      <h2 id="acct-pw-h">Password</h2>
+      <p id="pw-config" class="note" hidden>This password is set in the config file. Ask whoever runs the site to change it.</p>
+      <form id="pw-form" class="acct-form" novalidate hidden>
+        <p id="pw-error" class="login-error" role="alert"></p>
+        <input id="pw-user" type="text" autocomplete="username" aria-label="Name" readonly hidden>
+        <label for="pw-current">Current password</label>
+        <input id="pw-current" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="pw-error">
+        <label for="pw-next">New password</label>
+        <input id="pw-next" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required aria-describedby="pw-next-help pw-error">
+        <p id="pw-next-help" class="note">At least 12 characters, and not one of the most common passwords. Signing in elsewhere ends when you change it, and every other known device is forgotten.</p>
+        <label for="pw-again">New password again</label>
+        <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
+        <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
+      </form>
+    </section>
+
+    <section class="acct-card" aria-labelledby="acct-totp-h">
+      <h2 id="acct-totp-h">Two-step sign-in</h2>
+      <p id="totp-state"></p>
+
+      <div id="totp-off" hidden>
+        <p class="note">After your password you also enter a 6-digit code from an authenticator app on your phone (such as Aegis, Google Authenticator or 1Password).</p>
+        <form id="totp-setup-form" class="acct-form" novalidate>
+          <p id="totp-setup-error" class="login-error" role="alert"></p>
+          <label for="totp-setup-password">Your password</label>
+          <input id="totp-setup-password" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="totp-setup-help totp-setup-error">
+          <p id="totp-setup-help" class="note">Your password is needed to set it up.</p>
+          <div class="login-actions"><button id="totp-setup" type="submit" class="primary">Set up two-step sign-in</button></div>
+        </form>
+      </div>
+
+      <div id="totp-setup-box" hidden>
+        <ol class="acct-steps">
+          <li>In your authenticator app, add an account and scan this code.</li>
+          <li>Or type this key in by hand (time-based, 6 digits, 30 seconds): <code id="totp-key" class="acct-key"></code> <button id="totp-key-copy" type="button">Copy key</button></li>
+          <li>Enter the code the app shows now.</li>
+        </ol>
+        <div id="totp-qr" class="acct-qr"></div>
+        <form id="totp-enable-form" class="acct-form" novalidate>
+          <p id="totp-enable-error" class="login-error" role="alert"></p>
+          <label for="totp-enable-code">Code from the app</label>
+          <input id="totp-enable-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required aria-describedby="totp-enable-error">
+          <div class="login-actions">
+            <button id="totp-enable" type="submit" class="primary">Turn on</button>
+            <button id="totp-cancel" type="button">Cancel</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="codes-box" hidden>
+        <h3 id="codes-h">Your recovery codes</h3>
+        <p class="note">Each code signs you in once, instead of a code from the app, if you lose your phone. They are shown only now: save them somewhere safe.</p>
+        <ul id="codes-list" class="acct-codes" aria-labelledby="codes-h"></ul>
+        <div class="login-actions">
+          <button id="codes-copy" type="button">Copy</button>
+          <button id="codes-download" type="button">Download</button>
+          <button id="codes-done" type="button" class="primary">I have saved them</button>
+        </div>
+      </div>
+
+      <div id="totp-on" hidden>
+        <p id="codes-left"></p>
+        <form id="codes-new-form" class="acct-form" novalidate>
+          <h3>New recovery codes</h3>
+          <p id="codes-new-error" class="login-error" role="alert"></p>
+          <label for="codes-new-secret">Code from the app, or your password</label>
+          <input id="codes-new-secret" type="password" autocomplete="off" maxlength="1024" required aria-describedby="codes-new-help codes-new-error">
+          <p id="codes-new-help" class="note">New codes replace all the old ones.</p>
+          <div class="login-actions"><button id="codes-new" type="submit">New recovery codes</button></div>
+        </form>
+        <form id="totp-disable-form" class="acct-form" novalidate>
+          <h3>Turn off two-step sign-in</h3>
+          <p id="totp-disable-error" class="login-error" role="alert"></p>
+          <label for="totp-disable-code">Code from the app, or your password</label>
+          <input id="totp-disable-code" type="password" autocomplete="off" maxlength="1024" required aria-describedby="totp-disable-help totp-disable-error">
+          <p id="totp-disable-help" class="note">Without two-step sign-in, your password alone signs you in.</p>
+          <div class="login-actions"><button id="totp-disable" type="submit">Turn off</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="acct-card" aria-labelledby="acct-sessions-h">
+      <h2 id="acct-sessions-h" tabindex="-1">Where you are signed in</h2>
+      <p class="note">Your sessions on this site, oldest first. Each ends after a time without use, or when you sign out there.</p>
+      <ul id="sessions-list" class="acct-sessions"></ul>
+      <div class="login-actions"><button id="sessions-end" type="button">Sign out other sessions</button></div>
+    </section>
+
+    <section class="acct-card" aria-labelledby="acct-devices-h">
+      <h2 id="acct-devices-h" tabindex="-1">Known devices</h2>
+      <p class="note">Browsers you signed in from. When someone tries many wrong passwords for your name, a known device is not held back by it. It still needs your password, and your code if two-step sign-in is on. Remove a device you no longer use, or do not recognise: removing it also signs it out.</p>
+      <p id="devices-none" class="note" hidden>No known devices.</p>
+      <ul id="devices-list" class="acct-sessions"></ul>
+      <div class="login-actions"><button id="devices-others" type="button">Remove all other devices</button></div>
+    </section>
+  </div>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
+    <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>

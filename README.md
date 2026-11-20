@@ -161,7 +161,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | ---------------- | --------------------------------- | -------------------------------------------------------- |
 | `PORT`           | `8080`                            | Port to listen on.                                       |
 | `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json`, `uptime.json` and `releases.json` are kept. |
+| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json`, `stats-history.json`, `uptime.json` and `releases.json` are kept, and the user store `users.json`, `audit.log` and `failures.log` (see "Accounts and second factor"). |
 | `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
 | `CONFIG_FILE`    | none                              | Path of a YAML config file that lists the nodes instead of `STATUS_TARGETS` and `STATS_URLS` (see "Config file"). Users who can log in can only be set there (see "Logins"). |
 | `STATS_TOKEN`    | none                              | Token sent to every stats URL to get peer lists (see "Exact peer counts"). `STATS_TOKEN_FILE` reads it from a file; `STATS_TOKEN_FILES` (`host:port=path,...`) gives one file per node. |
@@ -172,6 +172,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see "Status-only site"). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see below). |
+| `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses of the reverse proxies in front of the site (at most 16), for users in `users.json` without a config file: the same as `login.trusted_proxies` (see "Behind a reverse proxy"). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in `users.json`, it is not used and the server says so at start. |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
 server at start with a message.
@@ -524,7 +525,8 @@ send it, so the server prints a warning at start for each such node when `announ
       announce_queue_samples: 3
 
 On SIGINT or SIGTERM the server writes the history and the uptime once more, waiting for any save
-that is running, before it exits.
+that is running, before it exits. It also waits for the audit lines, the failures summed up so far
+and the writes of `users.json` that are under way.
 
 ## What is public
 
@@ -652,18 +654,24 @@ version stays `1`.
 
 ## Logins
 
-Some numbers can be kept for people with an account. With no `users` in the config file there
-is no login at all and the page and API are exactly as without this feature: nothing is locked,
-there is no login button, and `/login` does not exist. Users need the config file; with the
-environment variables there is no login.
+Some numbers can be kept for people with an account. With no `users` in the config file and none
+in the user store (`users.json`, see "Accounts and second factor") there is no login at all and
+the page and API are exactly as without this feature: nothing is locked, there is no login button,
+and `/login` does not exist. Users in the config file need the config file. Users in
+`users.json` work with the config file or with the environment variables alone. With a config
+file, its `login` settings and `require_login` apply to them as to users in the file. With the
+environment variables alone there is no `login` section or `require_login`: every section is
+locked, the session settings keep their defaults, and the trusted proxies are set with
+`LOGIN_TRUSTED_PROXIES` (see "Behind a reverse proxy").
 
     users:
       - name: alice                  # 1 to 32 letters, digits, . - _; matched without regard to case
         password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
+        role: admin                  # optional: admin, manage or viewer (the default)
     login:                           # optional, these are the defaults
       idle_timeout_minutes: 60       # a session ends after this long without a request
       max_age_hours: 12              # and this long after the login, whatever happens
-      max_sessions: 1000             # with more, the session used least recently ends
+      max_sessions: 1000             # with more, a session of whoever has the most ends
       trusted_proxies: []            # see "Behind a reverse proxy"
     require_login: [details, storage, peers, disk, versions]   # the default once there are users
     nodes:
@@ -681,13 +689,15 @@ dropped), but never takes one as an argument, where it would land in the shell h
 Argon2id with a random 16-byte salt and the OWASP minimum costs (`m=19456,t=2,p=1`); `--memory`,
 `--passes` and `--parallelism` raise them. Only `argon2id` version 19 hashes are accepted, with
 at least those costs and at most `m=65536,t=16,p=16`; anything else stops the server at start
-(the message never repeats the hash). The memory cap is 64 MiB because two checks run at once,
-so logins never take more than 128 MiB. The config file holds hashes, not passwords, but keep it
+(the message never repeats the hash). The memory cap is 64 MiB because at most three checks run
+at once (two for sign ins from outside, one more kept for signed-in users and known devices), so
+logins never take more than 192 MiB. The config file holds hashes, not passwords, but keep it
 private anyway.
 
 **What is locked.** `require_login` lists sections, at the top for every node or on a node to
-override it. Without a rule, once there are users, all of them are locked. A rule that names a
-section while there are no users stops the server at start, and so does a `login` section.
+override it. Without a rule, once there are users (in the config file or in `users.json`), all of
+them are locked. A rule that names a section while there are no users anywhere stops the server at
+start, and so does a `login` section.
 
 | Section    | What a visitor without a login does not get |
 | ---------- | ------------------------------------------- |
@@ -731,51 +741,113 @@ use the same colours and focus ring in the dark and light themes.
 cookie, `__Host-rettui_session`: a random 256-bit id, `HttpOnly`, `Secure`, `SameSite=Strict`,
 `Path=/`. Every login gets a new id, and an id sent with the login is ended. `/logout` ends the
 session. Sessions are kept in memory only. An open status page refreshes itself every 15 seconds,
-so it keeps its session alive until `max_age_hours` is reached.
+so it keeps its session alive until `max_age_hours` is reached. Every request checks that the
+user still exists and takes the role they have now: a session of a user who was removed ends at
+once. One user has at most 20 sessions; a 21st sign in ends that user's own least used one. With
+`max_sessions` reached in all, a new sign in ends the least used session of the user who has the
+most, so one account signing in over and over never signs anyone else out.
 
 - A wrong name and a wrong password get the same 401 and the same message. An unknown name is
   checked against a stand-in hash with the highest costs of any user, so it takes at least as
   long as a wrong password for any real name.
-- Five failed logins for a name (any name, existing or not), or twenty from one address (an IPv6
-  address counts by its /64), start a wait that doubles with each further failure, up to 15
-  minutes; during it the answer is 429 with `Retry-After`, without trying the password. Once
-  the free tries are used up, a login waits for the checks already running for that name or
-  address, so a burst sent at once gets no more tries than one sent one by one; more than 8
-  waiting for one name or address get 503. A login that works clears the count. A failure is
-  forgotten an hour after the last one. At most 10000 names and addresses are remembered; when
-  that many are waiting, a new name or address is told to wait too, rather than one still
-  waiting being forgotten.
-- Each check takes about 19 MiB of memory (more with higher costs, at most 64 MiB). At most 2
-  run at once and 8 wait; past that the answer is 503 with `Retry-After`, rather than running
-  out of memory. A 503 does not count as a failed login.
-- `/login` and `/logout` only take `application/x-www-form-urlencoded` (else 415), at most 4 KiB
-  (else 413), and only from the page itself: `Sec-Fetch-Site` must be `same-origin`, or, from a
-  browser too old to send it, `Origin` must name the host the request was sent to (else 403).
-  Passwords over 1024 bytes are refused.
-- Passwords and hashes are never logged.
+- A password over 1024 bytes, or a name over 64 characters, can never be right: it gets the same
+  401 at once, without a hash, and counts nowhere. It is not a guess, so sending many of them
+  holds nobody back.
+- **Known devices.** Every sign in that works (the password, and the code when two-step sign-in
+  is on) sets a second cookie, `__Host-rettui_device`: a random 128-bit id, `HttpOnly`, `Secure`,
+  `SameSite=Strict`, `Path=/`, for 180 days. The server keeps only its SHA-256, with the user (at
+  most 10 per user; past that the one used least recently is forgotten), and when each was first
+  and last used (the times of sign ins are written to `users.json` at most once a minute per
+  user). A browser that sends it with the right name is a known device: it is never paced
+  or refused because of other people's failures (below), and has its own place in the check
+  queue. It is never a sign in by itself: the password, and the code, are needed as always. Its
+  own sign ins are paced: three that work at once, then one every 3 seconds; past that the answer
+  is 429 ("Too many sign ins from this browser right now"), before the password is checked. When
+  the code step finds a different device cookie than the password step did (or none), the
+  browser is a new device and gets a new id. A
+  password change forgets every known device but the browser that made it; turning two-step
+  sign-in on or off and signing out other sessions do the same, and removing a user forgets all
+  of them. The account page lists them (see "Known devices").
+- Failed logins are counted in these ways:
+  - **For a name from one address.** Five are free; after that each one doubles a wait, up to 15
+    minutes, for that name from that address only. During it the answer is 429 with
+    `Retry-After`, without trying the password. A login that works clears this count.
+  - **For an address, over every name.** Twenty are free, then the same doubling wait. An IPv6
+    address counts by its /64, and also for its /56 (60 free) and its /48 (200 free), so a whole
+    network does not get the free tries of every /64 in it. A login that works only halves these
+    counts, so an address cannot wipe its own failures by signing in to an account of its own.
+  - **For a name, from every address together.** Tries at one name are paced: 5 at once, then one
+    a second. A try past that waits for its turn, at most 4 seconds; one that would wait longer is
+    refused with 429 and `Retry-After` ("Too many sign ins for this name right now"), without a
+    hash. So nobody gets more than about 3600 guesses an hour at one name, from however many
+    addresses. It is the same for every name, known or not. A try that is turned away before its
+    password is checked (503, or one of the waits above once its turn came) gives its turn back,
+    and a try that would get 503 at once is answered before it takes one, so requests that cost
+    the sender nothing cannot keep a name paced.
+  - **For a known device.** A known device skips all three: its own failures count in a wait of
+    its own (five free, then the same doubling), and still count for its address.
+  A failure is forgotten an hour after the last one. Once the free tries are used up, a login
+  waits for the checks already running for the same name and address (or address), so a burst
+  sent at once gets no more tries than one sent one by one; more than 8 waiting for one of them
+  get 503. At most 10000 keys are remembered in each count. When that many are, a new key makes
+  room by forgetting the one with the fewest failures (the oldest of those): it is never refused
+  because the count is full, and a key with many failures is only forgotten once every other key
+  has as many. Wrong passwords asked while signed in count in a count of their own (see "Changes
+  need a recent sign in"). Failures are summed up in `failures.log` (see "Audit log").
+- Each check takes about 19 MiB of memory (more with higher costs, at most 64 MiB). For sign ins
+  from outside at most 2 run at once and 8 wait, and one address has at most 2 of those 10
+  places; past that the answer is 503 with `Retry-After: 2`, rather than running out of memory.
+  One more check may run for passwords asked while signed in (and new password hashes) and for
+  known devices only, each with a queue of its own (4 places, 2 per session or device). They run
+  in that place, and in a place of the sign ins from outside only while none of those is
+  waiting. So a flood from outside never holds back a signed-in user or a known device, and
+  signed-in users and known devices never hold back a sign in from outside for more than that
+  one place. A 503 does not count as a failed login.
+- `/login`, `/login/code` and `/logout` only take `application/x-www-form-urlencoded` (else 415),
+  at most 4 KiB (else 413), with the header `X-Rettui-Request: 1`, and only from the page itself:
+  `Sec-Fetch-Site` must be `same-origin`, or, from a browser too old to send it, `Origin` must
+  name the host the request was sent to (else 403). A form on another site cannot send the
+  header.
+- Passwords, hashes and device ids are never logged.
 
 **Behind a reverse proxy.** The cookie is always `Secure`, so the login only works over HTTPS
 (browsers make an exception for `localhost`). Put the server behind a reverse proxy that
 terminates TLS; the server itself does not read `X-Forwarded-Proto`. The proxy must pass the
 `Host` header through (Caddy does; with nginx, `proxy_set_header Host $host;`) for browsers that
-do not send `Sec-Fetch-Site`. Without `trusted_proxies` every request seems to come from the
-proxy, so all visitors share one address for the failed-login wait. List the proxy's address in
-`login.trusted_proxies` (IP addresses only, at most 16) to have the client address taken from
-`X-Forwarded-For`, from the right, skipping trusted proxies. An IPv6 address may be written in
-any form (`0:0:0:0:0:0:0:1` is `::1`). Never list an address that clients can connect from
-directly. If a request with `X-Forwarded-For` comes from a loopback or private address that is
-not listed, the server logs one warning saying so.
+do not send `Sec-Fetch-Site`. Without trusted proxies every request seems to come from the
+proxy, so all visitors share one address for the failed-login waits. List the proxy's address in
+`login.trusted_proxies` in the config file, or, with users in `users.json` and no config file, in
+the environment variable `LOGIN_TRUSTED_PROXIES` (comma separated, for example
+`LOGIN_TRUSTED_PROXIES=127.0.0.1,::1`). IP addresses only, at most 16. The client address is then
+taken from `X-Forwarded-For`, from the right, skipping trusted proxies. An IPv6 address may be
+written in any form (`0:0:0:0:0:0:0:1` is `::1`). Never list an address that clients can connect
+from directly. If a request with `X-Forwarded-For` comes from a loopback or private address that
+is not listed, the server logs one warning that starts with `WARNING:` and names both settings.
 
 **Limits.** Everything is in one process and in memory: sessions end when the server restarts
 (everyone has to log in again), and running several copies behind a load balancer does not
-share sessions or failed-login counts. The login is for keeping numbers from casual visitors,
-not for anything more sensitive: there is no password change, no second factor and no account
-lockout beyond the wait.
+share sessions or failed-login counts. Users can turn on a second factor (TOTP) on their
+account page, and website users can change their password there (see "Accounts and second
+factor"); there is no account lockout beyond the wait.
 
-- **Anyone can keep a known name locked out.** The wait counts failures per name, from any
-  address, so whoever knows a name can keep its owner waiting: once the wait has grown to 15
-  minutes, about four failed logins an hour keep it there. Pick names that are not easy to
-  guess, such as not `admin` or your public handle.
+- **Guessing against lockouts.** The waits per name and address and per address only hold back
+  that address, so nobody can lock someone else out by knowing their name. The pace of a name is
+  the one that holds back everyone: about one guess a second at one name, however many addresses
+  send them (about 3600 an hour). While it is used up, a browser that is not a known device gets
+  429 for that name, the owner's new browser too; a known device of the owner still signs in at
+  once. So sign in from your usual browser, keep a strong password (the account page asks for at
+  least 12 characters), and turn on the second factor (see "Accounts and second factor"), which
+  is the real defence. Pick names that are not easy to guess, such as not `admin` or your public
+  handle.
+- **Flooding.** Someone sending logins from many addresses at once can fill the 10 places of the
+  check queue for sign ins from outside (2 per address); a real login from a new browser then gets
+  503 and gets in when it tries again a moment later. Signed-in users and known devices have a
+  place of their own and are not held back, and they cannot fill the outside places either.
+  Sending logins needs no account, so a large enough
+  set of addresses can always fill the outside places.
+- **Behind a proxy without trusted proxies** every visitor shares the proxy's address, so the
+  per-address counts above are shared too, and one visitor's failures can hold back another
+  (known devices are not held back by them).
 - **`require_login` only covers this website.** It takes numbers out of what this server sends;
   it does nothing to the nodes. A node's `stats.json` answers whoever fetches it, so anyone who
   can reach a `stats_url` reads the locked numbers from the node itself. For numbers that must
@@ -786,12 +858,173 @@ The Docker image is built `FROM node:24-alpine`, which moves with each Node.js 2
 build the exact same image every time, pin it by digest (`FROM node:24-alpine@sha256:...`, from
 `docker buildx imagetools inspect node:24-alpine`) and update the digest yourself.
 
+## Accounts and second factor
+
+Everyone who can sign in has an account page, `/account`: the name in the header links to it once
+signed in. It shows the name, the role, the last sign in, where the account is signed in (the sessions in
+this server's memory, without addresses) and its known devices, and has the password and the
+second factor.
+
+**Where users live.** Users come from two places:
+
+- **The config file** (`users:`, see "Logins"), as before. These users keep working exactly as
+  they did. Their name, password and role are set in the config file only; the account page
+  says "Managed by config" and has no password change. Each may have a `role`: `admin`,
+  `manage` or `viewer` (the default when it is left out).
+- **The user store**, `users.json` in `DATA_DIR`, for users made on the website (the users page
+  that makes them comes in a later version; `lib/users.js` already has create, delete, set role
+  and reset second factor, and refuses to remove or demote the last admin; whatever calls them
+  must also end the user's sessions with `endUser` from `lib/login.js`). Each has a name, a
+  role, an Argon2id password hash like those in the config file, the times it was made and last
+  signed in, its second factor, and a list of credentials kept for passkeys later.
+
+When a name is in both, the one in the config file is used and the server logs a warning at
+start; the one in the store cannot sign in, and is left as it is. A user in the config file can
+still turn on a second factor: it is kept in the store under the user's name (`configUsers` in the
+file), with nothing else. Roles are shown on the account page; nothing else depends on them yet.
+
+**The store file.** `users.json` is read once at start and written whole on every change: to a
+temporary file with mode 0600, synced to disk, then renamed over the old one, so a crash never
+leaves half a file. A file that cannot be read (not JSON, an unknown or newer version, a record
+that makes no sense) stops the server at start with a message that says why, and the file is left
+as it is: a broken store never becomes an empty one, which would drop everyone's second factor.
+Fix or move the file and start again. A store that other users can read gets a warning at start.
+TOTP secrets are kept in the file as they are (base32), because the server needs them to check a
+code; recovery codes are kept only as SHA-256 hashes. Keep the data directory as private as the
+config file, and back it up with it.
+
+**Two-step sign-in (TOTP).** On the account page, Set up two-step sign-in shows a QR code and the
+same key as text, for any authenticator app (RFC 6238: HMAC-SHA1, 6 digits, 30 seconds). The key
+is a new random 20-byte secret, and it is shown this once, to its owner: no later answer contains
+it, it is never in a URL and never logged. It is only turned on once the first code from the app
+is right; turning it on gives ten recovery codes, shown once too, with Copy and Download buttons.
+Each recovery code signs in once instead of a code from the app. New recovery codes replace all
+the old ones. Setting it up needs the password; new recovery codes and turning it off need a
+current code or the password (see "Changes need a recent sign in").
+
+With it on, a right password no longer signs in by itself. `/login` answers 200 with
+`{"ok": false, "secondFactor": true, "pending": "..."}` and no cookie, and the sign in dialog asks
+for the code (or, with "Use a recovery code", a recovery code), which it posts to `/login/code`
+with the `pending` token (a form, like `/login`). The token is good for 5 minutes, for one sign in,
+only from the address that gave the password, and for 5 wrong codes; then the dialog goes back to
+the password. A wrong password gets the same answer as before, so nothing says whether a name has
+a second factor before the password is right.
+
+- A code is taken from the 30 seconds before, now and the 30 seconds after, so a phone clock that
+  is a little off still works. Each code works once: a code (or an older one) that was used
+  already is refused, also after a restart.
+- Wrong codes count per user and address (per user and device for a known device), and per user
+  from everywhere together. For a user and address, the first five are free; after that each one
+  doubles the wait, up to an hour (answer 429 with `Retry-After` and the wait in words). For the
+  user in all, 30 are free, then the same doubling wait, for every browser that is not a known
+  device; a known device is only held back by it once the user has 200 wrong codes. They are
+  remembered for a day after the last one, so the free tries do not come back after a short
+  pause: someone who knows the password gets at most 40 guesses at the code from one address on
+  the first day and 24 a day after that, and at most 65 on the first day from all their
+  addresses together (then 24 a day). Someone with the password can so hold back the code step
+  of the owner's new browsers, but not of a known device. A right password does not start the
+  count again: it is only cleared by a right code. Wrong codes also count for the address in the
+  same count as wrong passwords.
+- This wait only holds back the code step, never the password step. A right password while it
+  runs says so: with a wait shorter than the 5 minutes of a second step, `/login` gives the token
+  with `codeWait` (seconds) and `notice`, which the dialog shows; with a longer one it answers 429
+  "Too many wrong codes were entered for this account. Sign in again in N minutes." and no token.
+  A code sent during the wait is answered 429 with the time; if the wait outlasts the token, the
+  answer has `restart: true` and the dialog goes back to the password.
+- A password change, turning the second factor off, and the other changes below end every second
+  step of the user that is still open, also one started with the old password.
+
+**Changes need a recent sign in.** Changing the password, setting up, turning on or off the second
+factor, making new recovery codes and signing out other sessions need a sign in from the last 15
+minutes. After that the page asks for the password again (`POST /api/account/reauth`) and then goes
+on. That can be done at most 10 times an hour from one session and 20 times an hour for one user,
+right and wrong passwords alike (a right one does not start the count again); past that the
+answer is 429 with `Retry-After`. Some need more in the request itself:
+
+- **Password change:** the current password. It is for website users only. The new one needs at
+  least 12 characters and at most 1024 bytes, must not be one of a built-in list of the most
+  common passwords (any case), one character over and over, or the name with fewer than 8 other
+  characters. Passwords in the config file are not checked: the server only has their hash, so
+  pick them with the same care.
+- **Set up two-step sign-in:** the password (`password`).
+- **New recovery codes** and **turning two-step sign-in off:** a current code from the app
+  (`code`) or the password.
+
+A password asked for while signed in counts in a wait of that session (five free, then doubling),
+kept apart from every other count, so nobody outside can hold a signed-in user back by sending
+wrong passwords for the name, nor push that wait out by filling the other counts.
+
+A session can end while one of its changes is under way: a password change or sign out elsewhere,
+or the user removed. Each change checks after every step that its session is still there, and
+the store checks it again right before writing. If it is gone, the answer is 401, nothing is
+changed, and no secret (a new key or recovery codes) is handed out. A password check that was
+under way when the password changed does not sign in.
+
+Changing the password and turning two-step sign-in on or off sign the account out everywhere else
+(the session that made the change stays), drop any second step still open, and forget every
+known device but the one that made the change. **Sign out other sessions**, under "Where you are
+signed in" (`POST /api/account/sign-out-others`), does the same on its own.
+
+**Known devices.** Under "Known devices" the page lists the browsers the account signed in from
+(see "How the login works"). A device has no name the server knows, so each shows when it was
+first and last used, and "this browser" for the current one. **Remove** forgets one (`POST
+/api/account/devices/remove` with its `device` id from `GET /api/account`), and **Remove all
+other devices** forgets every one but this browser (`POST /api/account/devices/remove-others`).
+Removing a device also signs it out: every session that was signed in on it ends (the answer
+says how many, `ended`), and removing this browser's own device signs this browser out. A
+removed device is held back like any other browser until it signs in again. Removing takes effect
+at once, also when writing `users.json` fails.
+
+Setting up, turning on and off, new recovery codes and signing out other sessions can each be done
+at most 5 times an hour from one session and 10 times an hour for one user, wrong passwords and
+codes included; past that the answer is 429 with `Retry-After`.
+
+A change is written to `users.json` first and only then made: when the write fails (a full disk),
+the answer is 500, nothing has changed, and nobody was signed out.
+
+**The account API.** `GET /api/account` says who is signed in, and never holds a secret. The
+changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enable`,
+`/totp/disable`, `/recovery-codes`, `/sign-out-others`, `/devices/remove` and
+`/devices/remove-others`. They only take JSON (`Content-Type: application/json`, at
+most 4 KiB), with the header `X-Rettui-Request: 1`, from the page itself (`Sec-Fetch-Site:
+same-origin`, or `Origin` naming the host); a form on another site can send none of these.
+Without a session the answer is 401. All answers carry `Cache-Control: no-store`.
+
+**Audit log.** `audit.log` in `DATA_DIR` gets one JSON line per security event, appended, mode
+0600: `password-changed`, `totp-enabled`, `totp-disabled` (`with`: `code` or `password`),
+`recovery-code-used` (with how many are `left`), `recovery-codes-regenerated` (`with`),
+`sessions-ended` (how many were `ended`), `device-added` (a sign in from a new browser),
+`device-removed` and `devices-removed` (how many were `removed`, and how many sessions that
+ended, `ended`). Each line has the time, the user and the address. No password, secret, code or
+device id is ever in it. `device-added` is only written for a user's first new browser in 24
+hours, or when the new browser pushes out a known device older than that (`pushedOut`: how
+many); the other new browsers are summed up in `failures.log`, so that an account signing in from
+new browsers over and over cannot push the other events out of `audit.log`.
+
+Wrong passwords and codes go to `failures.log` instead, so that no amount of them can push a
+security event out of `audit.log`. They are summed up: one line per name and kind
+(`password-failures`, `second-factor-failures`, and `device-added` for the new browsers above,
+counted in `failures`) per 15 minutes, with how many `failures`, from
+how many `addresses` (`100+` past a hundred), the `lastAddress`, and when the first and last were
+(`from`, `to`). Every name gets its lines, known or not. A summary is written once its 15 minutes
+are over, and all of them when the server stops. At most 10000 are summed up at once; past that
+the oldest is written early.
+
+Both are bounded: a line that would take one past 5 MiB first moves it to `.1` (and `.1` to `.2`);
+three files of each are kept, the oldest is dropped. So copy `audit.log` off the server as it
+grows (a log shipper, or a timer that copies it to another machine): a long enough run of events
+still pushes old lines out, and whoever takes over the server can change the copy that stays on it.
+
 ## Node logs
 
 A node's Full details has a **Logs** tab with its recent log lines. It needs rettui started with `--stats-logs` (which adds a `/logs`
 endpoint to its stats server), and the node's stats token (see "Exact peer counts"): without a token, or on an older
 rettui, the tab is not offered. The page never reads logs by itself. Opening the tab asks once, and
 the Refresh button asks again; there is no automatic refresh.
+
+The address is made from the node's `stats_url`: with `https://host/stats.json` it is `https://host/logs`, and
+with a path of its own, such as `https://stats.example/front`, it is `https://stats.example/front/logs`. A proxy in front
+of the node must pass that on.
 
 - **Who sees it.** Logs can hold addresses and other private things, so they are never public by
   omission: `require_login` has no say in them, and a list with or without sections (even `[]`) never

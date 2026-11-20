@@ -187,7 +187,7 @@ function get(port, p, cookie) {
 async function logIn(s) {
   const r = await new Promise((resolve, reject) => {
     const data = new URLSearchParams({ name: 'alice', password: 'correct horse battery' }).toString();
-    const req = http.request({ host: '127.0.0.1', port: s.port, path: '/login', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin' } }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port: s.port, path: '/login', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' } }, (res) => {
       res.resume();
       res.on('end', () => resolve(res));
     });

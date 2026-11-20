@@ -159,7 +159,7 @@ test('copy buttons are buttons, point at real elements, and have a status region
 
 test('no page has inline script or style, and every file it loads exists', async () => {
   const pages = (await fs.readdir(publicDir)).filter((n) => n.endsWith('.html'));
-  assert.deepEqual(pages.sort(), ['downloads.html', 'index.html', 'join.html', 'status.html']);
+  assert.deepEqual(pages.sort(), ['account.html', 'downloads.html', 'index.html', 'join.html', 'status.html']);
   for (const name of pages) {
     const html = await read(name);
     assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)/i, `${name}: inline script`);
@@ -169,7 +169,7 @@ test('no page has inline script or style, and every file it loads exists', async
     assert.doesNotMatch(html, /\son[a-z]+\s*=/i, `${name}: event handler attribute`);
     assert.doesNotMatch(html, /javascript:/i, `${name}: javascript: link`);
     for (const [, url] of html.matchAll(/(?:src|href)="(\/[^"#?]*)"/g)) {
-      if (url === '/' || ['/status', '/join', '/downloads', '/join-qr.svg', '/feed.xml'].includes(url)) continue;
+      if (url === '/' || ['/status', '/join', '/downloads', '/account', '/join-qr.svg', '/feed.xml'].includes(url)) continue;
       await fs.access(path.join(publicDir, url)).catch(() => assert.fail(`${name} loads ${url}, which does not exist`));
     }
     // Same-origin only: no third party scripts, styles or images.
@@ -248,7 +248,7 @@ test('the Docker image copies every folder the new files are in', async () => {
 });
 
 test('every page has the sign in button in the header, after the theme button, and loads account.js', async () => {
-  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html']) {
+  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html']) {
     const html = await read(name);
     const header = /<header class="top">([\s\S]*?)<\/header>/.exec(html)[1];
     // Hidden until account.js has heard that the site has users; the words are in the file.
@@ -268,4 +268,36 @@ test('every page has the sign in button in the header, after the theme button, a
 test('account.js is served in a status-only site too (it is not a project file)', async () => {
   const { PROJECT_FILES } = await import('../lib/site.js');
   assert.equal(PROJECT_FILES.includes('account.js'), false);
+});
+
+test('the account scripts only set text, send the request header, and the sign in has a code step', async () => {
+  const page = await read('account-page.js');
+  assert.doesNotMatch(page, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+  assert.match(page, /'X-Rettui-Request': '1'/);
+  assert.match(page, /'Content-Type': 'application\/json'/);
+  assert.match(page, /\/api\/account\/reauth/);
+  // The QR code is drawn as SVG elements, never parsed from text.
+  assert.match(page, /createElementNS\(SVG, 'svg'\)/);
+  const js = await read('account.js');
+  assert.match(js, /\/login\/code/);
+  assert.match(js, /setAttribute\('inputmode', 'numeric'\)/);
+  assert.match(js, /autocomplete = 'one-time-code'/);
+  assert.match(js, /'Use a recovery code'/);
+  assert.match(js, /link\.href = '\/account'/);
+  // Sign in, the code step and sign out all go through post(), which sends the header.
+  assert.match(js, /headers: \{ 'X-Rettui-Request': '1' \}/);
+  assert.match(js, /post\('\/login', /);
+  assert.match(js, /post\('\/login\/code', /);
+  assert.match(js, /post\('\/logout', /);
+  assert.doesNotMatch(js, /fetch\('\/(login|logout)/);
+  // The page asks for the password for set up and new codes, and can sign out other sessions.
+  assert.match(page, /send\('\/api\/account\/totp\/setup', \{ password: password \}\)/);
+  assert.match(page, /send\('\/api\/account\/recovery-codes', body\)/);
+  assert.match(page, /\/api\/account\/sign-out-others/);
+  const html = await read('account.html');
+  assert.match(html, /<input id="totp-setup-password" type="password" autocomplete="current-password"/);
+  assert.match(html, /<button id="sessions-end" type="button">Sign out other sessions<\/button>/);
+  assert.match(html, /<input id="totp-enable-code" type="text" inputmode="numeric" autocomplete="one-time-code"/);
+  assert.match(html, /<input id="pw-next" type="password" autocomplete="new-password"/);
+  assert.match(html, /<meta name="robots" content="noindex">/);
 });

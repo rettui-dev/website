@@ -102,7 +102,7 @@ function raw(port, bytes) {
   });
 }
 
-const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin' };
+const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
 const form = (o) => new URLSearchParams(o).toString();
 const post = (s, p, body, headers = FORM) => request(s.port, { method: 'POST', path: p, headers, body });
 const get = (s, p, cookie) => request(s.port, { path: p, headers: cookie ? { Cookie: cookie } : {} });
@@ -122,7 +122,7 @@ test('qa: a body of exactly the limit is read, one byte more is 413, also when c
     assert.equal((await post(s, '/login', pad(4096))).status, 401);
     assert.equal((await post(s, '/login', pad(4097))).status, 413);
     const big = 'name=alice&password=' + 'y'.repeat(2_000_000);
-    const out = await raw(s.port, `POST /login HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nSec-Fetch-Site: same-origin\r\nTransfer-Encoding: chunked\r\n\r\n${big.length.toString(16)}\r\n${big}\r\n0\r\n\r\n`);
+    const out = await raw(s.port, `POST /login HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nSec-Fetch-Site: same-origin\r\nX-Rettui-Request: 1\r\nTransfer-Encoding: chunked\r\n\r\n${big.length.toString(16)}\r\n${big}\r\n0\r\n\r\n`);
     assert.match(out, /^HTTP\/1\.1 413/);
     // Still serving.
     assert.equal((await get(s, '/api/status')).status, 200);
@@ -154,7 +154,7 @@ test('qa: Content-Type and origin header variants', async () => {
   const s = await setup();
   try {
     const body = form({ name: 'alice', password: 'nope' });
-    const ct = (v, extra = {}) => post(s, '/login', body, { 'Content-Type': v, 'Sec-Fetch-Site': 'same-origin', ...extra });
+    const ct = (v, extra = {}) => post(s, '/login', body, { 'Content-Type': v, 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1', ...extra });
     assert.equal((await ct('APPLICATION/X-WWW-FORM-URLENCODED; charset=UTF-8')).status, 401);
     assert.equal((await ct('application/x-www-form-urlencodedx')).status, 415);
     assert.equal((await ct('application/x-www-form-urlencoded-evil')).status, 415);
@@ -166,7 +166,7 @@ test('qa: Content-Type and origin header variants', async () => {
     assert.equal((await post(s, '/login', body, { 'Content-Type': FORM['Content-Type'], Origin: 'null', Host: host })).status, 403);
     assert.equal((await post(s, '/login', body, { 'Content-Type': FORM['Content-Type'], Origin: `http://${host}.evil.test`, Host: host })).status, 403);
     // Two Sec-Fetch-Site headers, one of them cross-site.
-    const dup = await raw(s.port, `POST /login HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Site: cross-site\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`);
+    const dup = await raw(s.port, `POST /login HTTP/1.1\r\nHost: x\r\nContent-Type: application/x-www-form-urlencoded\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Site: cross-site\r\nX-Rettui-Request: 1\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`);
     assert.match(dup, /^HTTP\/1\.1 403/);
   } finally {
     await s.close();
@@ -270,12 +270,16 @@ test('qa: a burst of wrong passwords sent at once is cut off by the backoff afte
   }
 });
 
+const PROXIED = "login:\n  trusted_proxies: ['127.0.0.1']\n";
+const from = (ip) => ({ ...FORM, 'X-Forwarded-For': ip });
+
 test('qa: past 2 running + 8 waiting a login is 503 with Retry-After, and the server recovers', async () => {
   let release;
   const held = new Promise((r) => (release = r));
-  const s = await setup({ hasher: async (a) => (await held, fakeHasher(a)), gate: hashGate() });
+  const s = await setup({ top: PROXIED, hasher: async (a) => (await held, fakeHasher(a)), gate: hashGate() });
   try {
-    const login = (i) => post(s, '/login', form({ name: i === 0 ? 'alice' : `nobody${i}`, password: i === 0 ? PASSWORD : 'nope' }));
+    // Each from an address of its own, so only the gate in all turns them away.
+    const login = (i) => post(s, '/login', form({ name: i === 0 ? 'alice' : `nobody${i}`, password: i === 0 ? PASSWORD : 'nope' }), from(`198.51.100.${i + 1}`));
     const rs = Array.from({ length: 14 }, (_, i) => login(i));
     await new Promise((r) => setTimeout(r, 300));
     release();
@@ -287,6 +291,25 @@ test('qa: past 2 running + 8 waiting a login is 503 with Retry-After, and the se
       assert.equal(b.headers['set-cookie'], undefined);
     }
     assert.equal((await logIn(s)).r.status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('qa: 40 logins at once from one address get 2 places in the gate; a login from elsewhere still gets in', async () => {
+  let release;
+  const held = new Promise((r) => (release = r));
+  const s = await setup({ top: PROXIED, hasher: async (a) => (await held, fakeHasher(a)), gate: hashGate() });
+  try {
+    const flood = Array.from({ length: 40 }, (_, i) => post(s, '/login', form({ name: `nobody${i}`, password: 'nope' }), from('203.0.113.66')));
+    await new Promise((r) => setTimeout(r, 200));
+    const real = post(s, '/login', form({ name: 'alice', password: PASSWORD }), from('192.0.2.10'));
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    const out = await Promise.all(flood);
+    assert.equal(out.filter((r) => r.status === 503).length, 38, out.map((r) => r.status).join());
+    for (const b of out.filter((r) => r.status === 503)) assert.equal(b.headers['retry-after'], '2');
+    assert.equal((await real).status, 200);
   } finally {
     await s.close();
   }
