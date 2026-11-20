@@ -302,15 +302,32 @@
     return st && st.stale && st.fetchedAt ? 'Stats from ' + ago(st.fetchedAt) + ' (last fetch failed)' : null;
   }
 
-  var BACKLOG = 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.';
+  var BACKLOG = 'Messages stored on this node that some peer node has not received yet. The sum over peers counts a message once for each peer waiting for it. High right after peering starts and should fall as peers catch up.';
 
   // True when the backlog to send to peers cannot be real: a message waits at most once per peer,
   // so more than stored messages x peered nodes means the numbers are wrong or stuck. A plain backlog,
   // even a large one, is normal. Only the current sample is used here (the row has no history).
   function backlogAbnormal(p) {
-    if (!p || !known(p.unhandledMessages) || !(p.unhandledMessages > 0)) return false;
-    if (!known(p.storedMessages) || !known(p.peersTotal)) return false;
+    if (!p || !known(p.storedMessages)) return false;
+    // Each stored message counts once, so more than the store cannot be real.
+    if (known(p.unhandledDistinct)) return p.unhandledDistinct > p.storedMessages;
+    // Only the sum over peers is known: it can reach stored messages x peers.
+    if (!known(p.unhandledMessages) || !(p.unhandledMessages > 0) || !known(p.peersTotal)) return false;
     return p.unhandledMessages > p.storedMessages * p.peersTotal;
+  }
+
+  // The backlog as [label, value] pairs. With the distinct count: how many stored messages some peer
+  // still waits for, and the sum over peers as a second line. Without it (older nodes): the sum, labelled as such.
+  // A group has no distinct count that adds up, so it passes none and gets the sum.
+  function backlogPairs(p) {
+    var out = [];
+    if (known(p.unhandledDistinct)) {
+      out.push(['Messages waiting for peers', num(p.unhandledDistinct) + (known(p.storedMessages) ? ' of ' + num(p.storedMessages) + ' stored' : '')]);
+      if (known(p.unhandledMessages)) out.push(['Total across peers', num(p.unhandledMessages)]);
+    } else if (known(p.unhandledMessages)) {
+      out.push(['Waiting to send to peers (summed over peers)', num(p.unhandledMessages)]);
+    }
+    return out;
   }
 
   // Things worth a line in the collapsed row, as {kind, text}; nothing when all is well.
@@ -335,7 +352,13 @@
       out.push({ kind: 'high', text: 'Peered ' + num(p.peersAlive) + '/' + num(p.peersTotal) + ' alive' });
     }
     if (backlogAbnormal(p)) {
-      out.push({ kind: 'high', title: BACKLOG, text: 'Waiting to send to peers: ' + num(p.unhandledMessages) + (p.unhandledMessages === 1 ? ' message' : ' messages') + ', more than the store and peers explain' });
+      var n = known(p.unhandledDistinct) ? p.unhandledDistinct : p.unhandledMessages;
+      out.push({
+        kind: 'high', title: BACKLOG,
+        text: known(p.unhandledDistinct)
+          ? 'Messages waiting for peers: ' + num(n) + ', more than the ' + num(p.storedMessages) + ' stored'
+          : 'Waiting to send to peers: ' + num(n) + (n === 1 ? ' message' : ' messages') + ', more than the store and peers explain'
+      });
     }
     return out;
   }
@@ -371,8 +394,7 @@
       out.push(['Stored', s]);
     }
     if (known(p.peersAlive) && known(p.peersTotal)) out.push(['Peered', num(p.peersAlive) + ' of ' + num(p.peersTotal) + ' alive']);
-    if (known(p.unhandledMessages)) out.push(['Waiting to send to peers', num(p.unhandledMessages)]);
-    return out;
+    return out.concat(backlogPairs(p));
   }
 
   // The disk as facts: how full, and free of total only when the operator publishes the figures.
@@ -815,8 +837,7 @@
     if (known(p.messagesSentToPeers) || known(p.messagesReceivedFromPeers)) {
       pairs.push(['Peer traffic', '↑ ' + (known(p.messagesSentToPeers) ? num(p.messagesSentToPeers) : '?') + ' sent ↓ ' + (known(p.messagesReceivedFromPeers) ? num(p.messagesReceivedFromPeers) : '?') + ' received']);
     }
-    if (known(p.unhandledMessages)) pairs.push(['Waiting to send to peers', num(p.unhandledMessages)]);
-    return pairs;
+    return pairs.concat(backlogPairs(p));
   }
 
   // The share of the disk in use, 0 to 100: as published (rounded unless the operator allows more), or null.
@@ -2183,7 +2204,7 @@
     globalThis.statusLogic = { ago: ago, barLabel: barLabel, bytes: bytes, duration: duration, nodeStatPairs: nodeStatPairs,
       formatRate: formatRate, niceTicks: niceTicks, runs: runs, gapLimit: gapLimit, summarize: summarize, summaryText: summaryText, axisTime: axisTime,
       nearestIndex: nearestIndex, timeAt: timeAt, tooltipTitle: tooltipTitle, tooltipRows: tooltipRows, tooltipSpeech: tooltipSpeech, tooltipPosition: tooltipPosition,
-      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
+      peerShares: peerShares, percentText: percentText, propagationPairs: propagationPairs, diskPairs: diskPairs, diskUsedPercent: diskUsedPercent, groupStoragePairs: groupStoragePairs, groupPropagationPairs: groupPropagationPairs, groupDiskPairs: groupDiskPairs, hostKey: hostKey, displayName: displayName, summaryFacts: summaryFacts, lastUp: lastUp, downText: downText, staleNote: staleNote, warnings: warnings, backlogAbnormal: backlogAbnormal, backlogPairs: backlogPairs, networkFacts: networkFacts, storeFacts: storeFacts, diskFacts: diskFacts, groupFacts: groupFacts, partialNote: partialNote, groupWarning: groupWarning, badgeText: badgeText, badgeTitle: badgeTitle, groupHosts: groupHosts,
       peerRange: peerRange, peerNote: peerNote, groupCoverage: groupCoverage, groupPairs: groupPairs, peerRangeRows: peerRangeRows, intervalWords: intervalWords, versionSummary: versionSummary, count: count,
       rowLocks: rowLocks, lockText: lockText, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };

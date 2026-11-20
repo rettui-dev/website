@@ -11,7 +11,7 @@ const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox);
 const { ago, barLabel, bytes, duration, nodeStatPairs, formatRate, niceTicks, runs, summarize, summaryText, axisTime, peerShares, versionSummary, count, intervalWords,
-  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, backlogAbnormal, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
+  hostKey, displayName, summaryFacts, lastUp, downText, staleNote, warnings, backlogAbnormal, backlogPairs, networkFacts, storeFacts, diskFacts, groupFacts, partialNote, groupWarning, badgeText, badgeTitle, groupHosts, peerRange, peerNote, groupCoverage, groupPairs, peerRangeRows,
   percentText, propagationPairs, diskPairs, diskUsedPercent, groupStoragePairs, groupPropagationPairs, groupDiskPairs,
   gapLimit, nearestIndex, timeAt, tooltipTitle, tooltipRows, tooltipSpeech, tooltipPosition } =
   sandbox.statusLogic;
@@ -250,8 +250,16 @@ test('warnings say nothing when all is well and name the level when not', () => 
   assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 300 }), []);
   assert.deepEqual(w(null, { storedMessages: 0, peersAlive: 0, peersTotal: 0, unhandledMessages: 0 }), []);
   // More waiting than the store and the peers can explain is abnormal.
-  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 301 }), [{ kind: 'high', title: 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 301 messages, more than the store and peers explain' }]);
-  assert.deepEqual(w(null, { storedMessages: 5, peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', title: 'Messages stored on this node that it still has to offer to its peer nodes, counted once for each peer. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 1 message, more than the store and peers explain' }]);
+  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 301 }), [{ kind: 'high', title: 'Messages stored on this node that some peer node has not received yet. The sum over peers counts a message once for each peer waiting for it. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 301 messages, more than the store and peers explain' }]);
+  assert.deepEqual(w(null, { storedMessages: 5, peersAlive: 0, peersTotal: 0, unhandledMessages: 1 }), [{ kind: 'high', title: 'Messages stored on this node that some peer node has not received yet. The sum over peers counts a message once for each peer waiting for it. High right after peering starts and should fall as peers catch up.', text: 'Waiting to send to peers: 1 message, more than the store and peers explain' }]);
+  // With the distinct count the sum is not used: 300 waiting over 3 peers is fine, more distinct than stored is not.
+  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 9999, unhandledDistinct: 100 }), []);
+  assert.deepEqual(w(null, { storedMessages: 100, peersAlive: 3, peersTotal: 3, unhandledMessages: 5, unhandledDistinct: 101 }).map((x) => x.text), ['Messages waiting for peers: 101, more than the 100 stored']);
+  assert.equal(backlogAbnormal({ storedMessages: 100, peersTotal: 0, unhandledMessages: 0, unhandledDistinct: 0 }), false);
+  assert.equal(backlogAbnormal({ unhandledDistinct: 5 }), false);
+  // The sum is compared with peers x store: exactly equal is fine.
+  assert.equal(backlogAbnormal({ storedMessages: 10, peersTotal: 4, unhandledMessages: 40 }), false);
+  assert.equal(backlogAbnormal({ storedMessages: 10, peersTotal: 4, unhandledMessages: 41 }), true);
   assert.equal(backlogAbnormal(null), false);
   assert.equal(backlogAbnormal({ storedMessages: 1, peersTotal: 1, unhandledMessages: 1 }), false);
   assert.equal(backlogAbnormal({ storedMessages: 1, peersTotal: 1, unhandledMessages: 2 }), true);
@@ -281,7 +289,7 @@ test('networkFacts, storeFacts and diskFacts leave out what is not known', () =>
   assert.deepEqual([...networkFacts(R({ stats: null }))], []);
   assert.deepEqual([...storeFacts(null)], []);
   assert.deepEqual([...storeFacts(PROP)].map((f) => [...f]), [
-    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Waiting to send to peers', '7'],
+    ['Stored', '1,234 messages, 5 MiB of 50 MiB (10%)'], ['Peered', '5 of 8 alive'], ['Waiting to send to peers (summed over peers)', '7'],
   ]);
   assert.deepEqual([...diskFacts(null)], []);
   assert.deepEqual([...diskFacts({ usedPercent: 85, level: 'high' })].map((f) => [...f]), [['Disk', 'about 85% used']]);
@@ -374,7 +382,7 @@ test('propagationPairs lists what the node sent and skips the rest', () => {
     ['Peered nodes', '5/8 alive (3 static, 5 auto), limit 20'],
     ['Auto-peering', 'on (depth 4)'],
     ['Peer traffic', '↑ 1,000 sent ↓ 2,000 received'],
-    ['Waiting to send to peers', '7'],
+    ['Waiting to send to peers (summed over peers)', '7'],
   ]);
   assert.equal(propagationPairs(null).length, 0);
   assert.equal(propagationPairs({}).length, 0);
@@ -478,4 +486,20 @@ test('a full announce queue is a warning, a queue that is not full is only a fac
   const facts = networkFacts(q({ queued: 5, limit: 8192, full: false, fullest: 4 })).find((f) => f[0] === 'Announce queue');
   assert.deepEqual([...facts], ['Announce queue', '5 waiting of 8,192']);
   assert.equal(networkFacts(q(undefined)).some((f) => f[0] === 'Announce queue'), false);
+});
+
+test('backlogPairs names the distinct count and keeps the sum as a second line', () => {
+  const pairs = (p) => [...backlogPairs(p)].map((x) => [...x]);
+  assert.deepEqual(pairs({ storedMessages: 1234, unhandledMessages: 35, unhandledDistinct: 20 }), [['Messages waiting for peers', '20 of 1,234 stored'], ['Total across peers', '35']]);
+  assert.deepEqual(pairs({ unhandledDistinct: 0 }), [['Messages waiting for peers', '0']]);
+  // Older nodes: only the sum, said so.
+  assert.deepEqual(pairs({ storedMessages: 5, unhandledMessages: 7 }), [['Waiting to send to peers (summed over peers)', '7']]);
+  assert.deepEqual(pairs({ storedMessages: 5, unhandledDistinct: null, unhandledMessages: null }), []);
+  assert.deepEqual([...storeFacts({ storedMessages: 9, unhandledMessages: 3, unhandledDistinct: 2 })].map((f) => [...f]).slice(-2), [['Messages waiting for peers', '2 of 9 stored'], ['Total across peers', '3']]);
+  assert.deepEqual([...propagationPairs({ storedMessages: 9, unhandledMessages: 3, unhandledDistinct: 2 })].map((f) => [...f]).slice(-2), [['Messages waiting for peers', '2 of 9 stored'], ['Total across peers', '3']]);
+});
+
+test('a group shows the summed backlog, since a distinct count does not add up', () => {
+  const g = { data: { propagation: { storedMessages: 9, unhandledMessages: 3, unhandledDistinct: 2 } } };
+  assert.deepEqual([...groupPropagationPairs(g)].map((f) => [...f]).slice(-1), [['Waiting to send to peers (summed over peers)', '3']]);
 });
