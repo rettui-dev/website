@@ -670,7 +670,7 @@ test('text from the network loses control, bidirectional and zero-width characte
   assert.equal(sanitizeStats({ ...stats(), rettui_version: '\u202e\u200b' }).rettuiVersion, '');
 });
 
-test('the peered nodes are counted only with a token, and no address or name reaches any API', async () => {
+test('the peered nodes are counted only with a token, and rows reach only the node detail answer', async () => {
   const body = { ...stats(), propagation: prop(), authorised: true, propagation_peers: [row(1, { name: 'Alice-Node', state: 'link_ready' })] };
   const plain = await fetchStats('https://a.test/s', { fetchFn: spy(body) });
   assert.equal('propagationPeers' in plain, false);
@@ -681,18 +681,14 @@ test('the peered nodes are counted only with a token, and no address or name rea
   });
   try {
     await s.monitor.checkAll();
-    assert.equal('propagationRows' in s.monitor, false);
-    // Not even in memory: look at everything the monitor holds.
+    // The counts and the stats hold no row; the rows are kept apart (see peer-rows.test.js).
     const held = JSON.stringify([...s.monitor.peerSummaries]) + JSON.stringify([...s.monitor.stats]);
     assert.equal(held.includes(addr(1)), false);
     assert.equal(held.includes('Alice-Node'), false);
     const status = await (await fetch(`${s.base}/api/status`)).text();
-    const detail = await (await fetch(`${s.base}/api/stats?host=a.test:1&range=7d`)).text();
-    for (const text of [status, detail]) {
-      assert.equal(text.includes(addr(1)), false);
-      assert.equal(text.includes('Alice-Node'), false);
-      assert.equal(text.includes('link_ready'), false);
-    }
+    assert.equal(status.includes(addr(1)), false);
+    assert.equal(status.includes('Alice-Node'), false);
+    assert.equal(status.includes('link_ready'), false);
     const a = JSON.parse(status).hosts.find((h) => h.host === 'a.test');
     assert.deepEqual(a.stats.peerSummary, { listed: 1, alive: 1, static: 0, unhandled: 4, truncated: false });
   } finally {
