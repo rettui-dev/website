@@ -10,7 +10,7 @@ import { loadConfig } from '../lib/config.js';
 import { createApp, LOGS_NOT_SERVED } from '../lib/app.js';
 import { createLogin } from '../lib/login.js';
 import { hashPassword } from '../lib/password.js';
-import { LogsCache, fetchLogs, parseLogsQuery, sanitizeLogs } from '../lib/logs.js';
+import { LogsCache, fetchLogs, logsUrl, parseLogsQuery, sanitizeLogs } from '../lib/logs.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -85,13 +85,13 @@ test('sanitizeLogs refuses what is not a log answer', () => {
 
 const answer = (body, init = {}) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status: 200, ...init });
 
-test('fetchLogs asks /logs of the stats URL origin with the token in a header only', async () => {
+test('fetchLogs asks /logs beside the stats URL with the token in a header only', async () => {
   let seen;
   const r = await fetchLogs('https://n.test:8443/some/path/stats.json', {
     token: TOKEN, lines: 50, level: 'warn',
     fetchFn: async (url, init) => ((seen = { url, init }), answer({ level: 'warn', truncated: false, lines: [{ time: null, level: 'warn', text: 'hi' }] })),
   });
-  assert.equal(seen.url, 'https://n.test:8443/logs?lines=50&level=warn');
+  assert.equal(seen.url, 'https://n.test:8443/some/path/logs?lines=50&level=warn');
   assert.equal(seen.init.headers.Authorization, `Bearer ${TOKEN}`);
   assert.equal(seen.init.redirect, 'error');
   assert.equal(seen.url.includes(TOKEN), false);
@@ -574,4 +574,12 @@ test('the token is not visible by dumping the monitor', async () => {
   } finally {
     await s.close();
   }
+});
+
+test('logsUrl puts /logs beside stats.json, or under a node path', () => {
+  assert.equal(logsUrl('https://n.test:8443/stats.json').href, 'https://n.test:8443/logs');
+  assert.equal(logsUrl('https://stats.test/front').href, 'https://stats.test/front/logs');
+  assert.equal(logsUrl('https://stats.test/front/').href, 'https://stats.test/front/logs');
+  assert.equal(logsUrl('https://stats.test/front/stats.json?x=1#y').href, 'https://stats.test/front/logs');
+  assert.equal(logsUrl('https://stats.test').href, 'https://stats.test/logs');
 });
