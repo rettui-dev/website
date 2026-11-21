@@ -108,10 +108,15 @@ nodes:
     # Optional: manage this node from the website (settings and a Reticulum restart, for users with the
     # manage or admin role), for a node started with --manage-listen and --manage-secret-file.
     # manage_url is the address of that listener only (no path, query or fragment; http is allowed for
-    # loopback and private addresses, https otherwise). The secret is 32 to 256 printable ASCII characters
-    # without spaces, quotes or backslashes, in a file of its own, relative to this one and different
-    # for every node; the node reads the same file. A URL without a secret file, or the reverse, stops
-    # the server at start, and so do two nodes with the same secret.
+    # the private addresses the node listens on: loopback, 10/8, 172.16/12, 192.168/16, 100.64/10,
+    # fc00::/7 and fe80::/10; https otherwise). Run the link over a tunnel (WireGuard, Tailscale) or a
+    # TLS proxy: plain http is signed, so nobody can change it on the way, but anyone on the way can
+    # read every answer. The secret is 32 to 256 printable ASCII characters without spaces, quotes or
+    # backslashes, in a file of its own that only its owner can read or write (chmod 600: a file the group or
+    # others can read or write stops the server at start), relative to this one and different for every node;
+    # the node reads the same file. A URL without a secret file, or the reverse, stops the server at
+    # start, and so do two nodes with the same secret. While any node has a manage_url, admins need
+    # two-step sign-in on to change users.
     # manage_url: http://10.200.0.2:8750
     # manage_secret_file: secrets/front.manage
     # manage_confirm_seconds: 300     # 60 to 900, default 300: how long a node waits for a confirmation

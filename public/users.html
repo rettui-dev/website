@@ -45,6 +45,7 @@
   <noscript><p class="note">The users page needs JavaScript.</p></noscript>
   <p id="users-status" class="note" role="status">Loading the users...</p>
   <p><a href="/account">Back to your account</a></p>
+  <p id="users-need-2fa" class="acct-card users-warning" tabindex="-1" hidden>Nodes are managed from this website, so changing users needs two-step sign-in. Until you turn it on on your <a href="/account">account page</a>, you can only look.</p>
 
   <div id="users-otp" class="acct-card users-otp" role="region" aria-labelledby="users-otp-h" tabindex="-1" hidden>
     <h2 id="users-otp-h">One-time password</h2>
@@ -100,7 +101,7 @@
         <label for="new-password" id="new-password-label" hidden>Their first password</label>
         <input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" hidden aria-describedby="new-password-help new-error">
         <p id="new-password-help" class="note">At least 12 characters, and not one of the most common passwords. Either way, they must choose their own password when they first sign in.</p>
-        <p id="new-confirm-help" class="note">Every change on this page asks in a pop-up for your password, and for your passkey or a code from your app if your two-step sign-in is on.</p>
+        <p id="new-confirm-help" class="note">Every change on this page asks in a pop-up for your password, and for your passkey or a code from your app if your two-step sign-in is on. While nodes are managed from this website, two-step sign-in must be on.</p>
         <div class="login-actions"><button id="new-submit" type="submit" class="primary">Add user</button></div>
       </form>
     </section>

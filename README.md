@@ -840,7 +840,14 @@ most, so one account signing in over and over never signs anyone else out.
 
 **Behind a reverse proxy.** The cookie is always `Secure`, so the login only works over HTTPS
 (browsers make an exception for `localhost`). Put the server behind a reverse proxy that
-terminates TLS; the server itself does not read `X-Forwarded-Proto`. The proxy must pass the
+terminates TLS. The server reads `X-Forwarded-Proto` for one thing only: when a trusted proxy (see
+below) says `https` (the last value, when there are several), the answer carries
+`Strict-Transport-Security: max-age=31536000; includeSubDomains`, so browsers use https for the
+site, and its subdomains, for a year. Over plain http, or when anyone else sends the header, it is
+never sent. Without trusted proxies, set it at the proxy instead. `includeSubDomains` means the
+browser holds every subdomain of the site's host to https as well, for a year from its last visit,
+and it cannot be taken back sooner from the server: turn it on only when every subdomain is served
+over https. The proxy must pass the
 `Host` header through (Caddy does; with nginx, `proxy_set_header Host $host;`) for browsers that
 do not send `Sec-Fetch-Site`. Without trusted proxies every request seems to come from the
 proxy, so all visitors share one address for the failed-login waits. List the proxy's address in
@@ -1109,7 +1116,8 @@ lists them (`passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and 
 passkey made for another address). Ids are short references, never the credential id or key. They
 only take JSON (`Content-Type: application/json`, at most 16 KiB, as a new passkey's answer is
 several kilobytes), with the header `X-Rettui-Request: 1`, from the page itself (`Sec-Fetch-Site:
-same-origin`, or `Origin` naming the host); a form on another site can send none of these.
+same-origin`, or `Origin` naming the host, and nothing else: an `Origin` with a user name or a
+path is refused); a form on another site can send none of these.
 Without a session the answer is 401. All answers carry `Cache-Control: no-store`.
 
 **Audit log.** `audit.log` in `DATA_DIR` gets one JSON line per security event, appended, mode
@@ -1118,7 +1126,10 @@ Without a session the answer is 401. All answers carry `Cache-Control: no-store`
 `recovery-code-used` (with how many are `left`), `recovery-codes-regenerated` (`with`),
 `sessions-ended` (how many were `ended`), `device-added` (a sign in from a new browser),
 `device-removed` and `devices-removed` (how many were `removed`, and how many sessions that
-ended, `ended`). Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
+ended, `ended`). Turning on a first second factor (the app code, or a first passkey, with no
+other second factor on) adds `second-factor-first` as well (`role`, `method`: `totp` or
+`passkey`, and `nodeChangesFrom`: when the wait before node changes ends, see "Managing nodes").
+Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
 user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
 `ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
 its counter did not go up, see "Passkeys"). A passkey is named by its name only: no credential id
@@ -1354,7 +1365,12 @@ or given another role, also not by themselves. An admin may give themselves anot
 delete themselves, only while another admin exists; they are then signed out at once.
 
 **Safeguards.** Every change needs, all at once: an admin's session; a sign in from the last 15
-minutes; the admin's password in the request itself, and with their two-step sign-in on their
+minutes; while any node has a `manage_url` (see "Managing nodes"), the admin's two-step sign-in
+turned on (else the answer is 403 with `code: "second-factor-required"` and the page says to turn it
+on first: otherwise an admin's password alone would be enough to make a `manage` user, set up a
+second factor for it, and change nodes through it), and not inside the 24-hour wait after their own
+first second factor (else 403 with `code: "second-factor-new"`, asked again after the password; see
+"The wait after a first second factor" under "Managing nodes"); the admin's password in the request itself, and with their two-step sign-in on their
 passkey, a current code from their app or a recovery code as well, asked for in the step-up dialog (see
 "Changes need a recent sign in"); the request header, same origin and JSON,
 as for the account API (`POST /api/users/create`, `/role`, `/delete`, `/reset-password`,
@@ -1494,6 +1510,16 @@ identities, interfaces, programs the node runs and the Reticulum config are not 
   online, and whether the node's clock agrees with the website's. From one minute off it says
   "This node's clock is N minutes off from the website's, so signed requests can't be trusted; fix
   the node's time." From five minutes off the node refuses every request with the same words.
+- the node's Reticulum configuration, read only: one table per section (for example
+  `interfaces / Hilltop TCP`) with each key and its value. The node decides what is shown; keys it
+  holds back read "set (hidden)" or "not set". The website applies the same list itself: only
+  type, enabled, mode, announce_cap, bitrate, ingress_control, enable_transport, share_instance,
+  listen and target host and port, reachable_on and discoverable show a value, and an interface
+  that runs a program (a pipe, or a command key) shows only its type and enabled. A note says when
+  the node uses a shared Reticulum instance (the file shown is then the node's own; the live
+  settings may be another process's). There is nothing to edit. The website keeps at most 128
+  sections of 64 keys, with texts cut at 256 characters, and says "Part of the config is not
+  shown." when anything was cut. An older node that sends no Reticulum config gets a line saying so.
 - the settings form, grouped, with the help text of each setting and its current value. **Save
   changes** sends only the settings you changed. If someone changed the settings meanwhile (in
   the terminal, or another user), the node refuses, the page loads the form again and says so.
@@ -1527,6 +1553,12 @@ change, and every control can be reached with the keyboard.
    In the rettui Docker image, set `MANAGE_LISTEN=10.200.0.2:8750` and
    `MANAGE_SECRET_FILE=/run/secrets/hilltop.manage` (they only work with the `node` command).
 
+   Make the link between the website and the node a tunnel (WireGuard, Tailscale) or put a TLS
+   proxy in front of the listener. The node speaks plain http: the signatures stop anyone on the
+   way from changing a request or faking an answer, but not from reading it, and every answer holds
+   the node's settings, its Reticulum interfaces and addresses and who changed what. A shared LAN
+   is not private enough.
+
 3. Add the listener to the node in the website's config file, and restart the website:
 
        nodes:
@@ -1537,14 +1569,21 @@ change, and every control can be reached with the keyboard.
            # manage_confirm_seconds: 300
 
 4. Give the people who manage nodes the role `manage` (on the Users page), and have them turn on
-   two-step sign-in on their Account page.
+   two-step sign-in on their Account page. They can change nodes 24 hours after that (see
+   "Safeguards"). Admins need two-step sign-in on too, to change anything on the Users page.
 
 The config keys, in the config file only (there are no variables for them):
 
 - `manage_url`: the address of the node's listener, an origin only (`http://host:port`, no path,
-  query or fragment). Plain `http` is allowed for loopback and private addresses only, as for
-  `stats_url`.
-- `manage_secret_file`: the file with the node's secret, relative to the config file. Each node
+  query or fragment). Plain `http` is allowed only for the private addresses the node itself
+  listens on: loopback (`127/8`, `::1`, `localhost`), `10/8`, `172.16/12`, `192.168/16`,
+  `100.64/10` (Tailscale), `fc00::/7` (WireGuard and Tailscale) and `fe80::/10`. A public address or
+  any other host name needs `https`. `stats_url` keeps the narrower list (loopback and `10/8`,
+  `172.16/12`, `192.168/16`).
+- `manage_secret_file`: the file with the node's secret, relative to the config file. It must be
+  readable and writable by its owner only: a file the group or others can read or write stops the
+  server at start, with a message to `chmod 600` it (on Linux and macOS; Windows has no such modes). In Docker, give the
+  file to the user the website runs as (`sudo chown 1000 secrets/hilltop.manage`). Each node
   needs its own secret: two nodes with the same one stop the server at start, and so does a secret
   that is also a stats token (of any node). `manage_url` without a secret file, or the reverse,
   stops it too.
@@ -1579,16 +1618,42 @@ request. Each user may read each node 120 times an hour (the state and the list 
 polling during a restart included); then 429 with `Retry-After`. Every change needs, all at once:
 the role; a sign in from the last 15 minutes (else the page asks for the password again); two-step
 sign-in turned on for the account (without it the answer is 403 with `code:
-"second-factor-required"`, and the page only shows); the password and the passkey, a code from the
-app or a recovery code in the request itself, asked for in the step-up dialog; and the request
-header, same origin and JSON, at most 16 KiB (`POST /api/manage/settings`, `/restart`,
-`/rollback`). Each user may ask 30 changes an hour of all nodes together, wrong passwords and codes
-included; a change the node was too busy for (503) does not count. Right before the node is asked,
-the server checks again that the session is there and still has the role: if not, the answer is
-401 and nothing is sent. The node limits changes too (10 a minute, one restart every 5 minutes).
+"second-factor-required"`, and the page only shows), and on for at least 24 hours when it was the
+first second factor (see below); the password and the passkey, a code from the app or a recovery
+code in the request itself, asked for in the step-up dialog; and the request header, same origin
+and JSON, at most 16 KiB (`POST /api/manage/settings`, `/restart`, `/rollback`). Each user may ask
+30 changes an hour of all nodes together, wrong passwords and codes included; a change the node was
+too busy for (503) does not count. Right before the node is asked, the server checks again that the
+session is there and still has the role, and that no wait has started meanwhile: if not, the answer is
+401 (or 403) and nothing is sent. The node limits changes too (10 a minute, one restart every 5
+minutes).
+
+**The wait after a first second factor.** A first second factor (the app code or a passkey, turned
+on on the Account page while no other was on) is confirmed by the password alone. So for 24 hours
+after it, its user can look at nodes but not change them (and an admin cannot change users while
+nodes are managed): the answer is 403 with `code:
+"second-factor-new"` and `nodeChangesFrom` (when the wait ends), and the page says until when. A
+stolen password is then not enough to set up a factor and change a node at once, and the owner has
+a day to notice the `second-factor-first` line in `audit.log`. A second factor added while another
+is on (and so confirmed by it) starts no wait. A second factor set up again after an admin reset
+it is a first one again, and waits. Users who had a second factor on before this version do not
+wait. The waits are kept in `second-factor-holds.json` in `DATA_DIR` (mode
+0600), apart from `users.db` so that older versions still read the user store, and a restart does
+not end them, nor does setting the clock back (a wait is cut to at most 24 hours from now, never
+dropped). A file that is there but cannot be read, or is of another version, is moved aside at
+start to `second-factor-holds.json.unreadable-<time>` and said once; the waits then start empty. If
+it cannot be moved, it is never written over, and the waits are kept in memory until the server
+stops.
 
 What the node refuses is said in fixed sentences (it changed elsewhere, it is busy, the clock is
-off, it could not be reached, its answer was not signed); only its words for a value it does not
+off, it could not be reached, its answer was not signed). For a change, an answer without a valid
+signature (the node does not sign a refusal of a request it saw before, nor its answer to one that
+took over 5 seconds to arrive) means the outcome is not known: reload the node before trying again.
+A node that restarted moments ago takes no request signed before it started (`before_start`): the
+answer is 503 with `code: "before_start"` and `Retry-After`, from what the node says (at most 10
+minutes), and until then a change is refused before the step-up, so trying again too soon uses up no
+code. The code of the change that met it first is used, since the node is asked only after the
+step-up. Only the node's words for a value it does not
 accept, or a change it does not allow, are passed on, cut to 300 characters. When a node does not
 answer in time the page says so, and nothing is taken as done: reload the page to see what the node
 did.
@@ -2194,7 +2259,7 @@ different versions a node has reported, with when each was first seen (at most 1
 - `STATS_SAMPLE_INTERVAL_MS` changes the sample interval (default 300000). It exists only
   so the graphs can be tried quickly during testing; do not set it in production.
 
-Security: use `https` URLs. Plain `http` is accepted only for loopback and private addresses (`localhost`, `127/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`). URLs cannot carry a user name or password, and start-up errors never print the URL. A node exposes only aggregate numbers (no peer or identity details), and the
+Security: use `https` URLs. Plain `http` is accepted only for loopback and private addresses (`localhost`, `127/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, and an IPv4 one of these written as IPv6, `::ffff:10.0.0.2`). The wider list of `manage_url` (tunnel ranges) does not hold here: the stats token goes with every request. URLs cannot carry a user name or password, and start-up errors never print the URL. A node exposes only aggregate numbers (no peer or identity details), and the
 website fetches only the URLs set by the operator in `STATS_URLS`, never anything a
 visitor sends. What a node answers is treated as untrusted and is shown as text only.
 

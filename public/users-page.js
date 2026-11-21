@@ -1,7 +1,9 @@
 // The users page (/users), for admins: every user from GET /api/users in a table (cards on a phone),
 // a form to add a user, and a dialog for the choices of a change (role, new password). Every change
 // is confirmed in the step-up dialog (step-up.js): the admin's password, and with their two-step
-// sign-in on, a passkey, a code from their app or a recovery code as well. It is a POST of JSON with the X-Rettui-Request header. The
+// sign-in on, a passkey, a code from their app or a recovery code as well. While nodes are managed
+// from the site, an admin without two-step sign-in can only look: the page says so and opens no
+// step-up dialog (the server refuses such a change too). It is a POST of JSON with the X-Rettui-Request header. The
 // server decides everything; this page only shows what it says. Everything is set as text: nothing
 // from the server becomes markup. A one-time password is shown once, with a copy button, and is
 // cleared from the page when the admin is done with it.
@@ -48,12 +50,23 @@
     return r && r.body && r.body.error ? r.body.error : 'Something went wrong. Try again.';
   }
 
+  var NEED_SECOND_FACTOR = 'Nodes are managed from this website, so changing users needs two-step sign-in. Turn it on on your account page first, then come back.';
+
+  // Whether this admin must turn on two-step sign-in before changing anything here.
+  function blocked() {
+    return Boolean(data && data.secondFactorRequired && !data.secondFactor);
+  }
+
   // A change confirmed in the step-up dialog, which collects the password (and the code) and stays
   // open on a wrong one. When the sign in is older than 15 minutes, the password just given makes it
   // recent again (the server has not looked at the code yet) and the change is sent again. Gives the
   // answer, or null when the admin gave up or must sign in again.
   function confirmed(path, body, opts) {
     if (!window.rettuiStepUp) return Promise.resolve({ status: 0, body: { error: 'The page did not load completely. Reload it.' } });
+    if (blocked()) {
+      $('users-need-2fa').focus();
+      return Promise.resolve({ status: 403, body: { error: NEED_SECOND_FACTOR, code: 'second-factor-required' } });
+    }
     return window.rettuiStepUp.ask({
       title: opts.title,
       why: opts.why,
@@ -76,6 +89,12 @@
       if (r && r.status === 401 && r.body.signIn) {
         load();
         return null;
+      }
+      // Two-step sign-in was turned off meanwhile (elsewhere): the page shows why, and keeps the message.
+      if (r && r.status === 403 && r.body.code === 'second-factor-required' && data) {
+        data.secondFactor = false;
+        data.secondFactorRequired = true;
+        $('users-need-2fa').hidden = false;
       }
       return r;
     });
@@ -163,12 +182,14 @@
         if (r.status === 200) {
           data = r.body;
           root.hidden = false;
+          $('users-need-2fa').hidden = !blocked();
           say(message || '');
           paint();
           return;
         }
         data = null;
         root.hidden = true;
+        $('users-need-2fa').hidden = true;
         say(r.status === 401 ? 'Your session has ended. Sign in again to manage users.' : errorOf(r));
       })
       .catch(function () { say('Could not load the users. Try again later.'); });

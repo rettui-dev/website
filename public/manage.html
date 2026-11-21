@@ -48,6 +48,7 @@
   <p><a href="/account">Back to your account</a></p>
 
   <p id="manage-view-only" class="acct-card users-warning" hidden>You can look, but not change anything: turn on two-step sign-in on your <a href="/account">account page</a> first.</p>
+  <p id="manage-wait" class="acct-card users-warning" hidden>Your two-step sign-in was turned on less than 24 hours ago, so you can look, but not change anything, until <span id="manage-wait-until"></span>. This keeps a stolen password from being enough to change a node.</p>
   <p id="manage-none" class="note" hidden>No node is set up to be managed from this site. Whoever runs the site adds <code>manage_url</code> and <code>manage_secret_file</code> to a node in the config file.</p>
 
   <div id="manage" hidden>
@@ -72,6 +73,14 @@
         <div id="manage-fields"></div>
         <div class="login-actions"><button id="manage-save" type="submit" class="primary">Save changes</button></div>
       </form>
+    </section>
+
+    <section id="manage-ret" class="acct-card" aria-labelledby="manage-ret-h" hidden>
+      <h2 id="manage-ret-h">Reticulum configuration</h2>
+      <p class="note">What the node's Reticulum config says, read only. Secrets and anything the node does not list are shown as set or not set, never with their value.</p>
+      <p id="manage-ret-status" class="note" role="status"></p>
+      <p id="manage-ret-shared" class="note" hidden>This node uses a shared Reticulum instance. The file shown here is this node's own config; the live settings may be those of another Reticulum process.</p>
+      <div id="manage-ret-sections"></div>
     </section>
 
     <section id="manage-restart-card" class="acct-card" aria-labelledby="manage-restart-h" hidden>

@@ -1496,6 +1496,12 @@ test('the manage page: text only, the request header, the step-up for every chan
   for (const id of ['manage-error', 'manage-form-error', 'manage-restart-error', 'manage-rollback-error']) assert.match(html, new RegExp(`<p id="${id}" class="login-error" role="alert"></p>`), id);
   assert.match(html, /<label for="manage-node">Node<\/label>\s*<select id="manage-node"/);
   assert.match(html, /<input id="manage-revision" type="hidden"/);
+  // The Reticulum panel: a labelled region, a status that is read out, no control in it.
+  const panel = /<section id="manage-ret"[\s\S]*?<\/section>/.exec(html)[0];
+  assert.match(panel, /aria-labelledby="manage-ret-h"/);
+  assert.match(panel, /<h2 id="manage-ret-h">Reticulum configuration<\/h2>/);
+  assert.match(panel, /<p id="manage-ret-status" class="note" role="status"><\/p>/);
+  assert.doesNotMatch(panel, /<(input|button|select|textarea|form|a)\b/);
   assert.match(html, /<button id="manage-restart" type="button" class="danger">Restart Reticulum<\/button>/);
   assert.match(html, /<button id="manage-older" type="button" hidden>Older entries<\/button>/);
   assert.match(html, /<script src="\/step-up\.js" defer><\/script>\s*<script src="\/manage-page\.js" defer><\/script>/);
@@ -1588,6 +1594,78 @@ test('manage page: the node is shown with its status line, clock warning, settin
   assert.equal($('manage-restart').disabled, false);
 });
 
+const RET = {
+  revision: 'f'.repeat(32),
+  shared_instance: true,
+  truncated: false,
+  sections: [
+    { path: ['reticulum'], keys: [{ key: 'enable_transport', value: 'yes', set: true }] },
+    { path: ['interfaces', EVIL], keys: [{ key: 'type', value: EVIL, set: true }, { key: 'passphrase', value: null, set: true }, { key: 'network_name', value: null, set: false }, { key: 'note', value: '', set: true }] },
+    { path: ['interfaces', 'Empty'], keys: [] },
+  ],
+};
+
+test('manage page: the Reticulum configuration is a read-only table per section, as text, with hidden keys told as set or not set', async () => {
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: RET })] } });
+  const $ = p.byId;
+  const all = $('manage-ret-sections').all();
+  assert.equal($('manage-ret').hidden, false);
+  assert.equal($('manage-ret-status').textContent, '');
+  assert.equal($('manage-ret-shared').hidden, false);
+  // Its words are in the page (the fake document starts empty).
+  assert.match(await read('manage.html'), /<p id="manage-ret-shared" class="note" hidden>This node uses a shared Reticulum instance\. The file shown here is this node's own config; the live settings may be those of another Reticulum process\.<\/p>/);
+  assert.deepEqual(all.filter((e) => e.tag === 'h3').map((e) => e.textContent), ['reticulum', `interfaces / ${EVIL}`, 'interfaces / Empty']);
+  assert.equal(all.some((e) => e.tag === 'img' || e.tag === 'script'), false, 'the markup of the node is text');
+  assert.deepEqual(all.filter((e) => e.tag === 'caption').map((e) => e.textContent), ['Reticulum settings of reticulum', `Reticulum settings of interfaces / ${EVIL}`]);
+  const rows = all.filter((e) => e.tag === 'tr' && e.children[0].tag === 'th' && e.children[0].scope === 'row').map((tr) => [tr.children[0].textContent, tr.children[1].textContent]);
+  assert.deepEqual(rows, [['enable_transport', 'yes'], ['type', EVIL], ['passphrase', 'set (hidden)'], ['network_name', 'not set'], ['note', '(empty)']]);
+  assert.deepEqual(all.filter((e) => e.tag === 'th' && e.scope === 'col').map((e) => e.textContent), ['Setting', 'Value', 'Setting', 'Value']);
+  assert.ok(all.some((e) => e.textContent === 'No settings listed.'));
+  // Read only: nothing to click, type in or submit in the panel.
+  assert.equal(all.some((e) => ['input', 'button', 'select', 'textarea', 'a'].includes(e.tag) || Object.keys(e.listeners).length > 0), false);
+  // Not shared: the note is hidden. No section: it says so.
+  const other = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: { ...RET, shared_instance: false, sections: [] } })] } });
+  assert.equal(other.byId('manage-ret-shared').hidden, true);
+  assert.equal(other.byId('manage-ret-status').textContent, 'The node lists no Reticulum configuration.');
+  assert.equal(other.byId('manage-ret-sections').children.length, 0);
+});
+
+test('manage page: a cut config says so, and the sample of the stub node is painted as cleaned', async () => {
+  const { cleanReticulum } = await import('../lib/manage-api.js');
+  const { sampleReticulum } = await import('./helpers/manage-node.js');
+  const cleaned = cleanReticulum(sampleReticulum());
+  assert.equal(cleaned.truncated, true);
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: cleaned })] } });
+  assert.equal(p.byId('manage-ret-status').textContent, 'Part of the config is not shown.');
+  const all = p.byId('manage-ret-sections').all();
+  assert.equal(all.filter((e) => e.tag === 'h3').length, 128);
+  assert.ok(all.some((e) => e.tag === 'th' && e.textContent === 'passphrase'));
+  assert.ok(all.some((e) => e.tag === 'td' && e.textContent === 'set (hidden)'));
+  assert.equal(all.some((e) => e.textContent.includes('hunter2')), false);
+  assert.equal(all.some((e) => e.tag === 'script' || e.tag === 'img'), false);
+  // Not cut: no words. Cut and empty: both are said.
+  const whole = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: { ...RET, truncated: false } })] } });
+  assert.equal(whole.byId('manage-ret-status').textContent, '');
+  const none = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: { ...RET, truncated: true, sections: [] } })] } });
+  assert.equal(none.byId('manage-ret-status').textContent, 'The node lists no Reticulum configuration. Part of the config is not shown.');
+  const cut = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: { ...RET, truncated: true } })] } });
+  assert.equal(cut.byId('manage-ret-status').textContent, 'Part of the config is not shown.');
+});
+
+test('manage page: a node without Reticulum config says so, and the panel is gone when the node cannot be read', async () => {
+  for (const reticulum of [null, undefined, 'x', { sections: 'x' }]) {
+    const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum })] } });
+    assert.equal(p.byId('manage-ret').hidden, false);
+    assert.equal(p.byId('manage-ret-status').textContent, 'This node does not say what its Reticulum config holds.');
+    assert.equal(p.byId('manage-ret-shared').hidden, true);
+    assert.equal(p.byId('manage-ret-sections').children.length, 0);
+  }
+  const down = await managePage({ routes: { [`GET ${NODE_URL}`]: [502, { error: 'The node could not be reached.', code: 'network' }] } });
+  assert.equal(down.byId('manage-ret').hidden, true);
+  // While a node loads, the status (a role=status element) says so; the page sets it as text.
+  assert.match(await read('manage-page.js'), /\$\('manage-ret-status'\)\.textContent = 'Loading the Reticulum configuration\.\.\.';/);
+});
+
 test('manage page: Save sends only what changed, with the revision, through the step-up; a stale revision loads the form again', async () => {
   let saves = 0;
   const p = await managePage({
@@ -1660,6 +1738,70 @@ test('manage page: without two-step sign-in it only shows; a gone session says s
   const down = await managePage({ routes: { [`GET ${NODE_URL}`]: [502, { error: 'The node could not be reached.', code: 'network' }] } });
   assert.equal(down.byId('manage-error').textContent, 'The node could not be reached.');
   assert.equal(down.byId('manage-settings').hidden, true);
+});
+
+test('manage page: in the 24 hours after a first second factor it only shows, and says until when', async () => {
+  const until = new Date(Date.now() + 3600_000).toISOString();
+  const p = await managePage({ me: { ...MANAGE, secondFactor: true, nodeChangesFrom: until } });
+  const $ = p.byId;
+  assert.equal($('manage-wait').hidden, false);
+  assert.equal($('manage-view-only').hidden, true);
+  assert.equal($('manage-wait-until').textContent, new Date(until).toLocaleString());
+  assert.equal($('manage-save').disabled, true);
+  assert.equal($('manage-restart').disabled, true);
+  $('manage-restart').fire('click');
+  await settle();
+  assert.equal(p.asked.length, 0);
+  // Once it is over (or never was), the page changes as before.
+  for (const nodeChangesFrom of [new Date(Date.now() - 1000).toISOString(), null, undefined]) {
+    const q = await managePage({ me: { ...MANAGE, secondFactor: true, nodeChangesFrom } });
+    assert.equal(q.byId('manage-wait').hidden, true, String(nodeChangesFrom));
+    assert.equal(q.byId('manage-restart').disabled, false, String(nodeChangesFrom));
+  }
+  assert.match(await read('manage.html'), /<p id="manage-wait" class="acct-card users-warning" hidden>Your two-step sign-in was turned on less than 24 hours ago/);
+});
+
+test('users page: while nodes are managed, an admin without two-step sign-in is told to turn it on, and no step-up opens', async () => {
+  const js = await read('users-page.js');
+  const run = async (page) => {
+    const els = new Map();
+    const byId = (id) => {
+      if (!els.has(id)) els.set(id, new FakeElement(id));
+      return els.get(id);
+    };
+    const asked = [];
+    const posts = [];
+    const answer = (status, body) => Promise.resolve({ status, json: () => Promise.resolve(body) });
+    const context = {
+      document: { getElementById: byId, createElement: () => new FakeElement() },
+      window: { rettuiStepUp: { ask: (o) => (asked.push(o), o.send({ password: 'pw', code: '123456' })) } },
+      fetch: (url, opts) => (opts?.method === 'POST' ? (posts.push(url), answer(200, { ok: true })) : answer(200, page)),
+      navigator: {},
+      location: { assign() {} },
+    };
+    vm.runInNewContext(js, context);
+    await new Promise((r) => setTimeout(r, 10));
+    const button = byId('users-rows').all().find((e) => e.attrs['aria-label'] === 'Reset the two-step sign-in of carol');
+    button.fire('click');
+    await new Promise((r) => setTimeout(r, 10));
+    return { byId, asked, posts };
+  };
+  const users = [{ name: 'alice', role: 'admin', source: 'config', secondFactor: false, devices: 0 }, { name: 'carol', role: 'manage', source: 'store', secondFactor: true, totp: true, devices: 1 }];
+  const page = { me: 'alice', roles: ['admin', 'manage', 'viewer'], users };
+  const blocked = await run({ ...page, secondFactor: false, secondFactorRequired: true });
+  assert.equal(blocked.byId('users-need-2fa').hidden, false);
+  assert.equal(blocked.asked.length, 0, 'no step-up dialog');
+  assert.deepEqual(blocked.posts, []);
+  assert.match(blocked.byId('users-status').textContent, /changing users needs two-step sign-in/);
+  // With a second factor on, the step-up asks for it; without managed nodes, nothing changes.
+  for (const [secondFactor, secondFactorRequired] of [[true, true], [false, false]]) {
+    const r = await run({ ...page, secondFactor, secondFactorRequired });
+    assert.equal(r.byId('users-need-2fa').hidden, true);
+    assert.equal(r.asked.length, 1);
+    assert.equal(r.asked[0].secondFactor, secondFactor);
+    assert.deepEqual(r.posts, ['/api/users/reset-second-factor']);
+  }
+  assert.match(await read('users.html'), /<p id="users-need-2fa" class="acct-card users-warning" tabindex="-1" hidden>Nodes are managed from this website, so changing users needs two-step sign-in\. Until you turn it on on your <a href="\/account">account page<\/a>, you can only look\.<\/p>/);
 });
 
 test('manage page: Restart asks the node every 3 seconds until it says how it went, and gives up after 2 minutes', async () => {

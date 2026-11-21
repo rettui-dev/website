@@ -142,3 +142,19 @@ test('the passkey list works at phone width: it wraps, and the buttons are large
   assert.match(css, /\.login-actions button \{ min-height: 40px/);
   assert.match(css, /\.acct-passkey \.acct-form \{ max-width: none; \}/);
 });
+
+test('the Reticulum panel of the manage page is a labelled region with a heading, a status that is read out and no controls', async () => {
+  const html = await read('manage.html');
+  const panel = /<section id="manage-ret"([^>]*)>([\s\S]*?)<\/section>/.exec(html);
+  assert.ok(panel, 'the panel is there');
+  assert.match(panel[1], /aria-labelledby="manage-ret-h"/);
+  assert.match(panel[2], /<h2 id="manage-ret-h">Reticulum configuration<\/h2>/);
+  assert.match(panel[2], /<p id="manage-ret-status"[^>]*role="status"/);
+  assert.doesNotMatch(panel[2], /<(input|button|select|textarea|form)\b/, 'read only');
+  // The tables the page builds have a caption, column headers and row headers.
+  const js = await read('manage-page.js');
+  assert.match(js, /el\('caption', 'sr-only'/);
+  assert.match(js, /th\.scope = 'col'/);
+  assert.match(js, /th\.scope = 'row'/);
+  assert.match(js, /el\('h3'/);
+});

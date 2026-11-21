@@ -22,6 +22,7 @@ import { MAX_PASSKEYS, NO_PASSKEYS, createPasskeys, passkeyRef } from '../lib/pa
 import { base32Decode, hotp, stepAt, totp } from '../lib/totp.js';
 import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
+import { FIRST_FACTOR_HOLD_MS, createFactorHolds } from '../lib/factor-hold.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const NOW = 1_800_000_000_000;
@@ -34,7 +35,8 @@ const IP = '127.0.0.1';
 
 // Alice (admin) is in the config file, bob (manage) a website user. siteUrl: the site's address,
 // which passkeys are made for; null for none (passkeys off).
-async function setup({ siteUrl = ORIGIN } = {}) {
+// manage: what createApp gets for the nodes managed from the website (none by default).
+async function setup({ siteUrl = ORIGIN, manage = null } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'passkeys-http-'));
   const hash = await hashPassword(ALICE, undefined, fakeHasher);
   const config = loadConfig(`users:\n  - name: Alice\n    password_hash: '${hash}'\n    role: admin\nnodes:\n  - address: a.test:1\n`);
@@ -48,10 +50,11 @@ async function setup({ siteUrl = ORIGIN } = {}) {
   const logs = [];
   const login = createLogin({ users: config.users, store, settings: config.login, hasher: fakeHasher, now, audit, failures, sleep: async () => {}, passkeys, log: (m) => logs.push(m) });
   const monitor = new Monitor({ targets: config.targets, dataDir, probeFn: async () => ({ up: true, ms: 1 }) });
-  const server = createApp({ monitor, publicDir, login });
+  const holds = createFactorHolds({ dataDir, now });
+  const server = createApp({ monitor, publicDir, login, manage, holds });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return {
-    port: server.address().port, clock, store, login, audit, failures, dataDir, logs, passkeys,
+    port: server.address().port, clock, store, login, audit, failures, dataDir, logs, passkeys, holds,
     close: () => (server.closeAllConnections(), new Promise((r) => server.close(r))),
   };
 }
@@ -806,6 +809,34 @@ test('passkeys: every answer allows passkeys for this site only (Permissions-Pol
       assert.match(policy, /(^|, )publickey-credentials-create=\(self\)(,|$)/, p);
       assert.match(policy, /camera=\(\)/, p);
     }
+  } finally {
+    await s.close();
+  }
+});
+
+test('a first passkey starts the wait before node changes and is audited; a factor added while one is on starts none', async () => {
+  const calls = [];
+  const manage = { client: { call: async (...args) => (calls.push(args), { ok: true, status: 202, body: { id: '00112233aabbccdd' } }) }, nodes: ['a.test:1'] };
+  const s = await setup({ manage });
+  try {
+    const c = await logIn(s);
+    const { a, finish } = await addPasskey(s, c);
+    assert.equal(finish.status, 200, finish.text);
+    const until = NOW + FIRST_FACTOR_HOLD_MS;
+    assert.equal(s.holds.until('bob'), until);
+    assert.equal((await get(s, '/api/manage', c)).json().nodeChangesFrom, new Date(until).toISOString());
+    const w = await api(s, '/api/manage/restart', { host: 'a.test:1', password: BOB, passkey: await stepUpPasskey(s, c, a) }, c);
+    assert.equal(w.status, 403, w.text);
+    assert.equal(w.json().code, 'second-factor-new');
+    assert.equal(calls.length, 0);
+    // The app code, confirmed by the passkey, and a second passkey, confirmed by the app code: no new wait.
+    s.clock.t += 60_000;
+    const { secret } = await enableTotp(s, c, BOB, { passkey: await stepUpPasskey(s, c, a) });
+    const more = await addPasskey(s, c, { stepUp: { code: codeNow(s, secret) } });
+    assert.equal(more.finish.status, 200, more.finish.text);
+    assert.equal(s.holds.until('bob'), until, 'the wait is the one of the first passkey');
+    const firsts = (await auditLines(s)).filter((l) => l.event === 'second-factor-first');
+    assert.deepEqual(firsts.map((l) => [l.user, l.role, l.method, l.nodeChangesFrom]), [['bob', 'manage', 'passkey', new Date(until).toISOString()]]);
   } finally {
     await s.close();
   }

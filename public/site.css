@@ -537,6 +537,9 @@ button.danger:hover { border-width: 1px; text-decoration: underline; }
 }
 /* The manage page: one node at a time, its settings in groups; long values wrap */
 .manage-pick { margin: 8px 0 0; }
+.manage-ret-section { margin: 12px 0 0; }
+.manage-ret-section h3 { margin: 0 0 4px; font-size: 16px; overflow-wrap: anywhere; }
+.manage-ret-table th, .manage-ret-table td { overflow-wrap: anywhere; }
 .manage-line { margin: 0; overflow-wrap: anywhere; }
 .manage-form { max-width: 520px; }
 .manage-group { display: grid; gap: 6px; margin: 10px 0 0; }

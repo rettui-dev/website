@@ -233,6 +233,39 @@ test('manage settings are checked strictly and the errors name the place', () =>
   bad(`manage_url: http://10.0.0.2:8750\n${manageCfg()}`, /unknown key "manage_url"/);
 });
 
+test('manage_url over plain http takes the private ranges the node listens on (tunnels included) and refuses public addresses', () => {
+  const urlOf = (url) => loadConfig(manageCfg(`    manage_url: "${url}"\n    manage_secret_file: a.secret\n`)).manage.get('a.test:1').url;
+  // Loopback, RFC 1918, 100.64.0.0/10 (Tailscale), fc00::/7 (WireGuard, Tailscale), fe80::/10, and an
+  // IPv4 private address written as IPv6.
+  for (const [url, origin] of [
+    ['http://127.0.0.1:8750', 'http://127.0.0.1:8750'],
+    ['http://localhost:8750', 'http://localhost:8750'],
+    ['http://10.0.0.2:8750', 'http://10.0.0.2:8750'],
+    ['http://172.31.255.254:8750', 'http://172.31.255.254:8750'],
+    ['http://192.168.4.4:8750', 'http://192.168.4.4:8750'],
+    ['http://100.64.0.1:8750', 'http://100.64.0.1:8750'],
+    ['http://100.101.102.103:8750', 'http://100.101.102.103:8750'],
+    ['http://100.127.255.255:8750', 'http://100.127.255.255:8750'],
+    ['http://[::1]:8750', 'http://[::1]:8750'],
+    ['http://[fd7a:115c:a1e0::1]:8750', 'http://[fd7a:115c:a1e0::1]:8750'],
+    ['http://[fc00::2]:8750', 'http://[fc00::2]:8750'],
+    ['http://[fe80::1]:8750', 'http://[fe80::1]:8750'],
+    ['http://[::ffff:10.0.0.2]:8750', 'http://[::ffff:a00:2]:8750'],
+  ]) assert.equal(urlOf(url), origin, url);
+  // Public addresses, ranges next to the private ones, host names, and the unspecified addresses.
+  for (const url of ['http://8.8.8.8:8750', 'http://100.63.255.255:8750', 'http://100.128.0.1:8750', 'http://172.32.0.1:8750', 'http://169.254.1.1:8750', 'http://[2001:db8::1]:8750', 'http://[fec0::1]:8750', 'http://[::ffff:8.8.8.8]:8750', 'http://[::]:8750', 'http://0.0.0.0:8750', 'http://node.example.org:8750', 'http://10.0.0.2.nip.io:8750']) {
+    assert.throws(() => urlOf(url), /nodes\[1\]\.manage_url uses plain http, which is only allowed for loopback and private addresses; use https/, url);
+  }
+  // https is taken for any host.
+  assert.equal(urlOf('https://node.example.org:8750'), 'https://node.example.org:8750');
+  // stats_url keeps the narrower list: its token is sent with every request.
+  const statsOf = (url) => loadConfig(`nodes:\n  - address: a.test:1\n    stats_url: "${url}"\n`).statsUrls.get('a.test:1');
+  for (const url of ['http://127.0.0.1:8080/stats', 'http://10.0.0.2:8080/stats', 'http://172.16.0.2:8080/stats', 'http://192.168.0.2:8080/stats', 'http://[::1]:8080/stats']) assert.equal(statsOf(url), url, url);
+  for (const url of ['http://100.64.0.1:8080/stats', 'http://[fd7a:115c:a1e0::1]:8080/stats', 'http://[fe80::1]:8080/stats', 'http://8.8.8.8:8080/stats']) {
+    assert.throws(() => statsOf(url), /stats_url uses plain http, which is only allowed for loopback and private addresses; use https/, url);
+  }
+});
+
 async function manageDir(files, config) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-manage-'));
   for (const [name, text] of Object.entries(files)) await fs.writeFile(path.join(dir, name), text, { mode: 0o600 });
@@ -248,11 +281,33 @@ test('the manage secret is read from its file, relative to the config, and trimm
   assert.deepEqual(c.warnings, []);
 });
 
-test('a manage secret file that others can read gets a warning that does not hold the secret', async () => {
-  const file = await manageDir({ 'a.secret': MANAGE_SECRET }, manageCfg(manageNode));
-  await fs.chmod(path.join(path.dirname(file), 'a.secret'), 0o644);
+test('a manage secret file that the group or others can read or write stops the start, with a plain message that does not hold the secret', { skip: process.platform === 'win32' && 'POSIX modes only' }, async () => {
+  for (const mode of [0o644, 0o640, 0o604, 0o444, 0o660, 0o620, 0o602, 0o622]) {
+    const file = await manageDir({ 'a.secret': MANAGE_SECRET }, manageCfg(manageNode));
+    await fs.chmod(path.join(path.dirname(file), 'a.secret'), mode);
+    await assert.rejects(loadConfigFile(file), (e) => {
+      assert.match(e.message, /nodes\[1\]\.manage_secret_file \(a\.secret\) can be read or changed by other users \(mode \d+\)/);
+      assert.match(e.message, /chmod 600 a\.secret/);
+      assert.equal(e.message.includes(MANAGE_SECRET), false);
+      return true;
+    }, mode.toString(8));
+  }
+  // Only the owner may read or write it: fine, without a warning.
+  for (const mode of [0o600, 0o400, 0o700]) {
+    const file = await manageDir({ 'a.secret': MANAGE_SECRET }, manageCfg(manageNode));
+    await fs.chmod(path.join(path.dirname(file), 'a.secret'), mode);
+    const c = await loadConfigFile(file);
+    assert.equal(c.manage.get('a.test:1').secret, MANAGE_SECRET, mode.toString(8));
+    assert.deepEqual(c.warnings, []);
+  }
+});
+
+test('a stats token file that others can read still only gets a warning, while its manage secret is refused', { skip: process.platform === 'win32' && 'POSIX modes only' }, async () => {
+  const cfg = manageCfg(`${manageNode}    stats_url: http://10.0.0.2:8080/stats\n    stats_token_file: t.token\n`);
+  const file = await manageDir({ 'a.secret': MANAGE_SECRET, 't.token': `${MANAGE_SECRET}-stats\n` }, cfg);
+  await fs.chmod(path.join(path.dirname(file), 't.token'), 0o644);
   const c = await loadConfigFile(file);
-  if (process.platform !== 'win32') assert.ok(c.warnings.some((w) => /manage_secret_file/.test(w) && /can be read by other users/.test(w)));
+  assert.ok(c.warnings.some((w) => /stats_token_file/.test(w) && /can be read by other users/.test(w)));
   assert.equal(c.warnings.join('\n').includes(MANAGE_SECRET), false);
 });
 

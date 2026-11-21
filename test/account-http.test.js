@@ -467,7 +467,12 @@ test('set up gives the secret once, to its owner, and never again; it turns on o
     assert.equal((await diskBytes(s.dataDir)).includes(Buffer.from(secret)), false);
     const audit = await fs.readFile(s.audit.file, 'utf8');
     assert.equal(audit.includes(secret), false);
-    assert.deepEqual((await changeLines(s)).map((l) => l.event), ['totp-enabled']);
+    const lines = await changeLines(s);
+    assert.deepEqual(lines.map((l) => l.event), ['totp-enabled', 'second-factor-first']);
+    // The first second factor is an audit line of its own, with the end of the wait before node
+    // changes (factor-hold.js).
+    const first = lines[1];
+    assert.deepEqual({ user: first.user, role: first.role, method: first.method, nodeChangesFrom: first.nodeChangesFrom }, { user: 'Alice', role: 'admin', method: 'totp', nodeChangesFrom: new Date(s.clock.t + 24 * 3600_000).toISOString() });
     if (process.platform !== 'win32') assert.equal((await fs.stat(s.audit.file)).mode & 0o777, 0o600);
     // Enable without a set up first.
     const b = await logIn(s, 'bob', BOB_PASSWORD);
@@ -526,7 +531,7 @@ test('with TOTP on, sensitive changes need the password AND a code (or a recover
     const again = await enableTotp(s, c2);
     assert.equal((await api(s, '/api/account/totp/disable', { password: PASSWORD, code: codeNow(s, again.secret) }, c2)).status, 200);
     const events = (await changeLines(s)).map((l) => `${l.event}${l.with ? `:${l.with}` : ''}`);
-    assert.deepEqual(events, ['totp-enabled', 'recovery-codes-regenerated:password+code', 'recovery-code-used', 'totp-disabled:password+recovery', 'totp-enabled', 'totp-disabled:password+code']);
+    assert.deepEqual(events, ['totp-enabled', 'second-factor-first', 'recovery-codes-regenerated:password+code', 'recovery-code-used', 'totp-disabled:password+recovery', 'totp-enabled', 'second-factor-first', 'totp-disabled:password+code']);
     // Off again: the password alone signs in.
     assert.deepEqual((await logIn(s)).r.json(), { ok: true, name: 'Alice' });
   } finally {

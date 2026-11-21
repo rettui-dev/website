@@ -12,6 +12,7 @@ import { StoreError, UserStore, storeHasUsers } from './lib/users.js';
 import { DB_FILE, NO_KEY, StoreBusyError, openUserDb } from './lib/userdb.js';
 import { KeyError, loadKeys } from './lib/keys.js';
 import { createAudit, createFailureLog } from './lib/audit.js';
+import { createFactorHolds } from './lib/factor-hold.js';
 import { ReleaseCache, loadReleaseSettings } from './lib/releases.js';
 import { argon2Available } from './lib/password.js';
 import { SAMPLE_INTERVAL_MS } from './lib/history.js';
@@ -130,7 +131,10 @@ const manageNodes = config.manage ?? new Map();
 const manage = manageNodes.size > 0 ? { client: createManageClient({ nodes: manageNodes }), nodes: [...manageNodes.keys()] } : null;
 forgetManageSecrets(manageNodes);
 if (manage && !(users.length || store.hasLocalUsers())) console.warn(`warning: ${manageNodes.size === 1 ? 'a node has' : `${manageNodes.size} nodes have`} a manage_url, but the site has no users, so nobody can manage ${manageNodes.size === 1 ? 'it' : 'them'} until a user with the manage or admin role is added`);
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site, manage });
+// The waits after a first second factor, before node changes (factor-hold.js).
+const holds = createFactorHolds({ dataDir });
+await holds.load();
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site, manage, holds });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -141,7 +145,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     failures.stop();
     // The last uptime and history, the failures summed up so far and the audit lines are all
     // written before the process ends. User store writes are done when they return.
-    Promise.all([monitor.flush(), failures.flush(), audit.flush(), store.flush()])
+    Promise.all([monitor.flush(), failures.flush(), audit.flush(), store.flush(), holds.flush()])
       .catch((err) => console.error(`final save failed: ${err.message}`))
       .finally(() => {
         // The store is closed once no request can write to it any more.

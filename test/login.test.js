@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Keyring } from '../lib/keys.js';
-import { Busy, CODE_MAX_WAIT_MS, CODE_USER_FREE, DEVICE_AUDIT_MS, DEVICE_BURST, DEVICE_INTERVAL_MS, MAX_QUEUED_HASHES, NAME_BACKLOG, NAME_BURST, NAME_INTERVAL_MS, NET48_FREE, NET56_FREE, NameBucket, Sessions, Throttle, clientIp, cookieValue, createLogin, deviceHash, hashGate, ipKey, isFormType, netKeys, newDeviceId, normalIp, sameOrigin, untrustedProxy, waitText } from '../lib/login.js';
+import { Busy, CODE_MAX_WAIT_MS, CODE_USER_FREE, DEVICE_AUDIT_MS, DEVICE_BURST, DEVICE_INTERVAL_MS, MAX_QUEUED_HASHES, NAME_BACKLOG, NAME_BURST, NAME_INTERVAL_MS, NET48_FREE, NET56_FREE, NameBucket, Sessions, Throttle, clientIp, cookieValue, createLogin, deviceHash, hashGate, ipKey, isFormType, netKeys, newDeviceId, normalIp, proxyMatcher, sameOrigin, untrustedProxy, viaHttps, waitText } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
 import { LOGIN_WRITE_MS, MAX_DEVICES, UserStore } from '../lib/users.js';
 import { ACTION_WINDOW_MS, REAUTHS_PER_SESSION, REAUTHS_PER_USER } from '../lib/account.js';
@@ -253,6 +253,39 @@ test('sameOrigin: Sec-Fetch-Site first, else Origin against Host', () => {
   assert.equal(sameOrigin({ origin: 'not a url', host: 'status.test' }), false);
   assert.equal(sameOrigin({ host: 'status.test' }), false);
   assert.equal(sameOrigin({}), false);
+});
+
+test('sameOrigin refuses an Origin with a user part, a path or another spelling, which no browser sends', () => {
+  // The URL parser drops the user part, so these would otherwise name the host.
+  assert.equal(sameOrigin({ origin: 'http://evil.example@127.0.0.1:8091', host: '127.0.0.1:8091' }), false);
+  assert.equal(sameOrigin({ origin: 'https://evil.test:x@status.test', host: 'status.test' }), false);
+  assert.equal(sameOrigin({ origin: 'https://@status.test', host: 'status.test' }), false);
+  assert.equal(sameOrigin({ origin: 'https://status.test/', host: 'status.test' }), false);
+  assert.equal(sameOrigin({ origin: 'https://status.test/path', host: 'status.test' }), false);
+  assert.equal(sameOrigin({ origin: 'https://STATUS.test', host: 'status.test' }), false);
+  assert.equal(sameOrigin({ origin: 'https://status.test:443', host: 'status.test' }), false);
+  // What browsers send still passes, with a Host in any case.
+  assert.equal(sameOrigin({ origin: 'http://127.0.0.1:8091', host: '127.0.0.1:8091' }), true);
+  assert.equal(sameOrigin({ origin: 'https://status.test', host: 'Status.Test' }), true);
+  assert.equal(sameOrigin({ origin: 'http://[::1]:8080', host: '[::1]:8080' }), true);
+});
+
+test('viaHttps: a TLS connection, or a trusted proxy whose X-Forwarded-Proto says https; nobody else', () => {
+  const trusted = proxyMatcher(['10.0.0.1']);
+  const req = (remoteAddress, headers = {}, encrypted = undefined) => ({ socket: { remoteAddress, encrypted }, headers });
+  assert.equal(viaHttps(req('192.0.2.9', {}, true), trusted), true);
+  assert.equal(viaHttps(req('10.0.0.1', { 'x-forwarded-proto': 'https' }), trusted), true);
+  assert.equal(viaHttps(req('::ffff:10.0.0.1', { 'x-forwarded-proto': 'HTTPS ' }), trusted), true);
+  // The last value is the nearest proxy's.
+  assert.equal(viaHttps(req('10.0.0.1', { 'x-forwarded-proto': 'http, https' }), trusted), true);
+  assert.equal(viaHttps(req('10.0.0.1', { 'x-forwarded-proto': 'https, http' }), trusted), false);
+  assert.equal(viaHttps(req('10.0.0.1', { 'x-forwarded-proto': 'http' }), trusted), false);
+  assert.equal(viaHttps(req('10.0.0.1', {}), trusted), false);
+  // Plain http from anyone else, whatever they claim.
+  assert.equal(viaHttps(req('192.0.2.9', { 'x-forwarded-proto': 'https' }), trusted), false);
+  assert.equal(viaHttps(req('10.0.0.1', { 'x-forwarded-proto': 'https' }), proxyMatcher([])), false);
+  assert.equal(viaHttps(req('192.0.2.9'), trusted), false);
+  assert.equal(viaHttps({ headers: {} }, trusted), false);
 });
 
 test('isFormType and cookieValue', () => {

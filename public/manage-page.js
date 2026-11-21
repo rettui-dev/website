@@ -1,5 +1,5 @@
 // The manage page (/manage), for users with the manage or admin role: pick a node, see its version,
-// network and clock, change the settings it allows, turn a service off, restart Reticulum, roll
+// network and clock, read its Reticulum config (read only), change the settings it allows, turn a service off, restart Reticulum, roll
 // back the last settings change, and read the node's list of changes. Every change is confirmed
 // in the step-up dialog (step-up.js) and is a POST of JSON with the X-Rettui-Request header. A user
 // without two-step sign-in can look but not change anything; the server says so too.
@@ -62,7 +62,9 @@
     return r && r.body && r.body.error ? r.body.error : 'Something went wrong. Try again.';
   }
 
-  var canChange = function () { return Boolean(data && data.secondFactor); };
+  // Whether the wait after a first second factor runs: the server sends when it ends.
+  var waiting = function () { return Boolean(data && typeof data.nodeChangesFrom === 'string' && Date.parse(data.nodeChangesFrom) > Date.now()); };
+  var canChange = function () { return Boolean(data && data.secondFactor) && !waiting(); };
 
   // A change confirmed in the step-up dialog. When the sign in is older than 15 minutes, the
   // password just given makes it recent again and the change is sent again. Gives the answer, or
@@ -142,6 +144,7 @@
     $('manage-restart-state').textContent = rt;
     $('manage-revision').value = state.settings_revision || '';
     paintFields();
+    paintReticulum();
     var later = typeof state.restart_allowed_at === 'number' && state.restart_allowed_at * 1000 > Date.now();
     var busy = Boolean(state.restart && state.restart.state === 'restarting') || poll !== null;
     $('manage-restart').disabled = !canChange() || later || busy;
@@ -245,6 +248,56 @@
     return { map: out, labels: list };
   }
 
+  // ---- the node's Reticulum config, read only ----
+
+  function retValue(k) {
+    if (k.value === null || k.value === undefined) return k.set ? 'set (hidden)' : 'not set';
+    return k.value === '' ? '(empty)' : String(k.value);
+  }
+
+  function paintReticulum() {
+    var r = state && state.reticulum;
+    var box = $('manage-ret-sections');
+    box.textContent = '';
+    $('manage-ret').hidden = false;
+    $('manage-ret-shared').hidden = !(r && r.shared_instance === true);
+    if (!r || !Array.isArray(r.sections)) {
+      $('manage-ret-status').textContent = 'This node does not say what its Reticulum config holds.';
+      return;
+    }
+    var said = [];
+    if (r.sections.length === 0) said.push('The node lists no Reticulum configuration.');
+    if (r.truncated === true) said.push('Part of the config is not shown.');
+    $('manage-ret-status').textContent = said.join(' ');
+    r.sections.forEach(function (sec) {
+      var path = Array.isArray(sec.path) ? sec.path : [];
+      var keys = Array.isArray(sec.keys) ? sec.keys : [];
+      var title = path.join(' / ');
+      var group = el('div', 'manage-ret-section');
+      group.appendChild(el('h3', null, title));
+      if (keys.length === 0) { group.appendChild(el('p', 'note', 'No settings listed.')); box.appendChild(group); return; }
+      var table = el('table', 'users-table manage-ret-table');
+      table.appendChild(el('caption', 'sr-only', 'Reticulum settings of ' + title));
+      var head = el('tr');
+      ['Setting', 'Value'].forEach(function (h) { var th = el('th', null, h); th.scope = 'col'; head.appendChild(th); });
+      var thead = el('thead');
+      thead.appendChild(head);
+      table.appendChild(thead);
+      var body = el('tbody');
+      keys.forEach(function (k) {
+        var tr = el('tr');
+        var th = el('th', null, String(k.key));
+        th.scope = 'row';
+        tr.appendChild(th);
+        cell(tr, 'Value', retValue(k));
+        body.appendChild(tr);
+      });
+      table.appendChild(body);
+      group.appendChild(table);
+      box.appendChild(group);
+    });
+  }
+
   // ---- the node's list of changes ----
 
   var OPS = { settings: 'Settings', restart: 'Restart', rollback: 'Roll back', reticulum: 'Reticulum config', confirm: 'Confirm', auto_rollback: 'Rolled back by itself', auth_failures: 'Refused requests' };
@@ -331,6 +384,7 @@
         $('manage-line').textContent = '';
         $('manage-clock').hidden = true;
         $('manage-settings').hidden = true;
+        $('manage-ret').hidden = true;
         $('manage-restart-card').hidden = true;
         say('');
         fail('manage-error', errorOf(r));
@@ -353,6 +407,10 @@
     shown = host;
     state = null;
     entries = [];
+    $('manage-ret-sections').textContent = '';
+    $('manage-ret-shared').hidden = true;
+    $('manage-ret-status').textContent = 'Loading the Reticulum configuration...';
+    $('manage-ret').hidden = false;
     ['manage-form-error', 'manage-restart-error', 'manage-rollback-error', 'manage-error'].forEach(function (id) { fail(id, ''); });
     say('Loading ' + node.name + '...');
     return loadNode();
@@ -369,7 +427,9 @@
       }
       data = r.body;
       var nodes = Array.isArray(data.nodes) ? data.nodes : [];
-      $('manage-view-only').hidden = canChange();
+      $('manage-view-only').hidden = Boolean(data.secondFactor);
+      $('manage-wait').hidden = !(data.secondFactor && waiting());
+      if (waiting()) $('manage-wait-until').textContent = new Date(data.nodeChangesFrom).toLocaleString();
       $('manage-none').hidden = nodes.length > 0;
       root.hidden = nodes.length === 0;
       if (nodes.length === 0) { say(''); return; }

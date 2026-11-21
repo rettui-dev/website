@@ -26,6 +26,20 @@ export const FIELDS = [
   { key: 'pn_enabled', label: 'Propagation node', help: 'Turn off only.', kind: 'toggle', access: 'turn_off_only' },
 ];
 
+// A sample of the node's Reticulum config, as the node's /state gives it: masked keys have no value.
+// It holds hostile text (markup, control and direction characters, an over-long value) and more
+// sections and keys than the website keeps (64 of each), for the tests of how it is cleaned.
+export function sampleReticulum() {
+  const sections = [
+    { path: ['reticulum'], keys: [{ key: 'enable_transport', value: 'yes', set: true }, { key: 'share_instance', value: 'no', set: true }, { key: 'shared_instance_port', value: null, set: false }] },
+    { path: ['interfaces', 'Hilltop TCP'], keys: [{ key: 'type', value: 'TCPClientInterface', set: true }, { key: 'target_host', value: 'hill.example.org', set: true }, { key: 'passphrase', value: 'hunter2', set: true }, { key: 'enabled', value: 'yes', set: true }] },
+    { path: ['interfaces', '<img src=x onerror=alert(1)>\u202e\u0000'], keys: [{ key: '<b>type</b>\u200b', value: '<script>alert(1)</script>\u0007\n', set: true }, { key: 'long', value: 'v'.repeat(600), set: true }] },
+    { path: ['interfaces', 'Big'], keys: Array.from({ length: 100 }, (_, i) => ({ key: `key_${i}`, value: String(i), set: true })) },
+  ];
+  for (let i = 0; i < 140; i++) sections.push({ path: ['interfaces', `Extra ${i}`], keys: [{ key: 'type', value: 'AutoInterface', set: true }] });
+  return { revision: 'f'.repeat(32), shared_instance: false, truncated: false, sections };
+}
+
 export async function startManageNode({ secret, now = Date.now, slowMs = 3000, misbehave = null, version = '2.5.0' } = {}) {
   const node = {
     misbehave,
@@ -35,6 +49,7 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
     restart: null,
     seen: new Set(),
     seq: 0,
+    reticulum: sampleReticulum(), // set to null or something else to change what /state says
   };
   const time = () => Math.floor(now() / 1000);
   const revision = () => sha256(FIELDS.map((f) => `${f.key}=${node.settings[f.key]}`).join('\n') + '\n').slice(0, 32);
@@ -55,6 +70,7 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
         settings: FIELDS.map((f) => ({ ...f, value: node.settings[f.key] })),
         network: { state: 'running', shared_instance: false, interfaces_total: 2, interfaces_online: 2 },
         restart: node.restart, restart_allowed_at: null, pending: null,
+        ...(node.reticulum === undefined ? {} : { reticulum: node.reticulum }),
       }];
     }
     if (route === 'POST /manage/v1/settings') {

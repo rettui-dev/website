@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAX_PEERS, PEERS_MAX_BYTES, sanitizePeers, tokenAllowedFor, unionPeers, validToken } from '../lib/peers.js';
-import { fetchStats, isPrivateHost, STATS_MAX_BYTES } from '../lib/stats.js';
+import { fetchStats, isManageHost, isPrivateHost, STATS_MAX_BYTES } from '../lib/stats.js';
 import { aggregateGroup } from '../lib/group.js';
 import { loadConfig, loadConfigFile, loadNodes } from '../lib/config.js';
 import { Monitor } from '../lib/monitor.js';
@@ -36,6 +36,35 @@ test('tokenAllowedFor: https, or http to loopback and private addresses only', (
   assert.equal(ok('http://8.8.8.8/s'), false);
   assert.equal(ok('ftp://a.test/s'), false);
   assert.equal(ok('not a url'), false);
+});
+
+test('isPrivateHost (stats) takes loopback and RFC 1918 only; isManageHost (manage_url) adds the node\'s tunnel ranges', () => {
+  const stats = (u) => isPrivateHost(new URL(u).hostname);
+  const manage = (u) => isManageHost(new URL(u).hostname);
+  // Both lists.
+  for (const u of ['http://127.0.0.1', 'http://127.1.2.3', 'http://10.9.9.9', 'http://172.16.0.1', 'http://172.31.255.255', 'http://192.168.0.1', 'http://localhost', 'http://[::1]', 'http://[::ffff:192.168.1.1]', 'http://2130706433']) {
+    assert.equal(stats(u), true, `stats ${u}`);
+    assert.equal(manage(u), true, `manage ${u}`);
+  }
+  // The node's manage list only: 100.64.0.0/10, fc00::/7, fe80::/10.
+  for (const u of ['http://100.64.0.1', 'http://100.127.255.255', 'http://[fc00::1]', 'http://[fdff::1]', 'http://[fd7a:115c:a1e0::1]', 'http://[fe80::1]', 'http://[febf::1]', 'http://[::ffff:100.64.0.1]']) {
+    assert.equal(stats(u), false, `stats ${u}`);
+    assert.equal(manage(u), true, `manage ${u}`);
+  }
+  // Neither.
+  for (const u of ['http://8.8.8.8', 'http://100.128.0.1', 'http://100.63.0.1', 'http://172.15.0.1', 'http://172.32.0.1', 'http://169.254.0.1', 'http://0.0.0.0', 'http://[::]', 'http://[2001:db8::1]', 'http://[fe00::1]', 'http://[fec0::1]', 'http://[::ffff:1.1.1.1]', 'http://a.test', 'http://localhost.a.test']) {
+    assert.equal(stats(u), false, `stats ${u}`);
+    assert.equal(manage(u), false, `manage ${u}`);
+  }
+  for (const bad of ['', '[', '[]', '10.0.0', 'fc00::1x']) {
+    assert.equal(isPrivateHost(bad), false, JSON.stringify(bad));
+    assert.equal(isManageHost(bad), false, JSON.stringify(bad));
+  }
+  // A stats token never goes over plain http to a tunnel address, nor to a public one.
+  assert.equal(tokenAllowedFor('http://10.1.1.1:8080/stats', isPrivateHost), true);
+  assert.equal(tokenAllowedFor('http://100.100.1.1:8080/stats', isPrivateHost), false);
+  assert.equal(tokenAllowedFor('http://[fd00::5]:8080/stats', isPrivateHost), false);
+  assert.equal(tokenAllowedFor('http://[2001:db8::5]:8080/stats', isPrivateHost), false);
 });
 
 test('sanitizePeers keeps valid entries, drops and counts the rest, merges duplicates', () => {
