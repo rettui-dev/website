@@ -174,7 +174,7 @@ const REFUSED = {
   full: 'the user store is full; delete users that are not needed any more',
 };
 
-const NO_KEY_TO_CHANGE = 'Changing the user store needs its key: set USERS_KEY_FILE (or USERS_KEY) to the key the server uses. For a first key, node scripts/users.js gen-key makes one (see "The user store key" in README.md). Nothing was changed.';
+const NO_KEY_TO_CHANGE = 'Changing the user store needs its key: set USERS_KEY_FILE (or USERS_KEY) to the key the server uses. For a first key, node scripts/users.js gen-key makes one (see "The user store key" in wiki/User-Store.md). Nothing was changed.';
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -485,7 +485,7 @@ async function command(args, store, { stdin, stdout, stderr, hasher, cwd, dataDi
         stdout.write(`${DB_FILE}: ${ok ? 'no damage found (quick_check)' : 'damaged (quick_check):'}\n`);
         if (!ok) {
           for (const r of rows) stdout.write(`  ${String(r.quick_check).slice(0, 200)}\n`);
-          stdout.write(`Restore it from a backup (see "Backups" in README.md).\n`);
+          stdout.write(`Restore it from a backup (see "Backups" in wiki/User-Store.md).\n`);
           return 1;
         }
         // Checked when the store was opened as well; a store with another schema does not open.

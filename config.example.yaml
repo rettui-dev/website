@@ -1,8 +1,8 @@
 # Example config for the status page. Set CONFIG_FILE to its path.
 # It replaces the STATUS_TARGETS and STATS_URLS environment variables; setting
-# both is an error. See "Config file" in README.md.
+# both is an error. See "Config file" in wiki/Configuration.md.
 # Optional: tokens that make the nodes send their peer lists, so a group's peers
-# heard is counted exactly (see "Exact peer counts" in README.md). Give each node
+# heard is counted exactly (see "Exact peer counts" in wiki/Node-Stats.md). Give each node
 # its own token, kept in its own file and not in this one. A relative path is
 # relative to this file; with Docker mount the folder next to the config:
 #   ./secrets:/config/secrets:ro   (files secrets/front.token, secrets/back.token, ...)
@@ -12,7 +12,7 @@
 # public_details: false      # no Details view (and no /api/stats) for the nodes; default true
 # public_disk_figures: true  # also show exact free and total disk space; default false,
 #                            # when only a level (ok, high, full) and the used share rounded to 5 are shown
-# Optional: people who can log in to see more (see "Logins" in README.md). Without
+# Optional: people who can log in to see more (see "Logins" in wiki/Logins.md). Without
 # users (here or in the user store, users.db in DATA_DIR) there is no login and nothing is locked. Make a password_hash with
 #   npm run hash-password -- --name alice
 # (in Docker: docker compose run --rm -it website node scripts/hash-password.js --name alice)
@@ -25,17 +25,17 @@
 # An admin opens the Users page (/users) to manage the users kept in the user store. There must be
 # an admin for that page to exist: set role: admin here, or make one with
 #   node scripts/users.js create NAME --role admin
-# (see "Managing users" in README.md). Users here stay read-only on that page.
+# (see "Managing users" in wiki/Managing-Users.md). Users here stay read-only on that page.
 # Each user can turn on two-step sign-in (an app code, TOTP, and/or passkeys) on their account page
 # (/account); that is kept in the user store in DATA_DIR, not here (see "Accounts and second factor"
-# and "Passkeys" in README.md). Passkeys need site.url below.
+# and "Passkeys" in wiki/Accounts-and-Second-Factor.md). Passkeys need site.url below.
 # Any users at all need the user store key, set in USERS_KEY_FILE (see "The user store key" in
-# README.md); without it the server does not start.
+# wiki/User-Store.md); without it the server does not start.
 # What a visitor without a login does not see. With users and no rule, all of these;
 # a node can override it with its own require_login.
 # require_login: [details, storage, peers, disk, versions]
 # The Logs tab of a node's Full details (its recent log lines, fetched with the node's stats token
-# from a node started with --stats-logs; see "Node logs" in README.md) is not one of these sections:
+# from a node started with --stats-logs; see "Node logs" in wiki/Node-Stats.md) is not one of these sections:
 # it always needs a login, whatever require_login says. To show a node's logs to everybody, set
 # public_logs: true at the top or on the node (default false; the server warns at start).
 # public_logs: false
@@ -46,7 +46,7 @@
 #   # The reverse proxy's address or network (CIDR, like 172.18.0.0/16), so failed logins are
 #   # counted per visitor, not per proxy. List only networks nothing untrusted connects from.
 #   trusted_proxies: [172.18.0.1]
-# Optional: a message when a node goes down or comes back (see "Alerts" in README.md).
+# Optional: a message when a node goes down or comes back (see "Alerts" in wiki/Uptime-and-Alerts.md).
 # A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or
 # email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
 # a missing file stops the server at start. A node counts as down after 2 failed checks in a row.
@@ -72,7 +72,7 @@
 #   cooldown_minutes: 15                    # a node that flaps is not announced again within this time
 #   repeat_minutes: 0                       # 0 = no reminders while a node stays down
 # Optional: serve only the status page, without the rettui project pages (see "Status-only
-# site" in README.md). Default full. The environment variable SITE_MODE is for use without this file.
+# site" in wiki/Configuration.md). Default full. The environment variable SITE_MODE is for use without this file.
 # site_mode: status
 # Optional: a name, logo, links and texts of your own on the status page. Plain text only.
 # site:
@@ -109,7 +109,7 @@ nodes:
     # manage or admin role), for a node started with --manage-listen and --manage-secret-file.
     # manage_url is the address of that listener only (no path, query or fragment; http is allowed for
     # the private addresses the node listens on: loopback, 10/8, 172.16/12, 192.168/16, 100.64/10,
-    # fc00::/7 and fe80::/10; https otherwise). Run the link over a tunnel (WireGuard, Tailscale) or a
+    # fc00::/7 and fe80::/10; https otherwise). Run the link over a WireGuard tunnel or a
     # TLS proxy: plain http is signed, so nobody can change it on the way, but anyone on the way can
     # read every answer. The secret is 32 to 256 printable ASCII characters without spaces, quotes or
     # backslashes, in a file of its own that only its owner can read or write (chmod 600: a file the group or

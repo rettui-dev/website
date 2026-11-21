@@ -888,7 +888,7 @@ test('attempt: a password changed (and endUser called) while it is checked does 
   assert.deepEqual(await p2, { ok: false, reason: 'invalid' });
 });
 
-test('the numbers README.md gives: wrong codes per day, from one address and for a user in all', () => {
+test('the numbers wiki/Logins.md gives: wrong codes per day, from one address and for a user in all', () => {
   // A guesser who tries again the moment each wait is over.
   const guesses = (free, hours) => {
     let t = 0;

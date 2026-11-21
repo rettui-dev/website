@@ -235,7 +235,7 @@ test('manage settings are checked strictly and the errors name the place', () =>
 
 test('manage_url over plain http takes the private ranges the node listens on (tunnels included) and refuses public addresses', () => {
   const urlOf = (url) => loadConfig(manageCfg(`    manage_url: "${url}"\n    manage_secret_file: a.secret\n`)).manage.get('a.test:1').url;
-  // Loopback, RFC 1918, 100.64.0.0/10 (Tailscale), fc00::/7 (WireGuard, Tailscale), fe80::/10, and an
+  // Loopback, RFC 1918, 100.64.0.0/10, fc00::/7 (WireGuard over IPv6), fe80::/10, and an
   // IPv4 private address written as IPv6.
   for (const [url, origin] of [
     ['http://127.0.0.1:8750', 'http://127.0.0.1:8750'],
