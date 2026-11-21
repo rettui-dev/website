@@ -86,7 +86,10 @@
     <section id="manage-ret-edit" class="acct-card" aria-labelledby="manage-ret-edit-h" hidden>
       <h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration</h2>
       <p class="note">The node lets the website change a few Reticulum settings: transport, and for each interface whether it is enabled, its mode, announce cap, bitrate and ingress control. A change is tested before it is kept. Applying asks in a pop-up for your password and your passkey or a code from your app.</p>
-      <p id="manage-ret-pending" class="note" role="status"></p>
+      <div id="manage-ret-live" role="status">
+        <p id="manage-ret-pending" class="note"></p>
+        <ul id="manage-ret-checks" class="manage-changes" aria-label="The node's checks of the change" hidden></ul>
+      </div>
       <p id="manage-ret-error" class="login-error" role="alert"></p>
       <form id="manage-ret-form" class="acct-form manage-form" novalidate hidden>
         <input id="manage-ret-revision" type="hidden" aria-label="Reticulum configuration revision" value="">

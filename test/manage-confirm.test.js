@@ -82,7 +82,7 @@ test('a change that comes up healthy and can be reached is confirmed as the user
   assert.deepEqual(h.probes, [['a.test', 1]], "the node's address from the config is probed");
   assert.deepEqual(h.confirms(), [[HOST, 'POST', '/manage/v1/confirm', 'bob', { id: ID }]]);
   const done = h.jobs.status(HOST);
-  assert.deepEqual({ ...done, updatedAt: undefined }, { id: ID, state: 'done', nodeState: null, outcome: 'committed', message: 'The change passed the test and is kept.', confirmBy: deadline, updatedAt: undefined });
+  assert.deepEqual({ ...done, updatedAt: undefined }, { id: ID, state: 'done', nodeState: null, checks: [], outcome: 'committed', message: 'The change passed the test and is kept.', confirmBy: deadline, updatedAt: undefined });
   assert.equal(typeof done.updatedAt, 'string');
   assert.equal(h.timers.size, 0, 'a finished job asks nothing more');
   assert.deepEqual(h.lines, [{ event: 'manage-confirm', actor: 'bob', host: HOST, id: ID, result: 'ok', outcome: 'committed' }]);
@@ -430,4 +430,16 @@ test('a job replaced while its tick is in flight sends nothing more and audits n
   assert.deepEqual(g.lines, []);
   assert.equal(g.jobs.status(HOST).id, other);
   assert.equal(g.jobs.status(HOST).state, 'waiting');
+});
+
+test("the job passes on the node's own checks of the change, cleaned, while it runs", async () => {
+  const h = harness({ up: () => false });
+  h.node.pending = pendingOf('probation', h.clock, { checks: [{ interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' }, { interface: 'Radio ', kind: 'online', result: 'no_traffic' }, { interface: 'X', kind: 'self_test', result: 'traffic' }] });
+  h.jobs.start({ host: HOST, id: ID, actor: 'bob', sessionId: 'sess-1' });
+  assert.deepEqual(h.jobs.status(HOST).checks, []);
+  await h.tick();
+  assert.deepEqual(h.jobs.status(HOST).checks, [{ interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' }, { interface: 'Radio', kind: 'online', result: 'no_traffic' }]);
+  // A copy: changing what status gave changes nothing in the job.
+  h.jobs.status(HOST).checks[0].result = 'failed';
+  assert.equal(h.jobs.status(HOST).checks[0].result, 'passed');
 });

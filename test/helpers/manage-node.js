@@ -96,8 +96,8 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
   const time = () => Math.floor(now() / 1000);
   const revision = () => sha256(FIELDS.map((f) => `${f.key}=${node.settings[f.key]}`).join('\n') + '\n').slice(0, 32);
   const newId = () => crypto.randomBytes(8).toString('hex');
-  const log = (op, actor, changes, id, result = 'ok') => {
-    node.audit.push({ seq: ++node.seq, time: time(), id, actor, op, changes, result, error: null });
+  const log = (op, actor, changes, id, result = 'ok', notes = []) => {
+    node.audit.push({ seq: ++node.seq, time: time(), id, actor, op, changes, result, error: null, ...(notes.length ? { notes } : {}) });
   };
   const known = (key) => FIELDS.find((f) => f.key === key);
 
@@ -200,7 +200,8 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
       node.reticulumBefore = ret;
       node.reticulum = work;
       const id = newId();
-      node.pending = { id, actor, state: 'restarting', applied_at: time(), confirm_seconds: req.confirm_seconds, healthy_at: null, confirm_by: null, changes: applied, problems: [] };
+      // checks: the node's own tests of each listener; a test sets them (node.pending.checks).
+      node.pending = { id, actor, state: 'restarting', applied_at: time(), confirm_seconds: req.confirm_seconds, healthy_at: null, confirm_by: null, changes: applied, problems: [], checks: [] };
       log('reticulum', actor, applied, id);
       return [202, { id, state: 'restarting', confirm_seconds: req.confirm_seconds, applied, notes: [], reticulum_revision: work.revision }];
     }
@@ -216,8 +217,9 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
       const p = node.pending;
       if (!p || p.id !== req.id || p.state !== 'probation') return err(409, 'not_pending', 'That change is not on probation.', { state: p && p.id === req.id ? p.state : null });
       if (p.actor !== actor) return err(403, 'not_allowed', 'Only the user who made the change can confirm it.');
+      const notes = checkNotes('Checks');
       node.finish('committed');
-      log('confirm', actor, [], p.id);
+      log('confirm', actor, [], p.id, 'ok', notes);
       return [200, { id: p.id, state: 'committed' }];
     }
     if (route === 'GET /manage/v1/audit') {
@@ -237,11 +239,13 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
       node.pending.confirm_by = time() + node.pending.confirm_seconds;
     }
   };
+  // What the node's audit says it checked: "Checks: Hilltop TCP self_test passed; ...".
+  const checkNotes = (prefix) => (node.pending.checks?.length ? [`${prefix}: ${node.pending.checks.map((c) => `${c.interface} ${c.kind} ${c.result}`).join('; ')}`] : []);
   node.finish = (outcome, message = '') => {
     if (!node.pending) throw new Error('nothing is pending');
     if (outcome === 'rolled_back' && node.reticulumBefore) node.reticulum = node.reticulumBefore;
     node.reticulumResult = { id: node.pending.id, outcome, at: time(), message };
-    if (outcome !== 'committed') log('auto_rollback', node.pending.actor, [], node.pending.id, outcome === 'rolled_back' ? 'rolled_back' : 'failed');
+    if (outcome !== 'committed') log('auto_rollback', node.pending.actor, [], node.pending.id, outcome === 'rolled_back' ? 'rolled_back' : 'failed', checkNotes('Checks with the change'));
     node.pending = null;
     node.reticulumBefore = null;
   };

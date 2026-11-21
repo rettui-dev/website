@@ -416,8 +416,27 @@
     return '';
   }
 
+  // What the node's own check of one interface says, in words.
+  var CHECK_TEXT = {
+    self_test: { waiting: 'waiting for a test answer', passed: 'Reticulum answered a test request', failed: 'Reticulum did not answer a test request' },
+    online: { waiting: 'waiting to come online', traffic: 'online, traffic seen', no_traffic: 'online, no traffic yet', failed: 'not online' }
+  };
+
+  // The node's checks of the pending change, one line per interface and kind, while it is pending.
+  function paintChecks() {
+    var list = $('manage-ret-checks');
+    list.textContent = '';
+    var checks = state.pending && Array.isArray(state.pending.checks) ? state.pending.checks : [];
+    checks.forEach(function (c) {
+      var words = CHECK_TEXT[c.kind] && CHECK_TEXT[c.kind][c.result];
+      if (words) list.appendChild(el('li', null, String(c.interface) + ': ' + words));
+    });
+    list.hidden = list.children.length === 0;
+  }
+
   function paintRetStatus() {
     $('manage-ret-pending').textContent = retStatusText();
+    paintChecks();
   }
 
   // The Reticulum form: one fieldset per section the node lets the website change. It is there only
@@ -432,6 +451,7 @@
     $('manage-ret-edit').hidden = !open && !status;
     $('manage-ret-form').hidden = !open;
     $('manage-ret-pending').textContent = status;
+    paintChecks();
     $('manage-ret-apply-help').textContent = applyText();
     $('manage-ret-revision').value = (r && r.revision) || '';
     var box = $('manage-ret-fields');
@@ -573,6 +593,8 @@
     var next = known ? job.nodeState : (job.state === 'probing' || job.state === 'confirming' || typeof job.confirmBy === 'number') ? 'probation' : p.state;
     if (next === 'probation' && typeof job.confirmBy === 'number') p.confirm_by = job.confirmBy;
     p.state = next;
+    // The node's own checks, as the job last read them.
+    if (Array.isArray(job.checks)) p.checks = job.checks;
   }
 
   function stopRetPoll() {
@@ -643,7 +665,9 @@
       cell(tr, 'Who', e.actor || '-');
       cell(tr, 'What', OPS[e.op] || 'Other');
       cell(tr, 'Changes', changesText(e.changes));
-      cell(tr, 'Result', (RESULTS[e.result] || 'Other') + (e.error ? ': ' + e.error : ''));
+      // The node's notes (what it checked, for a confirm or an automatic roll back) follow the result.
+      var notes = Array.isArray(e.notes) && e.notes.length ? '. ' + e.notes.join(' ') : '';
+      cell(tr, 'Result', (RESULTS[e.result] || 'Other') + (e.error ? ': ' + e.error : '') + notes);
       rows.appendChild(tr);
     });
     $('manage-audit-empty').hidden = entries.length > 0;

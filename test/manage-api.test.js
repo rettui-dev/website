@@ -279,7 +279,7 @@ test('GET /api/manage says who, whether they can change things, and the nodes by
 test('reading a node: the state is cleaned, the clock is compared, and an unknown node or HEAD asks nothing', async () => {
   const messy = {
     ...STATE,
-    version: '2.5.0‮<script>',
+    version: '2.5.0\u202e<script>',
     settings_revision: 'not hex',
     node_time: NOW / 1000 + 150,
     settings: [
@@ -515,7 +515,7 @@ test('the audit list: before and limit are checked and passed on, and the entrie
     const body = r.json();
     assert.equal(body.more, true);
     assert.equal(body.entries.length, 2);
-    assert.deepEqual(body.entries[0], { seq: 7, time: 100, id: ID, actor: 'bob', op: 'settings', changes: [{ key: 'pn_name', from: 'a', to: 'b' }], result: 'ok', error: null });
+    assert.deepEqual(body.entries[0], { seq: 7, time: 100, id: ID, actor: 'bob', op: 'settings', changes: [{ key: 'pn_name', from: 'a', to: 'b' }], result: 'ok', error: null, notes: [] });
     assert.equal(body.entries[1].id, null);
     assert.equal(body.entries[1].actor.length, 32);
     assert.equal(body.entries[1].op, 'other');
@@ -657,7 +657,7 @@ test("what a node refuses becomes a fixed sentence; only invalid_value and not_a
     const send = () => api(s, '/api/manage/settings', { host: HOST, revision: REV, changes: { pn_name: 'x' }, password: BOB, code: code() }, b);
     const cases = [
       [{ ok: true, status: 409, body: { error: 'stale_revision', message: 'NODE WORDS', settings_revision: REV } }, 409, /changed elsewhere/, { code: 'stale_revision', settingsRevision: REV }],
-      [{ ok: true, status: 400, body: { error: 'invalid_value', message: `Too long‮ ${'y'.repeat(400)}`, key: 'pn_name' } }, 400, /^Too long y+$/, { code: 'invalid_value', key: 'pn_name' }],
+      [{ ok: true, status: 400, body: { error: 'invalid_value', message: `Too long\u202e ${'y'.repeat(400)}`, key: 'pn_name' } }, 400, /^Too long y+$/, { code: 'invalid_value', key: 'pn_name' }],
       [{ ok: true, status: 403, body: { error: 'not_allowed', message: 'Only the terminal turns a service on.', key: 'pn_enabled' } }, 403, /^Only the terminal turns a service on\.$/, { code: 'not_allowed', key: 'pn_enabled' }],
       [{ ok: true, status: 403, body: { error: 'not_allowed' } }, 403, /does not allow this change/, { code: 'not_allowed' }],
       [{ ok: true, status: 400, body: { error: 'no_change', message: 'NODE WORDS' } }, 400, /Nothing was changed/, { code: 'no_change' }],
@@ -1148,7 +1148,7 @@ test('the rules of a Reticulum change: paths, interface names and values, as the
   assert.equal(retPathKind(['interfaces', 'Hilltop TCP']), 'interfaces');
   for (const bad of [[], ['Reticulum'], ['reticulum', 'x'], ['interfaces'], ['interfaces', 'a', 'b'], ['Interfaces', 'a'], 'reticulum', null, [5], ['interfaces', 5]]) assert.equal(retPathKind(bad), null, JSON.stringify(bad));
   for (const ok of ['A', 'Hilltop TCP', 'é'.repeat(32), 'x'.repeat(64), 'Default Interface', 'a.b-c_d(1)']) assert.equal(interfaceNameOk(ok), true, ok);
-  for (const bad of ['', ' lead', 'trail ', 'x'.repeat(65), 'é'.repeat(33), 'a]b', 'a[b', 'a#b', 'a"b', "a'b", 'a\nb', 'a\tb', 'a\u0000b', 'a‮b', 'a​b', 'a b', 'a﻿b', 5, null]) assert.equal(interfaceNameOk(bad), false, JSON.stringify(bad));
+  for (const bad of ['', ' lead', 'trail ', 'x'.repeat(65), 'é'.repeat(33), 'a]b', 'a[b', 'a#b', 'a"b', "a'b", 'a\nb', 'a\tb', 'a\u0000b', 'a\u202eb', 'a​b', 'a\u2028b', 'a﻿b', 5, null]) assert.equal(interfaceNameOk(bad), false, JSON.stringify(bad));
   assert.deepEqual(Object.keys(RET_EDITS.reticulum), ['enable_transport']);
   assert.deepEqual(Object.keys(RET_EDITS.interfaces), ['enabled', 'mode', 'announce_cap', 'bitrate', 'ingress_control']);
   const cases = {
@@ -1167,7 +1167,7 @@ test('the rules of a Reticulum change: paths, interface names and values, as the
 
 test('a Reticulum change: refused here before any password, then confirmed, sent with the confirm window, kept by the confirm job, and audited by key', async () => {
   client = fakeClient((host, method, target) => {
-    if (target === '/manage/v1/reticulum') return { ok: true, status: 202, body: { id: ID, state: 'restarting', confirm_seconds: 120, applied: [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'yes', to: 'no' }, { path: ['reticulum'], key: 'enable_transport', from: 'no', to: 'yes' }], notes: ['Reticulum restarts.‮'], reticulum_revision: 'b'.repeat(32) } };
+    if (target === '/manage/v1/reticulum') return { ok: true, status: 202, body: { id: ID, state: 'restarting', confirm_seconds: 120, applied: [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'yes', to: 'no' }, { path: ['reticulum'], key: 'enable_transport', from: 'no', to: 'yes' }], notes: ['Reticulum restarts.\u202e'], reticulum_revision: 'b'.repeat(32) } };
     return { ok: true, status: 200, body: STATE };
   });
   client.confirmSeconds = (host) => (host === HOST ? 120 : null);
@@ -1189,7 +1189,7 @@ test('a Reticulum change: refused here before any password, then confirmed, sent
       [change('x'), 400, /not valid/],
       [change({ ...RET_CHANGE, path: ['interfaces'] }), 400, /section that cannot be changed/],
       [change({ ...RET_CHANGE, path: ['interfaces', 'Bad]Name'] }), 400, /section that cannot be changed/],
-      [change({ ...RET_CHANGE, path: ['interfaces', 'Odd‮'] }), 400, /section that cannot be changed/],
+      [change({ ...RET_CHANGE, path: ['interfaces', 'Odd\u202e'] }), 400, /section that cannot be changed/],
       [change({ ...RET_CHANGE, path: ['logging'] }), 400, /section that cannot be changed/],
       [change({ ...RET_CHANGE, key: 'type', value: 'PipeInterface' }), 400, /^type of interfaces \/ Hilltop TCP cannot be changed from the website\.$/, { path: ['interfaces', 'Hilltop TCP'] }],
       [change({ ...RET_CHANGE, key: 'interface_enabled' }), 400, /cannot be changed/],
@@ -1282,12 +1282,12 @@ test('what a node refuses of a Reticulum change becomes a fixed sentence, with i
       [{ ok: true, status: 409, body: { error: 'pending', id: '<b>' } }, 409, /still being tested/, { id: undefined }],
       [{ ok: true, status: 409, body: { error: 'not_pending', state: 'rolling_back', message: 'NODE WORDS' } }, 409, /no longer waiting/, { code: 'not_pending', state: 'rolling_back' }],
       [{ ok: true, status: 409, body: { error: 'not_pending', state: 'evil' } }, 409, /no longer waiting/, { state: null }],
-      [{ ok: true, status: 409, body: { error: 'ambiguous', path: P, key: 'enabled', message: `Both enabled and interface_enabled are set‮ ${'z'.repeat(400)}` } }, 409, /^Both enabled and interface_enabled are set z+$/, { code: 'ambiguous', path: P, key: 'enabled' }],
+      [{ ok: true, status: 409, body: { error: 'ambiguous', path: P, key: 'enabled', message: `Both enabled and interface_enabled are set\u202e ${'z'.repeat(400)}` } }, 409, /^Both enabled and interface_enabled are set z+$/, { code: 'ambiguous', path: P, key: 'enabled' }],
       [{ ok: true, status: 409, body: { error: 'ambiguous', path: 'x' } }, 409, /cannot tell for sure which line/, { path: undefined }],
       [{ ok: true, status: 404, body: { error: 'unknown_section', path: P, message: 'NODE WORDS' } }, 404, /^The node has no such section\. Reload the page\.$/, { code: 'unknown_section', path: P }],
       [{ ok: true, status: 409, body: { error: 'stale_revision', reticulum_revision: 'c'.repeat(32), settings_revision: REV, message: 'NODE WORDS' } }, 409, /^The Reticulum configuration was changed elsewhere since the page loaded it/, { code: 'stale_revision', reticulumRevision: 'c'.repeat(32), settingsRevision: undefined }],
       [{ ok: true, status: 403, body: { error: 'not_allowed', path: P, key: 'enabled', message: 'That interface runs a program.' } }, 403, /^That interface runs a program\.$/, { path: P, key: 'enabled' }],
-      [{ ok: true, status: 400, body: { error: 'invalid_value', path: [P[0], '‮'], key: 'enabled', message: 'No.' } }, 400, /^No\.$/, { path: undefined, key: 'enabled' }],
+      [{ ok: true, status: 400, body: { error: 'invalid_value', path: [P[0], '\u202e'], key: 'enabled', message: 'No.' } }, 400, /^No\.$/, { path: undefined, key: 'enabled' }],
       [{ ok: true, status: 400, body: { error: 'no_change', message: 'NODE WORDS' } }, 400, /Nothing was changed/],
       [{ ok: true, status: 409, body: { error: 'shared_instance', message: 'NODE WORDS' } }, 409, /shared Reticulum instance/],
       [{ ok: true, status: 409, body: { error: 'restarting', message: 'NODE WORDS' } }, 409, /restarting on this node already/],
@@ -1391,11 +1391,11 @@ test('the gates of a Reticulum change: the role, a recent sign in, the wait afte
 
 test('the pending change, the last result and the editable sections of a node are cleaned, whatever a hostile node sends', () => {
   const P = ['interfaces', 'Hilltop TCP'];
-  const sections = [{ path: ['reticulum'], keys: [] }, { path: P, keys: [{ key: 'type', value: 'TCPClientInterface', set: true }] }, { path: ['interfaces', 'Pipe'], keys: [{ key: 'type', value: 'PipeInterface', set: true }] }, { path: ['interfaces', 'Cmd'], keys: [{ key: 'location_cmd', value: null, set: true }] }, { path: ['interfaces', 'Odd‮'], keys: [] }];
+  const sections = [{ path: ['reticulum'], keys: [] }, { path: P, keys: [{ key: 'type', value: 'TCPClientInterface', set: true }] }, { path: ['interfaces', 'Pipe'], keys: [{ key: 'type', value: 'PipeInterface', set: true }] }, { path: ['interfaces', 'Cmd'], keys: [{ key: 'location_cmd', value: null, set: true }] }, { path: ['interfaces', 'Odd\u202e'], keys: [] }];
   const ret = (editable, extra = {}) => cleanState({ ...STATE, reticulum: { revision: REV, sections, editable, ...extra } }).reticulum.editable;
   assert.deepEqual(ret([['reticulum'], P]), [['reticulum'], P]);
   const hostile = [
-    ['reticulum'], ['reticulum'], P, ['interfaces', 'hilltop tcp'], ['interfaces', 'Nowhere'], ['interfaces', 'Pipe'], ['interfaces', 'Cmd'], ['interfaces', 'Odd‮'], ['interfaces', 'Odd'],
+    ['reticulum'], ['reticulum'], P, ['interfaces', 'hilltop tcp'], ['interfaces', 'Nowhere'], ['interfaces', 'Pipe'], ['interfaces', 'Cmd'], ['interfaces', 'Odd\u202e'], ['interfaces', 'Odd'],
     ['interfaces'], ['interfaces', P[1], 'x'], ['logging'], 'reticulum', null, 5, [5], { path: P }, ['interfaces', '<img src=x onerror=alert(1)>'],
   ];
   assert.deepEqual(ret(hostile), [['reticulum'], P], 'each path once; only sections in the view, as sent, and none that runs a program');
@@ -1407,11 +1407,11 @@ test('the pending change, the last result and the editable sections of a node ar
   for (const v of [undefined, null, 'reticulum', { 0: ['reticulum'] }]) assert.deepEqual(ret(v), [], JSON.stringify(v));
 
   const pending = (p) => cleanState({ ...STATE, pending: p }).pending;
-  const good = { id: ID, actor: 'bob', state: 'probation', applied_at: 10, confirm_seconds: 300, healthy_at: 20, confirm_by: 320, changes: [{ path: P, key: 'enabled', from: 'yes', to: 'no' }], problems: ['Hilltop TCP offline'] };
+  const good = { id: ID, actor: 'bob', state: 'probation', applied_at: 10, confirm_seconds: 300, healthy_at: 20, confirm_by: 320, changes: [{ path: P, key: 'enabled', from: 'yes', to: 'no' }], problems: ['Hilltop TCP offline'], checks: [{ interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' }] };
   assert.deepEqual(pending(good), good);
   for (const v of [null, undefined, 'x', [], {}, { ...good, id: 'nothex' }, { ...good, id: 5 }]) assert.equal(pending(v), null, JSON.stringify(v));
   const messy = pending({
-    id: ID, actor: `<b>${'x'.repeat(80)}‮`, state: 'committed', applied_at: 'soon', confirm_seconds: -1, healthy_at: 1e12, confirm_by: 3.5,
+    id: ID, actor: `<b>${'x'.repeat(80)}\u202e`, state: 'committed', applied_at: 'soon', confirm_seconds: -1, healthy_at: 1e12, confirm_by: 3.5,
     changes: [
       ...Array.from({ length: 20 }, () => ({ path: P, key: 'mode', from: 'full', to: 'v'.repeat(500) })),
     ],
@@ -1419,7 +1419,7 @@ test('the pending change, the last result and the editable sections of a node ar
   });
   assert.equal(messy.state, 'unknown', 'a state that is not one of the three');
   assert.equal(messy.actor.length, 32);
-  assert.doesNotMatch(messy.actor, /‮/);
+  assert.doesNotMatch(messy.actor, /\u202e/);
   assert.deepEqual([messy.applied_at, messy.confirm_seconds, messy.healthy_at, messy.confirm_by], [null, null, null, null]);
   assert.equal(messy.changes.length, 16);
   assert.equal(messy.changes[0].to.length, 64);
@@ -1531,6 +1531,9 @@ test('end to end with the stub node: a Reticulum change goes on probation and th
     await tick();
     assert.equal(probes.length, 0, 'not probed while restarting');
     node.advance('probation');
+    // The node's own checks: shown cleaned in /state, and in its audit notes once it is kept.
+    node.pending.checks = [{ interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' }, { interface: 'Hilltop TCP\u2028', kind: 'online', result: 'traffic' }, { interface: 'Evil', kind: 'self_test', result: '<b>' }];
+    assert.deepEqual((await nodeGet(s, b)).json().pending.checks, [{ interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' }, { interface: 'Hilltop TCP', kind: 'online', result: 'traffic' }]);
     await tick();
     assert.deepEqual(probes, [['a.test', 1]]);
     assert.equal(node.pending, null);
@@ -1567,6 +1570,7 @@ test('end to end with the stub node: a Reticulum change goes on probation and th
     const list = (await get(s, `/api/manage/audit?host=${HOST}`, b)).json();
     assert.deepEqual(list.entries.map((e) => e.op), ['auto_rollback', 'reticulum', 'confirm', 'reticulum']);
     assert.deepEqual(list.entries[3].changes, [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'Yes', to: 'no' }]);
+    assert.deepEqual(list.entries[2].notes, ['Checks: Hilltop TCP self_test passed; Hilltop TCP online traffic; Evil self_test <b>']);
     assert.ok(s.texts.every((t) => !t.includes(SECRET)));
   } finally {
     await s.close();
@@ -1588,4 +1592,47 @@ test('the app makes the confirm jobs itself: a change taken by the node shows a 
     // Closing the server stops the job: nothing is left to run after the test.
     await s.close();
   }
+});
+
+test("the node's checks of a pending change and the notes of its audit entries are cleaned, whatever a hostile node sends", () => {
+  const checks = (c) => cleanState({ ...STATE, pending: { id: ID, state: 'probation', checks: c } }).pending.checks;
+  const good = [
+    { interface: 'Hilltop TCP', kind: 'self_test', result: 'waiting' },
+    { interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' },
+    { interface: 'Hilltop TCP', kind: 'self_test', result: 'failed' },
+    { interface: 'Radio', kind: 'online', result: 'traffic' },
+    { interface: 'Radio', kind: 'online', result: 'no_traffic' },
+    { interface: 'Radio', kind: 'online', result: 'waiting' },
+  ];
+  assert.deepEqual(checks(good), good);
+  const hostile = checks([
+    null, 'x', 5, [],
+    { interface: 'A', kind: 'ping', result: 'passed' },
+    { interface: 'A', kind: 'self_test', result: 'traffic' }, // a result of the other kind
+    { interface: 'A', kind: 'online', result: 'passed' },
+    { interface: 'A', kind: 'self_test', result: 'PASSED' },
+    { interface: 'A', kind: '__proto__', result: 'passed' },
+    { interface: 'A', kind: 'toString', result: 'passed' },
+    { interface: 5, kind: 'self_test', result: 'passed' },
+    { interface: '\u202e\u0000\u2028', kind: 'self_test', result: 'passed' },
+    { kind: 'online', result: 'traffic' },
+    { interface: `<img src=x onerror=alert(1)>\u202e\u2028${'é'.repeat(40)}`, kind: 'online', result: 'traffic', extra: 'dropped' },
+  ]);
+  assert.equal(hostile.length, 1);
+  assert.equal(hostile[0].kind, 'online');
+  assert.ok(hostile[0].interface.startsWith('<img src=x onerror=alert(1)>é'), 'markup stays text; the page sets it as text');
+  assert.ok(Buffer.byteLength(hostile[0].interface) <= 64);
+  assert.doesNotMatch(hostile[0].interface, new RegExp('[\\u202e\\u2028]'));
+  assert.deepEqual(Object.keys(hostile[0]), ['interface', 'kind', 'result']);
+  // At most 32 are looked at; none, or not a list, is an empty list.
+  assert.equal(checks(Array.from({ length: 40 }, (_, i) => ({ interface: `I${i}`, kind: 'online', result: 'traffic' }))).length, 32);
+  assert.deepEqual(checks([...Array.from({ length: 32 }, () => null), good[0]]), []);
+  for (const v of [undefined, null, 'x', { 0: good[0] }]) assert.deepEqual(checks(v), [], JSON.stringify(v));
+  // Notes of an audit entry: one text or a list, cleaned, cut at 300, at most 16.
+  const notes = (n) => cleanAudit({ entries: [{ seq: 1, time: 1, op: 'confirm', result: 'ok', notes: n }] }).entries[0].notes;
+  assert.deepEqual(notes('Checks: Hilltop TCP self_test passed; Radio online traffic'), ['Checks: Hilltop TCP self_test passed; Radio online traffic']);
+  assert.deepEqual(notes(['Checks with the change: Radio online no_traffic', 'Checks after the rollback: Radio online traffic']), ['Checks with the change: Radio online no_traffic', 'Checks after the rollback: Radio online traffic']);
+  assert.deepEqual(notes(['a\u2028b\u202e', 7, '', null, 'n'.repeat(500)]), ['ab', 'n'.repeat(300)]);
+  assert.equal(notes(Array.from({ length: 40 }, () => 'x')).length, 16);
+  for (const v of [undefined, null, 5, { a: 1 }]) assert.deepEqual(notes(v), [], JSON.stringify(v));
 });

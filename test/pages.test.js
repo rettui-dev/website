@@ -2169,3 +2169,45 @@ test('step-up: with opens and acknowledge it lists what opens and does nothing u
   await settle();
   assert.deepEqual(await again, { status: 200, body: {} });
 });
+
+test("manage page: the node's checks of a pending change are a list in the status region, as text, and follow the job", async () => {
+  const P = {
+    id: '2'.repeat(16), state: 'probation', confirm_by: null, changes: [], problems: [],
+    checks: [
+      { interface: 'Hilltop TCP', kind: 'self_test', result: 'passed' },
+      { interface: 'Hilltop TCP', kind: 'self_test', result: 'waiting' },
+      { interface: EVIL, kind: 'self_test', result: 'failed' },
+      { interface: 'Radio', kind: 'online', result: 'traffic' },
+      { interface: 'Radio', kind: 'online', result: 'no_traffic' },
+      { interface: 'Radio', kind: 'online', result: 'waiting' },
+      { interface: 'Odd', kind: 'ping', result: 'passed' },
+      { interface: 'Odd', kind: 'self_test', result: 'traffic' },
+    ],
+  };
+  const job = { id: P.id, state: 'probing', nodeState: 'probation', confirmBy: null, outcome: null, message: 'Checking.', updatedAt: 'x', checks: [{ interface: 'Radio', kind: 'online', result: 'traffic' }] };
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: P, confirm: { ...job, checks: [] } })], [`GET ${CONFIRM_URL}`]: [200, { job }] } });
+  const list = p.byId('manage-ret-checks');
+  assert.equal(list.hidden, false);
+  assert.deepEqual(list.children.map((li) => [li.tag, li.textContent]), [
+    ['li', 'Hilltop TCP: Reticulum answered a test request'],
+    ['li', 'Hilltop TCP: waiting for a test answer'],
+    ['li', `${EVIL}: Reticulum did not answer a test request`],
+    ['li', 'Radio: online, traffic seen'],
+    ['li', 'Radio: online, no traffic yet'],
+    ['li', 'Radio: waiting to come online'],
+  ]);
+  assert.ok(list.all().every((e) => e === list || (e.tag === 'li' && e.children.length === 0)), 'text only: the name of the node is no element');
+  // The job's next read of the node brings the checks up to date.
+  await p.tick();
+  assert.deepEqual(list.children.map((li) => li.textContent), ['Radio: online, traffic seen']);
+  // No pending change, or no checks: no list.
+  for (const extra of [{}, { pending: { ...P, checks: [] } }, { pending: { ...P, checks: undefined } }]) {
+    const q = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState(extra)] } });
+    assert.equal(q.byId('manage-ret-checks').hidden, true);
+    assert.equal(q.byId('manage-ret-checks').children.length, 0);
+  }
+  // The audit table shows the node's notes after the result.
+  const a = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState()], [`GET ${AUDIT_URL}`]: [200, { entries: [{ seq: 2, time: 1, id: P.id, actor: 'bob', op: 'confirm', changes: [], result: 'ok', error: null, notes: ['Checks: Hilltop TCP self_test passed; Radio online traffic'] }, { seq: 1, time: 1, id: P.id, actor: 'bob', op: 'auto_rollback', changes: [], result: 'rolled_back', error: 'Reticulum on Radio did not answer a test request', notes: [`Checks with the change: ${EVIL} self_test failed`, 'Checks after the rollback: Radio online traffic'] }], more: false }] } });
+  const results = a.byId('manage-audit-rows').children.map((tr) => tr.children[4].textContent);
+  assert.deepEqual(results, ['Done. Checks: Hilltop TCP self_test passed; Radio online traffic', `Rolled back: Reticulum on Radio did not answer a test request. Checks with the change: ${EVIL} self_test failed Checks after the rollback: Radio online traffic`]);
+});

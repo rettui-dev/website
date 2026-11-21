@@ -168,7 +168,7 @@ test('the Reticulum change panel: a labelled region, its states read out, its er
   assert.match(panel[2], /<h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration<\/h2>/);
   // Restarting, on probation, rolling back, kept, rolled back: one status that is read out politely;
   // a refusal is an alert. Both stay outside the form, so they are heard while the form is hidden.
-  assert.match(panel[2], /<p id="manage-ret-pending" class="note" role="status"><\/p>/);
+  assert.match(panel[2], /<div id="manage-ret-live" role="status">\s*<p id="manage-ret-pending" class="note"><\/p>\s*<ul id="manage-ret-checks" class="manage-changes" aria-label="The node's checks of the change" hidden><\/ul>\s*<\/div>/);
   assert.match(panel[2], /<p id="manage-ret-error" class="login-error" role="alert"><\/p>/);
   const form = /<form id="manage-ret-form"[^>]*>([\s\S]*?)<\/form>/.exec(panel[2]);
   assert.ok(form);
@@ -184,4 +184,6 @@ test('the Reticulum change panel: a labelled region, its states read out, its er
   assert.match(js, /input\.setAttribute\('aria-describedby', helpId \+ ' manage-ret-error'\)/);
   assert.match(js, /fs\.appendChild\(el\('legend', null, path\.join\(' \/ '\)\)\)/);
   assert.match(js, /\$\('manage-ret-pending'\)\.textContent = /);
+  // The checks are list items with text, inside the same status region.
+  assert.match(js, /list\.appendChild\(el\('li', null, String\(c\.interface\) \+ ': ' \+ words\)\)/);
 });

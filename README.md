@@ -1673,8 +1673,14 @@ config file, one line per setting (the rest of the file stays as it is), and onl
 tell for sure which line it is: a section or key that is there twice, or in two spellings, is
 refused with the node's reason, to be changed in the terminal. The node keeps the old file in its
 config history, then restarts Reticulum. Once Reticulum is back with every interface that was
-online and is still meant to be, the change is **on probation** for `manage_confirm_seconds`. In
-that time the website's confirm job tries a TCP connection to the node's `address` from the config
+online and is still meant to be, the change is **on probation** for `manage_confirm_seconds`. The
+node itself checks each listener first: it sends Reticulum a test request there and waits for the
+answer, and looks whether its interfaces are online and see traffic. Only when those checks pass can
+the website's reachability probe keep the change; a listener that does not answer rolls it back
+("Reticulum on <name> did not answer a test request", or "Reticulum isn't back as it was: it has no
+address to test"). The page lists these checks under the status line ("Hilltop TCP: Reticulum
+answered a test request", "Radio: online, no traffic yet"), and the node's list of changes shows
+what it checked with the change and after a roll back. In that time the website's confirm job tries a TCP connection to the node's `address` from the config
 file (the Reticulum port the status page checks), every 5 seconds; once that works, and the user who
 made the change still has the role `manage` or `admin`, it confirms the change as that user, and
 the node keeps it. If Reticulum does not come back within 90 seconds, or nothing confirms in time,
