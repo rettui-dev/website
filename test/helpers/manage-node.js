@@ -1,7 +1,12 @@
 // A stub of a rettui node's management listener, on node:http, for tests. It checks every
 // request with its own copy of the signing algorithm (not lib/manage.js, so the two are
-// compared), keeps a small settings store and answers state, settings, restart, rollback and
-// audit with signed answers. Set node.misbehave to make it break the protocol:
+// compared), keeps a small settings store and answers state, settings, restart, rollback, audit,
+// reticulum and confirm with signed answers. A Reticulum change is pending until a test moves it on:
+//   node.advance('probation' | 'rolling_back')  the node's own steps after a change
+//   node.finish(outcome, message)               ends it: committed, rolled_back, rollback_failed, left
+// node.pending and node.reticulumResult are what /state says, and a test may set them to anything.
+// node.onConfirm(req), when set, runs before /confirm is answered (it may change the pending state).
+// Set node.misbehave to make it break the protocol:
 //   'wrong-signature'  signs answers with another secret
 //   'unsigned'         no signature header at all
 //   'clock_skew'       401 clock_skew (signed) with a node_time an hour ahead
@@ -37,8 +42,40 @@ export function sampleReticulum() {
     { path: ['interfaces', 'Big'], keys: Array.from({ length: 100 }, (_, i) => ({ key: `key_${i}`, value: String(i), set: true })) },
   ];
   for (let i = 0; i < 140; i++) sections.push({ path: ['interfaces', `Extra ${i}`], keys: [{ key: 'type', value: 'AutoInterface', set: true }] });
-  return { revision: 'f'.repeat(32), shared_instance: false, truncated: false, sections };
+  // The hostile section is listed as editable too, and one that does not exist: the website keeps neither.
+  const editable = [['reticulum'], ['interfaces', 'Hilltop TCP'], ['interfaces', '<img src=x onerror=alert(1)>\u202e\u0000'], ['interfaces', 'Nowhere']];
+  return { revision: 'f'.repeat(32), shared_instance: false, truncated: false, sections, editable };
 }
+
+// A small Reticulum config the website may change: the [reticulum] section and two interfaces,
+// one of them a pipe (never editable).
+export function editableReticulum() {
+  return {
+    revision: 'e'.repeat(32),
+    shared_instance: false,
+    truncated: false,
+    sections: [
+      { path: ['reticulum'], keys: [{ key: 'enable_transport', value: 'no', set: true }, { key: 'share_instance', value: 'no', set: true }] },
+      { path: ['interfaces', 'Hilltop TCP'], keys: [{ key: 'type', value: 'TCPServerInterface', set: true }, { key: 'interface_enabled', value: 'Yes', set: true }, { key: 'mode', value: 'full', set: true }, { key: 'listen_port', value: '4242', set: true }, { key: 'passphrase', value: null, set: true }] },
+      { path: ['interfaces', 'Pipe'], keys: [{ key: 'type', value: 'PipeInterface', set: true }, { key: 'enabled', value: 'yes', set: true }] },
+    ],
+    editable: [['reticulum'], ['interfaces', 'Hilltop TCP']],
+  };
+}
+
+// What the node allows the website to change, by section: the key, its aliases, and the rule.
+const SWITCH = (v) => v === 'yes' || v === 'no';
+const RET_KEYS = {
+  reticulum: { enable_transport: { names: ['enable_transport'], ok: SWITCH } },
+  interfaces: {
+    enabled: { names: ['enabled', 'interface_enabled'], ok: SWITCH },
+    mode: { names: ['mode', 'interface_mode'], ok: (v) => ['full', 'gateway', 'access_point', 'roaming', 'boundary'].includes(v) },
+    announce_cap: { names: ['announce_cap'], ok: (v) => /^(0|[1-9][0-9]?|100)(\.[0-9]{1,2})?$/.test(v) && Number(v) > 0 && Number(v) <= 100 },
+    bitrate: { names: ['bitrate'], ok: (v) => /^[1-9][0-9]{0,10}$/.test(v) && Number(v) >= 5 && Number(v) <= 10_000_000_000 },
+    ingress_control: { names: ['ingress_control'], ok: SWITCH },
+  },
+};
+const truthy = (v) => ['yes', 'true', 'on', '1'].includes(String(v).toLowerCase());
 
 export async function startManageNode({ secret, now = Date.now, slowMs = 3000, misbehave = null, version = '2.5.0' } = {}) {
   const node = {
@@ -50,6 +87,11 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
     seen: new Set(),
     seq: 0,
     reticulum: sampleReticulum(), // set to null or something else to change what /state says
+    pending: null,
+    reticulumResult: null,
+    reticulumBefore: null, // the config before the pending change, put back by finish('rolled_back')
+    onConfirm: null,
+    reticulumEnableAllowed: false, // without it, a yes for enabled or enable_transport is not_allowed
   };
   const time = () => Math.floor(now() / 1000);
   const revision = () => sha256(FIELDS.map((f) => `${f.key}=${node.settings[f.key]}`).join('\n') + '\n').slice(0, 32);
@@ -69,7 +111,7 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
         v: 1, node_time: time(), version, settings_revision: revision(),
         settings: FIELDS.map((f) => ({ ...f, value: node.settings[f.key] })),
         network: { state: 'running', shared_instance: false, interfaces_total: 2, interfaces_online: 2 },
-        restart: node.restart, restart_allowed_at: null, pending: null,
+        restart: node.restart, restart_allowed_at: null, pending: node.pending, reticulum_result: node.reticulumResult, reticulum_enable_allowed: node.reticulumEnableAllowed,
         ...(node.reticulum === undefined ? {} : { reticulum: node.reticulum }),
       }];
     }
@@ -121,6 +163,63 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
       log('rollback', actor, back, id);
       return [200, { id, applied: back }];
     }
+    if (route === 'POST /manage/v1/reticulum') {
+      let req;
+      try {
+        req = JSON.parse(body);
+      } catch {
+        return err(400, 'bad_request', 'The body is not JSON.');
+      }
+      if (!req || typeof req.revision !== 'string' || !Number.isInteger(req.confirm_seconds) || req.confirm_seconds < 60 || req.confirm_seconds > 900 || !Array.isArray(req.changes) || req.changes.length < 1 || req.changes.length > 16) return err(400, 'bad_request', 'Needs revision, confirm_seconds and 1 to 16 changes.');
+      if (node.pending) return err(409, 'pending', 'Another change is pending.', { id: node.pending.id });
+      if (node.restart?.state === 'restarting') return err(409, 'restarting', 'A restart is already running.');
+      const ret = node.reticulum;
+      if (req.revision !== ret?.revision) return err(409, 'stale_revision', 'The config changed.', { reticulum_revision: ret?.revision ?? '0'.repeat(32) });
+      // Worked on a copy, so a refusal half way changes nothing.
+      const work = structuredClone(ret);
+      const applied = [];
+      for (const c of req.changes) {
+        const kind = Array.isArray(c?.path) && c.path.length === 1 && c.path[0] === 'reticulum' ? 'reticulum' : Array.isArray(c?.path) && c.path.length === 2 && c.path[0] === 'interfaces' && typeof c.path[1] === 'string' ? 'interfaces' : null;
+        if (!kind || typeof c.key !== 'string' || typeof c.value !== 'string') return err(400, 'bad_request', 'A change is malformed.');
+        const section = work.sections.find((x) => JSON.stringify(x.path) === JSON.stringify(c.path));
+        if (!section) return err(404, 'unknown_section', 'No such section.', { path: c.path });
+        const rule = RET_KEYS[kind][c.key];
+        if (!rule || section.keys.some((k) => k.key === 'type' && k.value === 'PipeInterface')) return err(403, 'not_allowed', `${c.key} cannot be changed remotely.`, { path: c.path, key: c.key });
+        if (!rule.ok(c.value)) return err(400, 'invalid_value', 'That is not a value for this setting.', { path: c.path, key: c.key });
+        if (rule.ok === SWITCH && c.key !== 'ingress_control' && c.value === 'yes' && !node.reticulumEnableAllowed) return err(403, 'not_allowed', 'Turning this on remotely is not allowed on this node.', { path: c.path, key: c.key });
+        const line = section.keys.find((k) => rule.names.includes(k.key));
+        const from = line?.set ? (line.value ?? '(hidden)') : '';
+        const same = line?.set && (rule.ok === SWITCH ? truthy(from) === truthy(c.value) : String(from).toLowerCase() === c.value);
+        if (same) continue;
+        if (line) Object.assign(line, { value: c.value, set: true });
+        else section.keys.push({ key: c.key, value: c.value, set: true });
+        applied.push({ path: c.path, key: c.key, from, to: c.value });
+      }
+      if (applied.length === 0) return err(400, 'no_change', 'Nothing would change.');
+      work.revision = sha256(JSON.stringify(work.sections)).slice(0, 32);
+      node.reticulumBefore = ret;
+      node.reticulum = work;
+      const id = newId();
+      node.pending = { id, actor, state: 'restarting', applied_at: time(), confirm_seconds: req.confirm_seconds, healthy_at: null, confirm_by: null, changes: applied, problems: [] };
+      log('reticulum', actor, applied, id);
+      return [202, { id, state: 'restarting', confirm_seconds: req.confirm_seconds, applied, notes: [], reticulum_revision: work.revision }];
+    }
+    if (route === 'POST /manage/v1/confirm') {
+      let req;
+      try {
+        req = JSON.parse(body);
+      } catch {
+        return err(400, 'bad_request', 'The body is not JSON.');
+      }
+      if (typeof req?.id !== 'string' || !/^[0-9a-f]{16}$/.test(req.id)) return err(400, 'bad_request', 'Needs an id.');
+      node.onConfirm?.(req);
+      const p = node.pending;
+      if (!p || p.id !== req.id || p.state !== 'probation') return err(409, 'not_pending', 'That change is not on probation.', { state: p && p.id === req.id ? p.state : null });
+      if (p.actor !== actor) return err(403, 'not_allowed', 'Only the user who made the change can confirm it.');
+      node.finish('committed');
+      log('confirm', actor, [], p.id);
+      return [200, { id: p.id, state: 'committed' }];
+    }
     if (route === 'GET /manage/v1/audit') {
       const before = Number(url.searchParams.get('before') ?? Infinity);
       const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50) || 50, 1), 100);
@@ -129,6 +228,23 @@ export async function startManageNode({ secret, now = Date.now, slowMs = 3000, m
     }
     return err(404, 'bad_request', 'No such page.');
   }
+
+  node.advance = (state) => {
+    if (!node.pending) throw new Error('nothing is pending');
+    node.pending.state = state;
+    if (state === 'probation') {
+      node.pending.healthy_at = time();
+      node.pending.confirm_by = time() + node.pending.confirm_seconds;
+    }
+  };
+  node.finish = (outcome, message = '') => {
+    if (!node.pending) throw new Error('nothing is pending');
+    if (outcome === 'rolled_back' && node.reticulumBefore) node.reticulum = node.reticulumBefore;
+    node.reticulumResult = { id: node.pending.id, outcome, at: time(), message };
+    if (outcome !== 'committed') log('auto_rollback', node.pending.actor, [], node.pending.id, outcome === 'rolled_back' ? 'rolled_back' : 'failed');
+    node.pending = null;
+    node.reticulumBefore = null;
+  };
 
   const server = http.createServer((req, res) => {
     const chunks = [];

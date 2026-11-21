@@ -1486,7 +1486,7 @@ test('the manage page: text only, the request header, the step-up for every chan
   assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
   assert.match(js, /'X-Rettui-Request': '1'/);
   assert.match(js, /'Content-Type': 'application\/json'/);
-  for (const p of ['/api/manage/settings', '/api/manage/restart', '/api/manage/rollback']) assert.match(js, new RegExp(`confirmed\\('${p.replace(/\//g, '\\/')}'`), p);
+  for (const p of ['/api/manage/settings', '/api/manage/restart', '/api/manage/rollback', '/api/manage/reticulum']) assert.match(js, new RegExp(`confirmed\\('${p.replace(/\//g, '\\/')}'`), p);
   assert.match(js, /window\.rettuiStepUp\.ask\(/);
   assert.match(js, /var POLL_MS = 3000;/);
   assert.match(js, /var POLL_LIMIT_MS = 120000;/);
@@ -1839,4 +1839,333 @@ test('manage page: Restart asks the node every 3 seconds until it says how it we
   }
   assert.equal(polls, 40);
   assert.equal(slow.byId('manage-status').textContent, 'The node has not said after 2 minutes that Reticulum is back. Reload the page to check.');
+});
+
+// ---- the manage page: Reticulum changes on probation ----
+
+const CONFIRM_URL = '/api/manage/confirm?host=a.test%3A1';
+const RET_EDIT = {
+  revision: 'e'.repeat(32),
+  shared_instance: false,
+  truncated: false,
+  sections: [
+    { path: ['reticulum'], keys: [{ key: 'enable_transport', value: 'False', set: true }] },
+    { path: ['interfaces', EVIL], keys: [{ key: 'type', value: 'TCPServerInterface', set: true }, { key: 'interface_enabled', value: 'Yes', set: true }, { key: 'mode', value: 'Full', set: true }, { key: 'bitrate', value: '9600', set: true }, { key: 'passphrase', value: null, set: true }] },
+    { path: ['interfaces', 'Not offered'], keys: [{ key: 'enabled', value: 'yes', set: true }] },
+  ],
+  editable: [['reticulum'], ['interfaces', EVIL], ['interfaces', 'Gone']],
+};
+const retState = (extra = {}) => nodeState({ reticulum: RET_EDIT, confirmSeconds: 120, pending: null, reticulum_result: null, confirm: null, ...extra });
+const retControls = (p) => p.byId('manage-ret-fields').all();
+
+test('manage page: the Reticulum form offers the sections the node allows, as text, with their current values', async () => {
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState()] } });
+  const $ = p.byId;
+  assert.equal($('manage-ret-edit').hidden, false);
+  assert.equal($('manage-ret-form').hidden, false);
+  assert.equal($('manage-ret-pending').textContent, '');
+  assert.equal($('manage-ret-revision').value, 'e'.repeat(32));
+  const all = retControls(p);
+  // One fieldset per section offered that is in the view; the node's name is text.
+  assert.deepEqual(all.filter((e) => e.tag === 'legend').map((e) => e.textContent), ['reticulum', `interfaces / ${EVIL}`]);
+  assert.equal(all.some((e) => e.tag === 'img' || e.tag === 'script'), false);
+  const labels = all.filter((e) => e.tag === 'label');
+  assert.deepEqual(labels.map((l) => l.textContent), ['Transport (enable_transport)', 'Enabled', 'Mode', 'Announce cap (percent)', 'Bitrate (bits per second)', 'Ingress control']);
+  // Every control has its label and help, and points at the error too.
+  for (const l of labels) {
+    const input = all.find((e) => e.id === l.htmlFor);
+    assert.ok(input, l.textContent);
+    assert.ok(['select', 'input'].includes(input.tag), l.textContent);
+    const [help, err] = input.attrs['aria-describedby'].split(' ');
+    assert.equal(err, 'manage-ret-error');
+    assert.ok(all.some((e) => e.id === help && e.textContent.length > 10), l.textContent);
+  }
+  const byLabel = (text, n = 0) => all.find((e) => e.id === labels.filter((l) => l.textContent === text)[n].htmlFor);
+  // Current values, read in the file's own spelling and from an alias.
+  assert.equal(byLabel('Transport (enable_transport)').value, 'no');
+  assert.equal(byLabel('Enabled').value, 'yes');
+  assert.equal(byLabel('Mode').value, 'full');
+  assert.deepEqual(byLabel('Mode').children.map((o) => o.value), ['full', 'gateway', 'access_point', 'roaming', 'boundary']);
+  assert.equal(byLabel('Bitrate (bits per second)').value, '9600');
+  assert.equal(byLabel('Bitrate (bits per second)').attrs.inputmode, 'numeric');
+  assert.equal(byLabel('Announce cap (percent)').value, '');
+  assert.equal(byLabel('Announce cap (percent)').attrs.inputmode, 'decimal');
+  // Not set: a choice that keeps it so.
+  assert.deepEqual(byLabel('Ingress control').children.map((o) => [o.value, o.textContent]), [['', '(not set)'], ['yes', 'yes'], ['no', 'no']]);
+  assert.equal(byLabel('Ingress control').value, '');
+  // The danger button says what happens, with this node's window.
+  assert.equal($('manage-ret-apply-help').textContent, "Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 2 minutes, the node puts the old config back by itself.");
+  // A shared instance, a user without two-step sign-in, or no editable section: no form, and with
+  // nothing to say, no panel.
+  for (const [what, opts] of [
+    ['shared', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, shared_instance: true } })] } }],
+    ['shared network', { routes: { [`GET ${NODE_URL}`]: [200, retState({ network: { state: 'running', shared_instance: true } })] } }],
+    ['view only', { me: { ...MANAGE, secondFactor: false }, routes: { [`GET ${NODE_URL}`]: [200, retState()] } }],
+    ['none editable', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, editable: [] } })] } }],
+    ['older node', { routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: RET })] } }],
+  ]) {
+    const q = await managePage(opts);
+    assert.equal(q.byId('manage-ret-form').hidden, true, what);
+    assert.equal(q.byId('manage-ret-edit').hidden, true, what);
+    assert.equal(retControls(q).filter((e) => e.tag === 'select' || e.tag === 'input').length, 0, what);
+  }
+});
+
+test('manage page: Apply and test sends only what changed, through a danger step-up, then follows the confirm job and loads the node once', async () => {
+  let reads = 0;
+  let polls = 0;
+  const deadline = Math.floor(Date.now() / 1000) + 120;
+  const job = (state, extra = {}) => ({ id: '1'.repeat(16), state, outcome: null, message: `job ${state}`, confirmBy: null, updatedAt: 'x', ...extra });
+  const p = await managePage({
+    routes: {
+      [`GET ${NODE_URL}`]: () => (++reads === 1 ? [200, retState()] : [200, retState({ reticulum_result: { id: '1'.repeat(16), outcome: 'committed', at: 100, message: '' }, confirm: job('done', { outcome: 'committed', message: 'The change passed the test and is kept.' }) })]),
+      'POST /api/manage/reticulum': [202, { ok: true, id: '1'.repeat(16), state: 'restarting', applied: [{ path: ['interfaces', EVIL], key: 'enabled', from: 'Yes', to: 'no' }], confirm: job('waiting', { message: 'Reticulum is restarting with the change.' }) }],
+      [`GET ${CONFIRM_URL}`]: () => [200, { job: ++polls === 1 ? job('probing', { nodeState: 'probation', confirmBy: deadline, message: 'Checking that the website can still reach the node over Reticulum.' }) : job('done', { outcome: 'committed', message: 'The change passed the test and is kept.' }) }],
+    },
+  });
+  const $ = p.byId;
+  // Nothing changed: nothing is asked.
+  $('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal($('manage-ret-error').textContent, 'Nothing to apply: no Reticulum setting was changed.');
+  assert.equal(p.asked.length, 0);
+  const all = retControls(p);
+  const labels = all.filter((e) => e.tag === 'label');
+  const byLabel = (text) => all.find((e) => e.id === labels.find((l) => l.textContent === text).htmlFor);
+  // A value that is set cannot be removed from here.
+  byLabel('Bitrate (bits per second)').value = '';
+  $('manage-ret-form').fire('submit');
+  await settle();
+  assert.match($('manage-ret-error').textContent, /Bitrate \(bits per second\): a value can be changed here, but not removed/);
+  // The same value in another spelling is no change; a new one is.
+  byLabel('Bitrate (bits per second)').value = '9600.0';
+  byLabel('Mode').value = 'full';
+  byLabel('Enabled').value = 'no';
+  byLabel('Announce cap (percent)').value = ' 5 ';
+  $('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal(p.asked.length, 1);
+  const asked = p.asked[0];
+  assert.equal(asked.danger, true);
+  assert.equal(asked.action, 'Apply and test');
+  assert.equal(asked.title, 'Apply and test on Hilltop');
+  assert.ok(asked.why.startsWith("Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 2 minutes, the node puts the old config back by itself."), asked.why);
+  assert.match(asked.why, /Changes interfaces \/ <img src=x onerror=alert\(1\)> \/ Enabled to no, interfaces \/ .* \/ Announce cap \(percent\) to 5\.$/);
+  const post = p.posts().find((x) => x.url === '/api/manage/reticulum');
+  assert.deepEqual(post.body, { host: 'a.test:1', revision: 'e'.repeat(32), changes: [{ path: ['interfaces', EVIL], key: 'enabled', value: 'no' }, { path: ['interfaces', EVIL], key: 'announce_cap', value: '5' }], password: 'pw', code: '123456' });
+  assert.equal(post.headers['X-Rettui-Request'], '1');
+  // Restarting: the form is gone, the status says so, and the restart button waits.
+  assert.equal($('manage-ret-form').hidden, true);
+  assert.equal($('manage-ret-pending').textContent, `Restarting: Reticulum is restarting with the change (interfaces / ${EVIL} / enabled to "no").`);
+  assert.equal($('manage-restart').disabled, true);
+  assert.equal($('manage-status').textContent, 'Reticulum is restarting with the change. This page shows how the test goes.');
+  assert.equal(p.timers.length, 1);
+  await p.tick();
+  // The job probes: the change is on probation until the node's deadline, and the job says what it does.
+  const hhmm = new Date(deadline * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  assert.equal($('manage-ret-pending').textContent, `On probation until ${hhmm} (interfaces / ${EVIL} / enabled to "no"). Checking that the website can still reach the node over Reticulum.`);
+  assert.equal(p.log.filter((x) => x.url === NODE_URL).length, 1, 'the node is not read again while the job runs');
+  assert.equal(p.timers.length, 1);
+  await p.tick();
+  // Over: the node is loaded once, and the panel says it is kept.
+  assert.equal(p.log.filter((x) => x.url === CONFIRM_URL).length, 2);
+  assert.equal(p.log.filter((x) => x.url === NODE_URL).length, 2);
+  assert.equal(p.timers.length, 0);
+  assert.equal($('manage-status').textContent, 'The change passed the test and is kept.');
+  assert.match($('manage-ret-pending').textContent, /^Kept: the last Reticulum change \(.+\) passed the test\.$/);
+  assert.equal($('manage-ret-form').hidden, false, 'the next change can be made');
+});
+
+test('manage page: each state of a Reticulum change is said in the status region, with what the node said as text', async () => {
+  const at = Math.floor(Date.now() / 1000) + 300;
+  const pending = (state, extra = {}) => ({ id: '2'.repeat(16), actor: `bob${EVIL}`, state, applied_at: 1, confirm_seconds: 300, healthy_at: null, confirm_by: state === 'probation' ? at : null, changes: [{ path: ['interfaces', EVIL], key: 'enabled', from: 'yes', to: 'no' }], problems: [], ...extra });
+  const job = (state, message) => ({ id: '2'.repeat(16), state, outcome: null, message, confirmBy: at, updatedAt: 'x' });
+  const hhmm = new Date(at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const what = `(interfaces / ${EVIL} / enabled to "no", by bob${EVIL})`;
+  const cases = [
+    [{ pending: pending('restarting') }, `Restarting: Reticulum is restarting with the change ${what}.`],
+    [{ pending: pending('probation'), confirm: job('probing', 'Checking that the website can still reach the node over Reticulum.') }, `On probation until ${hhmm} ${what}. Checking that the website can still reach the node over Reticulum.`],
+    [{ pending: pending('probation') }, `On probation until ${hhmm} ${what}. The website is not checking this change, so the node puts the old config back then.`],
+    [{ pending: pending('rolling_back', { problems: ['Hilltop TCP is offline', EVIL] }) }, `Rolling back: the node is putting the old config back ${what}, as Hilltop TCP is offline; ${EVIL}.`],
+    [{ pending: pending('unknown') }, `A Reticulum change is pending on this node ${what}.`],
+    [{ reticulum_result: { id: '2'.repeat(16), outcome: 'rolled_back', at: 1, message: `no confirm by the deadline ${EVIL}` } }, `Rolled back: the node put the old config back: no confirm by the deadline ${EVIL}`],
+    [{ reticulum_result: { id: '2'.repeat(16), outcome: 'rollback_failed', at: 1, message: 'no backup found' } }, 'Not rolled back: the node could not put the old config back: no backup found Check the node in the terminal.'],
+    [{ reticulum_result: { id: '2'.repeat(16), outcome: 'left', at: 1, message: '' } }, 'Left as it was: the config was changed on the node meanwhile.'],
+    [{ confirm: { ...job('gave-up', "The website could not reach this node's Reticulum port in time, so it did not keep the change. The node puts the old config back by itself."), id: '3'.repeat(16) } }, "The website could not reach this node's Reticulum port in time, so it did not keep the change. The node puts the old config back by itself."],
+  ];
+  for (const [extra, words] of cases) {
+    const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState(extra)], [`GET ${CONFIRM_URL}`]: [200, { job: extra.confirm ?? null }] } });
+    const $ = p.byId;
+    assert.equal($('manage-ret-edit').hidden, false, words);
+    assert.equal($('manage-ret-pending').textContent, words);
+    assert.equal($('manage-ret-pending').children.length, 0, 'text, no elements');
+    if (extra.pending) {
+      assert.equal($('manage-ret-form').hidden, true, `no new change while one is pending: ${words}`);
+      assert.equal($('manage-restart').disabled, true, words);
+    }
+    // A job that still runs is followed when the page loads.
+    assert.equal(p.timers.length, extra.confirm && extra.confirm.state === 'probing' ? 1 : 0, words);
+  }
+  // A user who cannot change anything still sees how a change goes.
+  const look = await managePage({ me: { ...MANAGE, secondFactor: false }, routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: pending('restarting') })] } });
+  assert.equal(look.byId('manage-ret-edit').hidden, false);
+  assert.equal(look.byId('manage-ret-form').hidden, true);
+  // The audit list shows the section of a Reticulum change.
+  const listed = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState()], [`GET ${AUDIT_URL}`]: [200, { entries: [{ seq: 3, time: 1, id: '2'.repeat(16), actor: 'bob', op: 'auto_rollback', changes: [], result: 'rolled_back', error: 'no confirm by the deadline' }, { seq: 2, time: 1, id: '2'.repeat(16), actor: 'bob', op: 'reticulum', changes: [{ path: ['interfaces', EVIL], key: 'enabled', from: 'yes', to: 'no' }], result: 'ok', error: null }], more: false }] } });
+  const rows = listed.byId('manage-audit-rows').children.map((tr) => tr.children.map((c) => c.textContent));
+  assert.deepEqual(rows.map((r) => r.slice(1)), [['bob', 'Rolled back by itself', '-', 'Rolled back: no confirm by the deadline'], ['bob', 'Reticulum config', `interfaces / ${EVIL} / enabled: "yes" to "no"`, 'Done']]);
+});
+
+test('manage page: a refused change says why; a stale revision or a pending change loads the node again', async () => {
+  let reads = 0;
+  const answers = [[409, { error: 'The Reticulum configuration was changed elsewhere since the page loaded it.', code: 'stale_revision' }], [400, { error: 'enabled of interfaces / x must be yes or no.', key: 'enabled' }], [409, { error: 'Another Reticulum change on this node is still being tested.', code: 'pending' }]];
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: () => (++reads, [200, retState()]), 'POST /api/manage/reticulum': () => answers.shift() } });
+  const $ = p.byId;
+  const change = () => {
+    const all = retControls(p);
+    const label = all.find((e) => e.tag === 'label' && e.textContent === 'Enabled');
+    all.find((e) => e.id === label.htmlFor).value = 'no';
+    $('manage-ret-form').fire('submit');
+    return settle();
+  };
+  await change();
+  assert.equal($('manage-ret-error').textContent, 'The Reticulum configuration was changed elsewhere since the page loaded it.');
+  assert.equal($('manage-status').textContent, 'The Reticulum configuration was loaded again.');
+  assert.equal(reads, 2);
+  await change();
+  assert.equal($('manage-ret-error').textContent, 'enabled of interfaces / x must be yes or no.');
+  assert.equal(reads, 2, 'a bad value keeps the form as it is');
+  await change();
+  assert.equal(reads, 3);
+  assert.equal(p.timers.length, 0, 'no job to follow');
+  // Cancelled in the step-up: nothing is sent.
+  const c = await managePage({ ask: () => Promise.resolve(null), routes: { [`GET ${NODE_URL}`]: [200, retState()] } });
+  const all = retControls(c);
+  all.find((e) => e.id === all.find((x) => x.tag === 'label' && x.textContent === 'Enabled').htmlFor).value = 'no';
+  c.byId('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal(c.posts().length, 0);
+  assert.equal(c.byId('manage-ret-error').textContent, '');
+});
+
+test('manage page: following a confirm job stops when the server says too often, and the script asks the confirm route only', async () => {
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: { id: '2'.repeat(16), state: 'probation', confirm_by: 1, changes: [], problems: [] }, confirm: { id: '2'.repeat(16), state: 'probing', outcome: null, message: 'Checking.', confirmBy: 1 } })], [`GET ${CONFIRM_URL}`]: [429, { error: 'Too often.' }] } });
+  assert.equal(p.timers.length, 1);
+  await p.tick();
+  assert.equal(p.timers.length, 0);
+  assert.equal(p.byId('manage-status').textContent, 'The page stopped asking how the change goes, as it asked too often. Reload the page in a while.');
+  const js = await read('manage-page.js');
+  assert.match(js, /confirmed\('\/api\/manage\/reticulum'/);
+  assert.match(js, /getJson\('\/api\/manage\/confirm\?host=' \+ encodeURIComponent\(host\)\)/);
+  assert.match(js, /var CONFIRM_POLL_LIMIT_MS = 25 \* 60000;/);
+});
+
+test('manage page: while the job is followed, the change shows as on probation as soon as the job probes, confirms or knows the deadline', async () => {
+  const deadline = Math.floor(Date.now() / 1000) + 300;
+  const hhmm = new Date(deadline * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const P = { id: '2'.repeat(16), state: 'restarting', confirm_by: null, changes: [], problems: [] };
+  const base = { id: '2'.repeat(16), outcome: null, updatedAt: 'x' };
+  const steps = [
+    [{ ...base, state: 'waiting', nodeState: 'restarting', confirmBy: null, message: 'Reticulum is restarting with the change.' }, 'Restarting: Reticulum is restarting with the change.'],
+    // An older server that does not say the node's state: the job's own state is enough.
+    [{ ...base, state: 'probing', confirmBy: null, message: 'Checking.' }, 'On probation until unknown. Checking.'],
+    [{ ...base, state: 'waiting', confirmBy: deadline, message: 'The node did not take the confirm yet. Trying again.' }, `On probation until ${hhmm}. The node did not take the confirm yet. Trying again.`],
+    [{ ...base, state: 'confirming', nodeState: 'probation', confirmBy: deadline, message: 'Keeping the change.' }, `On probation until ${hhmm}. Keeping the change.`],
+    [{ ...base, state: 'waiting', nodeState: 'rolling_back', confirmBy: deadline, message: 'The node is putting the old config back.' }, 'Rolling back: the node is putting the old config back.'],
+  ];
+  let n = 0;
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: P, confirm: steps[0][0] })], [`GET ${CONFIRM_URL}`]: () => [200, { job: steps[++n][0] }] } });
+  assert.equal(p.byId('manage-ret-pending').textContent, 'Restarting: Reticulum is restarting with the change.');
+  for (let i = 1; i < steps.length; i++) {
+    await p.tick();
+    assert.equal(p.byId('manage-ret-pending').textContent, steps[i][1], `step ${i}`);
+  }
+});
+
+test('manage page: turning an interface or transport on is only offered when the node allows it, and then the dialog lists what opens and asks for a tick', async () => {
+  const offered = (p, label) => {
+    const all = retControls(p);
+    const l = all.find((e) => e.tag === 'label' && e.textContent === label);
+    const input = all.find((e) => e.id === l.htmlFor);
+    const help = all.find((e) => e.id === input.attrs['aria-describedby'].split(' ')[0]);
+    return { input, values: input.children.map((o) => o.value), help: help.textContent };
+  };
+  const off = { ...RET_EDIT, sections: [{ path: ['reticulum'], keys: [{ key: 'enable_transport', value: 'no', set: true }] }, { path: ['interfaces', EVIL], keys: [{ key: 'enabled', value: 'no', set: true }] }, { path: ['interfaces', 'On'], keys: [{ key: 'enabled', value: 'yes', set: true }] }], editable: [['reticulum'], ['interfaces', EVIL], ['interfaces', 'On']] };
+  for (const allowed of [undefined, false, 'yes']) {
+    const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: off, reticulum_enable_allowed: allowed })] } });
+    const t = offered(p, 'Transport (enable_transport)');
+    assert.deepEqual(t.values, ['no'], String(allowed));
+    assert.match(t.help, /Turning this on is only possible in the terminal on this node\.$/);
+    // Ingress control is no turn-on of that kind: yes stays on offer.
+    assert.deepEqual(offered(p, 'Ingress control').values, ['', 'yes', 'no']);
+    // One that is on can still be turned off.
+    const on = retControls(p).filter((e) => e.tag === 'label' && e.textContent === 'Enabled').map((l) => retControls(p).find((e) => e.id === l.htmlFor));
+    assert.deepEqual(on.map((x) => x.children.map((o) => o.value)), [['no'], ['yes', 'no']]);
+  }
+  // Allowed: yes is offered; turning on lists what opens and needs the box ticked (step-up.js).
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: off, reticulum_enable_allowed: true })], 'POST /api/manage/reticulum': [202, { ok: true, id: '4'.repeat(16), applied: [], notes: ['Opens TCP port 4242 on 0.0.0.0.'], confirm: null }] } });
+  const t = offered(p, 'Transport (enable_transport)');
+  assert.deepEqual(t.values, ['yes', 'no']);
+  assert.doesNotMatch(t.help, /only possible in the terminal/);
+  t.input.value = 'yes';
+  const iface = retControls(p).find((e) => e.id === retControls(p).find((l) => l.tag === 'label' && l.textContent === 'Enabled').htmlFor);
+  iface.value = 'yes';
+  p.byId('manage-ret-form').fire('submit');
+  await settle();
+  const asked = p.asked[0];
+  assert.equal(asked.danger, true);
+  assert.deepEqual(plain(asked.opens), [
+    'reticulum: Transport: this node passes traffic and announces on for other peers, and is known on the network as a transport node.',
+    `interfaces / ${EVIL}: The interface starts: a server interface opens its listening port (on every address when it listens on 0.0.0.0), a client interface connects out, and this node is announced on it.`,
+  ]);
+  assert.equal(asked.acknowledge, 'I know what this opens on the node, and want it.');
+  assert.match(asked.why, /This turns on what is listed below\.$/);
+  // The node's notes are said once it took the change.
+  assert.equal(p.byId('manage-status').textContent, 'Reticulum is restarting with the change. This page shows how the test goes. The node says: Opens TCP port 4242 on 0.0.0.0.');
+  // Turning off asks for no tick.
+  const q = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: off, reticulum_enable_allowed: true })], 'POST /api/manage/reticulum': [202, { ok: true, id: '4'.repeat(16), confirm: null }] } });
+  const onAgain = retControls(q).filter((e) => e.tag === 'label' && e.textContent === 'Enabled').map((l) => retControls(q).find((e) => e.id === l.htmlFor))[1];
+  onAgain.value = 'no';
+  q.byId('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal(q.asked[0].opens, undefined);
+  assert.equal(q.asked[0].acknowledge, undefined);
+});
+
+test('step-up: with opens and acknowledge it lists what opens and does nothing until the box is ticked', async () => {
+  const dom = makeDom();
+  const sent = [];
+  const window = {};
+  vm.runInNewContext(await read('step-up.js'), { document: dom.document, window, fetch: () => Promise.reject(new Error('no fetch')) });
+  const done = window.rettuiStepUp.ask({ title: 'Apply', why: 'Why.', action: 'Apply and test', danger: true, opens: ['Opens <b>A</b>', 'Opens B'], acknowledge: 'I know.', send: (f) => (sent.push(f), Promise.resolve({ status: 202, body: {} })) });
+  const $ = dom.byId;
+  assert.deepEqual($('stepup-opens').children.map((li) => [li.tag, li.textContent]), [['li', 'Opens <b>A</b>'], ['li', 'Opens B']]);
+  assert.equal($('stepup-opens').hidden, false);
+  assert.equal($('stepup-ack-row').hidden, false);
+  assert.equal($('stepup-ack-label').textContent, 'I know.');
+  assert.equal($('stepup-ack-label').htmlFor, 'stepup-ack');
+  assert.equal($('stepup-ack').type, 'checkbox');
+  assert.equal($('stepup-ack').checked, false);
+  $('stepup-password').value = 'pw';
+  $('stepup-code').value = '123456';
+  $('stepup-form').fire('submit');
+  await settle();
+  assert.equal(sent.length, 0, 'not without the tick');
+  assert.equal($('stepup-error').textContent, 'Tick the box first: it says you know what this change opens.');
+  assert.equal($('stepup-ack').attrs['aria-invalid'], 'true');
+  $('stepup-ack').checked = true;
+  $('stepup-form').fire('submit');
+  await settle();
+  assert.equal(sent.length, 1);
+  assert.deepEqual(await done, { status: 202, body: {} });
+  // Asked again without them: no list, no box, and the tick of before is gone.
+  const again = window.rettuiStepUp.ask({ title: 'Save', send: () => Promise.resolve({ status: 200, body: {} }) });
+  assert.equal($('stepup-opens').hidden, true);
+  assert.equal($('stepup-opens').children.length, 0);
+  assert.equal($('stepup-ack-row').hidden, true);
+  assert.equal($('stepup-ack').checked, false);
+  $('stepup-password').value = 'pw';
+  $('stepup-form').fire('submit');
+  await settle();
+  assert.deepEqual(await again, { status: 200, body: {} });
 });

@@ -158,3 +158,30 @@ test('the Reticulum panel of the manage page is a labelled region with a heading
   assert.match(js, /th\.scope = 'row'/);
   assert.match(js, /el\('h3'/);
 });
+
+test('the Reticulum change panel: a labelled region, its states read out, its errors announced, and a danger button that says what happens', async () => {
+  const html = await read('manage.html');
+  const panel = /<section id="manage-ret-edit"([^>]*)>([\s\S]*?)<\/section>/.exec(html);
+  assert.ok(panel, 'the panel is there');
+  assert.match(panel[1], /aria-labelledby="manage-ret-edit-h"/);
+  assert.match(panel[1], /\shidden$/);
+  assert.match(panel[2], /<h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration<\/h2>/);
+  // Restarting, on probation, rolling back, kept, rolled back: one status that is read out politely;
+  // a refusal is an alert. Both stay outside the form, so they are heard while the form is hidden.
+  assert.match(panel[2], /<p id="manage-ret-pending" class="note" role="status"><\/p>/);
+  assert.match(panel[2], /<p id="manage-ret-error" class="login-error" role="alert"><\/p>/);
+  const form = /<form id="manage-ret-form"[^>]*>([\s\S]*?)<\/form>/.exec(panel[2]);
+  assert.ok(form);
+  assert.doesNotMatch(form[1], /role="(status|alert)"/);
+  // The button is a danger button with words, described by the text of what happens.
+  assert.match(form[1], /<button id="manage-ret-apply" type="submit" class="danger" aria-describedby="manage-ret-apply-help">Apply and test<\/button>/);
+  assert.match(form[1], /<p id="manage-ret-apply-help" class="note">Reticulum restarts\. The website then checks that it can still reach this node and keeps the change\. If it can't within 5 minutes, the node puts the old config back by itself\.<\/p>/);
+  assert.doesNotMatch(panel[0], /\sstyle=|<script/);
+  // The controls the page builds have a label each, a help text and the error in their description,
+  // and are grouped in a fieldset with a legend per section.
+  const js = await read('manage-page.js');
+  assert.match(js, /label\.htmlFor = id;/);
+  assert.match(js, /input\.setAttribute\('aria-describedby', helpId \+ ' manage-ret-error'\)/);
+  assert.match(js, /fs\.appendChild\(el\('legend', null, path\.join\(' \/ '\)\)\)/);
+  assert.match(js, /\$\('manage-ret-pending'\)\.textContent = /);
+});

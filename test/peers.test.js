@@ -737,3 +737,14 @@ test('unhandled_distinct is a bounded whole number; a wrong type or an old node 
   delete old.unhandled_distinct;
   assert.equal(sanitizeStats({ ...stats(), propagation: old }).propagation.unhandledDistinct, null);
 });
+
+test('cleanText takes out the line and paragraph separators and NEL, so node text stays on one line', async () => {
+  const { INVISIBLE_RE } = await import('../lib/propagation.js');
+  assert.equal(cleanText('a b c\u0085d', 48), 'abcd');
+  assert.equal(cleanText('  edge  ', 48), 'edge');
+  for (const ch of [' ', ' ', '\u0085']) assert.equal(`x${ch}y`.replace(INVISIBLE_RE, ''), 'xy', ch.codePointAt(0).toString(16));
+  // What a node says on the manage page goes through it too.
+  const { cleanResult, cleanPending } = await import('../lib/manage-api.js');
+  assert.equal(cleanResult({ id: '00112233aabbccdd', outcome: 'rolled_back', at: 1, message: 'no confirm by the deadline ' }).message, 'no confirmby the deadline');
+  assert.deepEqual(cleanPending({ id: '00112233aabbccdd', state: 'rolling_back', problems: ['Hilltop TCP offline'] }).problems, ['HilltopTCP offline']);
+});

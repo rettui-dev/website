@@ -543,6 +543,7 @@ button.danger:hover { border-width: 1px; text-decoration: underline; }
 .manage-line { margin: 0; overflow-wrap: anywhere; }
 .manage-form { max-width: 520px; }
 .manage-group { display: grid; gap: 6px; margin: 10px 0 0; }
+.manage-group legend { overflow-wrap: anywhere; }
 .manage-field { display: grid; gap: 4px; margin: 4px 0; overflow-wrap: anywhere; }
 .manage-field.users-radio { display: flex; flex-wrap: wrap; }
 .manage-field.users-radio .note { flex-basis: 100%; }

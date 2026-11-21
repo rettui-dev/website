@@ -19,7 +19,7 @@ import { UserStore } from '../lib/users.js';
 import { Keyring } from '../lib/keys.js';
 import { createAudit, createFailureLog } from '../lib/audit.js';
 import { RECENT_AUTH_MS } from '../lib/account.js';
-import { MANAGE_READS_PER_NODE, MANAGE_WRITES_PER_USER, cleanAudit, cleanReticulum, cleanState, skewText } from '../lib/manage-api.js';
+import { MANAGE_CONFIRM_READS_PER_USER, MANAGE_READS_PER_NODE, MANAGE_WRITES_PER_USER, cleanAudit, cleanReticulum, cleanState, skewText } from '../lib/manage-api.js';
 import { createManageClient } from '../lib/manage.js';
 import { sampleReticulum, startManageNode } from './helpers/manage-node.js';
 import { base32Decode, totp } from '../lib/totp.js';
@@ -36,6 +36,8 @@ const HOST = 'a.test:1';
 const SECRET = 'rettui-manage-test-secret-0123456789abcdef';
 const REV = '0123456789abcdef0123456789abcdef';
 const ID = '00112233aabbccdd';
+// A Reticulum change the website takes.
+const RET_CHANGE = { path: ['interfaces', 'Hilltop TCP'], key: 'enabled', value: 'no' };
 
 const STATE = {
   v: 1,
@@ -335,13 +337,13 @@ test('reading a node: the state is cleaned, the clock is compared, and an unknow
 
 test('the Reticulum config of a node is checked and cut, and what is malformed is left out', () => {
   const good = { revision: REV, shared_instance: true, truncated: false, sections: [{ path: ['interfaces', 'A'], keys: [{ key: 'type', value: 'TCPClientInterface', set: true }, { key: 'passphrase', value: null, set: true }, { key: 'x', value: null, set: false }] }] };
-  assert.deepEqual(cleanReticulum(good), good);
+  assert.deepEqual(cleanReticulum(good), { ...good, editable: [] });
   // Nothing, or not a map with a list of sections: null.
   for (const bad of [undefined, null, 'x', 5, [], {}, { sections: 'no' }, { sections: { length: 1 } }]) assert.equal(cleanReticulum(bad), null, JSON.stringify(bad));
   assert.equal(cleanState(STATE).reticulum, null);
   assert.equal(cleanState({ ...STATE, reticulum: 'nope' }).reticulum, null);
   // The revision and shared_instance are checked.
-  assert.deepEqual(cleanReticulum({ revision: 'zz', shared_instance: 'yes', sections: [] }), { revision: '', shared_instance: false, truncated: false, sections: [] });
+  assert.deepEqual(cleanReticulum({ revision: 'zz', shared_instance: 'yes', sections: [] }), { revision: '', shared_instance: false, truncated: false, sections: [], editable: [] });
   const long = 'x'.repeat(1000);
   const messy = cleanReticulum({
     revision: REV,
@@ -463,7 +465,7 @@ test('GET /api/manage/node passes the Reticulum config through, cleaned, and wit
       assert.equal(none.json().reticulum, null, JSON.stringify(value));
     }
     client.answer = () => ({ ok: true, status: 200, body: { ...STATE, reticulum: { revision: REV, shared_instance: true, sections: [] } } });
-    assert.deepEqual((await nodeGet(s, b)).json().reticulum, { revision: REV, shared_instance: true, truncated: false, sections: [] });
+    assert.deepEqual((await nodeGet(s, b)).json().reticulum, { revision: REV, shared_instance: true, truncated: false, sections: [], editable: [] });
   } finally {
     await s.close();
   }
@@ -562,7 +564,7 @@ test('a user without two-step sign-in can look but not change anything', async (
   try {
     const b = await logIn(s, 'bob', BOB);
     assert.equal((await nodeGet(s, b)).status, 200);
-    for (const [p, body] of [['/api/manage/settings', { host: HOST, revision: REV, changes: { pn_name: 'x' } }], ['/api/manage/restart', { host: HOST }], ['/api/manage/rollback', { host: HOST, id: ID }]]) {
+    for (const [p, body] of [['/api/manage/settings', { host: HOST, revision: REV, changes: { pn_name: 'x' } }], ['/api/manage/restart', { host: HOST }], ['/api/manage/rollback', { host: HOST, id: ID }], ['/api/manage/reticulum', { host: HOST, revision: REV, changes: [RET_CHANGE] }]]) {
       const r = await api(s, p, { ...body, password: BOB }, b);
       assert.equal(r.status, 403, p);
       assert.equal(r.json().code, 'second-factor-required', p);
@@ -1047,12 +1049,12 @@ test('an unsigned answer to a change says the outcome is not known; to a read, t
     const read = await nodeGet(s, b);
     assert.equal(read.status, 502);
     assert.match(read.json().error, /check the secret file on both sides/);
-    for (const [p, extra] of [['/api/manage/settings', { revision: REV, changes: { pn_name: 'x' } }], ['/api/manage/restart', {}], ['/api/manage/rollback', { id: ID }]]) {
+    for (const [p, extra] of [['/api/manage/settings', { revision: REV, changes: { pn_name: 'x' } }], ['/api/manage/restart', {}], ['/api/manage/rollback', { id: ID }], ['/api/manage/reticulum', { revision: REV, changes: [RET_CHANGE] }]]) {
       const w = await api(s, p, { host: HOST, ...extra, password: BOB, code: code() }, b);
       assert.equal(w.status, 502, p);
       assert.deepEqual(w.json(), { error: "The node's answer could not be checked, so it is not known whether the change was made. Reload the node to see, before you try again.", code: 'unsigned' }, p);
     }
-    assert.deepEqual((await auditLines(s)).map((l) => l.result), ['unsigned', 'unsigned', 'unsigned']);
+    assert.deepEqual((await auditLines(s)).map((l) => l.result), ['unsigned', 'unsigned', 'unsigned', 'unsigned']);
   } finally {
     await s.close();
   }
@@ -1118,6 +1120,472 @@ test('before_start on a read holds writes off too, for at most 10 minutes whatev
     const bare = await nodeGet(s, b);
     assert.deepEqual(bare.json(), { error: 'The node restarted moments ago, so it did not take this request. Try again.', code: 'before_start', retryAfter: 1 });
   } finally {
+    await s.close();
+  }
+});
+
+// ---- Reticulum config changes on probation (phase 3) ----
+
+// Confirm jobs that record what they were asked, and say what a test sets.
+function fakeJobs() {
+  const jobs = {
+    started: [],
+    shown: new Map(),
+    start(x) {
+      jobs.started.push(x);
+      jobs.shown.set(x.host, { id: x.id, state: 'waiting', outcome: null, message: 'Reticulum is restarting with the change.', confirmBy: null, updatedAt: new Date(NOW).toISOString() });
+      return jobs.shown.get(x.host);
+    },
+    status: (host) => jobs.shown.get(host) ?? null,
+    stopAll() {},
+  };
+  return jobs;
+}
+
+test('the rules of a Reticulum change: paths, interface names and values, as the node takes them', async () => {
+  const { retPathKind, interfaceNameOk, retValueOk, RET_EDITS } = await import('../lib/manage-api.js');
+  assert.equal(retPathKind(['reticulum']), 'reticulum');
+  assert.equal(retPathKind(['interfaces', 'Hilltop TCP']), 'interfaces');
+  for (const bad of [[], ['Reticulum'], ['reticulum', 'x'], ['interfaces'], ['interfaces', 'a', 'b'], ['Interfaces', 'a'], 'reticulum', null, [5], ['interfaces', 5]]) assert.equal(retPathKind(bad), null, JSON.stringify(bad));
+  for (const ok of ['A', 'Hilltop TCP', 'é'.repeat(32), 'x'.repeat(64), 'Default Interface', 'a.b-c_d(1)']) assert.equal(interfaceNameOk(ok), true, ok);
+  for (const bad of ['', ' lead', 'trail ', 'x'.repeat(65), 'é'.repeat(33), 'a]b', 'a[b', 'a#b', 'a"b', "a'b", 'a\nb', 'a\tb', 'a\u0000b', 'a‮b', 'a​b', 'a b', 'a﻿b', 5, null]) assert.equal(interfaceNameOk(bad), false, JSON.stringify(bad));
+  assert.deepEqual(Object.keys(RET_EDITS.reticulum), ['enable_transport']);
+  assert.deepEqual(Object.keys(RET_EDITS.interfaces), ['enabled', 'mode', 'announce_cap', 'bitrate', 'ingress_control']);
+  const cases = {
+    switch: [['yes', 'no'], ['Yes', 'NO', 'true', 'false', 'on', '1', '', ' yes']],
+    mode: [['full', 'gateway', 'access_point', 'roaming', 'boundary'], ['Full', 'ap', 'pointtopoint', '']],
+    cap: [['0.01', '0.5', '1', '2', '12.34', '99.99', '100', '100.0', '100.00'], ['0', '0.0', '0.00', '100.5', '101', '0.001', '5.123', '05', '-1', '1e1', '.5', '5.', ' 5', '']],
+    bitrate: [['5', '9600', '10000000000'], ['4', '0', '10000000001', '012', '1e5', '5.0', '-5', '99999999999', '']],
+  };
+  for (const [rule, [good, bad]] of Object.entries(cases)) {
+    for (const v of good) assert.equal(retValueOk(rule, v), true, `${rule} ${v}`);
+    for (const v of bad) assert.equal(retValueOk(rule, v), false, `${rule} ${v}`);
+  }
+  assert.equal(retValueOk('switch', 5), false);
+  assert.equal(retValueOk('other', 'yes'), false);
+});
+
+test('a Reticulum change: refused here before any password, then confirmed, sent with the confirm window, kept by the confirm job, and audited by key', async () => {
+  client = fakeClient((host, method, target) => {
+    if (target === '/manage/v1/reticulum') return { ok: true, status: 202, body: { id: ID, state: 'restarting', confirm_seconds: 120, applied: [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'yes', to: 'no' }, { path: ['reticulum'], key: 'enable_transport', from: 'no', to: 'yes' }], notes: ['Reticulum restarts.‮'], reticulum_revision: 'b'.repeat(32) } };
+    return { ok: true, status: 200, body: STATE };
+  });
+  client.confirmSeconds = (host) => (host === HOST ? 120 : null);
+  const jobs = fakeJobs();
+  const s = await setup({ manage: { client, nodes: [HOST], confirmJobs: jobs } });
+  try {
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB);
+    const p = '/api/manage/reticulum';
+    const base = { host: HOST, revision: REV, changes: [RET_CHANGE, { path: ['reticulum'], key: 'enable_transport', value: 'no' }] };
+    const change = (c) => ({ ...base, changes: [c] });
+    const bad = [
+      [{ ...base, host: 'c.test:3' }, 404],
+      [{ ...base, revision: 'abc' }, 400, /no current revision/],
+      [{ ...base, changes: {} }, 400, /Nothing to apply/],
+      [{ ...base, changes: [] }, 400, /Nothing to apply/],
+      [{ ...base, changes: Array.from({ length: 17 }, (_, i) => ({ path: ['interfaces', `I${i}`], key: 'enabled', value: 'no' })) }, 400, /At most 16/],
+      [change(null), 400, /not valid/],
+      [change('x'), 400, /not valid/],
+      [change({ ...RET_CHANGE, path: ['interfaces'] }), 400, /section that cannot be changed/],
+      [change({ ...RET_CHANGE, path: ['interfaces', 'Bad]Name'] }), 400, /section that cannot be changed/],
+      [change({ ...RET_CHANGE, path: ['interfaces', 'Odd‮'] }), 400, /section that cannot be changed/],
+      [change({ ...RET_CHANGE, path: ['logging'] }), 400, /section that cannot be changed/],
+      [change({ ...RET_CHANGE, key: 'type', value: 'PipeInterface' }), 400, /^type of interfaces \/ Hilltop TCP cannot be changed from the website\.$/, { path: ['interfaces', 'Hilltop TCP'] }],
+      [change({ ...RET_CHANGE, key: 'interface_enabled' }), 400, /cannot be changed/],
+      [change({ ...RET_CHANGE, key: 'command', value: 'sh' }), 400, /cannot be changed/],
+      [change({ path: ['reticulum'], key: 'enabled', value: 'no' }), 400, /cannot be changed/],
+      [change({ ...RET_CHANGE, key: 'enable_transport' }), 400, /cannot be changed/],
+      [change({ ...RET_CHANGE, key: 5 }), 400, /^A setting of interfaces \/ Hilltop TCP cannot be changed/],
+      [change({ ...RET_CHANGE, value: 'true' }), 400, /^enabled of interfaces \/ Hilltop TCP must be yes or no\.$/, { key: 'enabled', path: ['interfaces', 'Hilltop TCP'] }],
+      [change({ ...RET_CHANGE, value: 5 }), 400, /must be yes or no/],
+      [change({ ...RET_CHANGE, key: 'mode', value: 'Full' }), 400, /must be one of full, gateway, access_point, roaming, boundary/],
+      [change({ ...RET_CHANGE, key: 'announce_cap', value: '0' }), 400, /percentage above 0/],
+      [change({ ...RET_CHANGE, key: 'bitrate', value: '4' }), 400, /from 5 to 10000000000/],
+      [change({ ...RET_CHANGE, key: 'bitrate', value: '1'.repeat(33) }), 400, /from 5 to/],
+      [{ ...base, changes: [RET_CHANGE, { ...RET_CHANGE, value: 'no' }] }, 400, /is in the change twice/],
+      // Turning on: refused until the node says it allows it (this node said nothing yet).
+      [change({ ...RET_CHANGE, value: 'yes' }), 400, /^Turning enabled of interfaces \/ Hilltop TCP on is only possible in the terminal on this node\.$/, { code: 'enable_not_allowed', key: 'enabled' }],
+      [change({ path: ['reticulum'], key: 'enable_transport', value: 'yes' }), 400, /^Turning enable_transport of reticulum on is only possible in the terminal/],
+    ];
+    // Refused before the step-up, so the code is never looked at (and the clock stays put).
+    for (const [body, status, words, extra = {}] of bad) {
+      const r = await api(s, p, { ...body, password: BOB, code: '000000' }, b);
+      assert.equal(r.status, status, JSON.stringify(body).slice(0, 120));
+      if (words) assert.match(r.json().error, words, JSON.stringify(body).slice(0, 120));
+      for (const [k, v] of Object.entries(extra)) assert.deepEqual(r.json()[k], v, k);
+    }
+    assert.equal(client.calls.length, 0, 'no node was asked');
+    assert.equal(jobs.started.length, 0);
+    const ok = await api(s, p, { ...base, password: BOB, code: code() }, b);
+    assert.equal(ok.status, 202, ok.text);
+    const body = ok.json();
+    assert.equal(body.id, ID);
+    assert.equal(body.state, 'restarting');
+    assert.equal(body.confirmSeconds, 120);
+    assert.deepEqual(body.applied, [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'yes', to: 'no' }, { path: ['reticulum'], key: 'enable_transport', from: 'no', to: 'yes' }]);
+    assert.deepEqual(body.notes, ['Reticulum restarts.']);
+    assert.equal(body.reticulumRevision, 'b'.repeat(32));
+    assert.equal(body.confirm.id, ID);
+    assert.deepEqual(client.calls, [[HOST, 'POST', '/manage/v1/reticulum', 'bob', { revision: REV, confirm_seconds: 120, changes: base.changes }]], 'exactly the node format, as the stored name');
+    client.calls.length = 0;
+    assert.equal(jobs.started.length, 1);
+    const { sessionId, ...started } = jobs.started[0];
+    assert.deepEqual(started, { host: HOST, id: ID, actor: 'bob', confirmSeconds: 120 });
+    assert.equal(typeof sessionId, 'string', 'the session the change was made in');
+    assert.ok(s.login.sessions.live(sessionId));
+    const lines = await auditLines(s);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].event, 'manage-reticulum');
+    assert.deepEqual(lines[0].keys, ['interfaces/Hilltop TCP/enabled', 'reticulum/enable_transport']);
+    assert.equal(lines[0].id, ID);
+    assert.equal(lines[0].result, 'ok');
+    assert.equal(lines[0].with, 'password+code');
+    assert.doesNotMatch(JSON.stringify(lines), /"(yes|no)"/, 'no values');
+    // A node that says it allows turning things on: yes goes through; one that says no again, or
+    // nothing, stops it here once more.
+    const turnOn = { ...base, changes: [{ ...RET_CHANGE, value: 'yes' }, { path: ['reticulum'], key: 'enable_transport', value: 'yes' }] };
+    for (const [allowed, status] of [[true, 202], [false, 400], ['yes', 400], [true, 202]]) {
+      client.answer = (host, method, target) => (target === '/manage/v1/state' ? { ok: true, status: 200, body: { ...STATE, reticulum_enable_allowed: allowed } } : { ok: true, status: 202, body: { id: ID } });
+      assert.equal((await nodeGet(s, b)).json().reticulum_enable_allowed, allowed === true);
+      const w = await api(s, p, { ...turnOn, password: BOB, code: code() }, b);
+      assert.equal(w.status, status, `${allowed}: ${w.text}`);
+    }
+    // A node that takes it but sends no id: nothing to confirm, so no job (the node rolls back).
+    client.answer = () => ({ ok: true, status: 202, body: { state: 'restarting' } });
+    const noId = await api(s, p, { ...base, password: BOB, code: code() }, b);
+    assert.equal(noId.status, 202);
+    assert.equal(noId.json().id, null);
+    assert.equal(jobs.started.length, 3);
+    // The confirm window is the default without a figure for the node.
+    client.confirmSeconds = () => 5;
+    client.answer = () => ({ ok: true, status: 202, body: { id: ID } });
+    await api(s, p, { ...base, password: BOB, code: code() }, b);
+    assert.equal(client.calls.at(-1)[4].confirm_seconds, 300);
+    assert.equal(jobs.started.at(-1).confirmSeconds, 300);
+  } finally {
+    await s.close();
+  }
+});
+
+test('what a node refuses of a Reticulum change becomes a fixed sentence, with its words only for invalid_value, not_allowed and ambiguous', async () => {
+  client = fakeClient();
+  const jobs = fakeJobs();
+  const s = await setup({ manage: { client, nodes: [HOST], confirmJobs: jobs } });
+  try {
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB);
+    const send = () => api(s, '/api/manage/reticulum', { host: HOST, revision: REV, changes: [RET_CHANGE], password: BOB, code: code() }, b);
+    const P = ['interfaces', 'Hilltop TCP'];
+    const cases = [
+      [{ ok: true, status: 409, body: { error: 'pending', id: 'ffffffffffffffff', message: 'NODE WORDS' } }, 409, /^Another Reticulum change on this node is still being tested\. Wait until it is kept or rolled back\.$/, { code: 'pending', id: 'ffffffffffffffff' }],
+      [{ ok: true, status: 409, body: { error: 'pending', id: '<b>' } }, 409, /still being tested/, { id: undefined }],
+      [{ ok: true, status: 409, body: { error: 'not_pending', state: 'rolling_back', message: 'NODE WORDS' } }, 409, /no longer waiting/, { code: 'not_pending', state: 'rolling_back' }],
+      [{ ok: true, status: 409, body: { error: 'not_pending', state: 'evil' } }, 409, /no longer waiting/, { state: null }],
+      [{ ok: true, status: 409, body: { error: 'ambiguous', path: P, key: 'enabled', message: `Both enabled and interface_enabled are set‮ ${'z'.repeat(400)}` } }, 409, /^Both enabled and interface_enabled are set z+$/, { code: 'ambiguous', path: P, key: 'enabled' }],
+      [{ ok: true, status: 409, body: { error: 'ambiguous', path: 'x' } }, 409, /cannot tell for sure which line/, { path: undefined }],
+      [{ ok: true, status: 404, body: { error: 'unknown_section', path: P, message: 'NODE WORDS' } }, 404, /^The node has no such section\. Reload the page\.$/, { code: 'unknown_section', path: P }],
+      [{ ok: true, status: 409, body: { error: 'stale_revision', reticulum_revision: 'c'.repeat(32), settings_revision: REV, message: 'NODE WORDS' } }, 409, /^The Reticulum configuration was changed elsewhere since the page loaded it/, { code: 'stale_revision', reticulumRevision: 'c'.repeat(32), settingsRevision: undefined }],
+      [{ ok: true, status: 403, body: { error: 'not_allowed', path: P, key: 'enabled', message: 'That interface runs a program.' } }, 403, /^That interface runs a program\.$/, { path: P, key: 'enabled' }],
+      [{ ok: true, status: 400, body: { error: 'invalid_value', path: [P[0], '‮'], key: 'enabled', message: 'No.' } }, 400, /^No\.$/, { path: undefined, key: 'enabled' }],
+      [{ ok: true, status: 400, body: { error: 'no_change', message: 'NODE WORDS' } }, 400, /Nothing was changed/],
+      [{ ok: true, status: 409, body: { error: 'shared_instance', message: 'NODE WORDS' } }, 409, /shared Reticulum instance/],
+      [{ ok: true, status: 409, body: { error: 'restarting', message: 'NODE WORDS' } }, 409, /restarting on this node already/],
+      [{ ok: true, status: 409, body: { error: 'busy', message: 'NODE WORDS' } }, 409, /busy/],
+      [{ ok: true, status: 429, body: { error: 'rate_limited', retry_after: 240, message: 'NODE WORDS' } }, 429, /limiting changes.*4 minutes/, { retryAfter: 240 }],
+      [{ ok: true, status: 500, body: { error: 'failed', message: 'NODE WORDS' } }, 502, /^The node could not save the change, so nothing was changed\.$/, { code: 'failed' }],
+    ];
+    for (const [answer, status, words, extra = {}] of cases) {
+      client.answer = () => answer;
+      const r = await send();
+      assert.equal(r.status, status, JSON.stringify(answer));
+      assert.match(r.json().error, words, JSON.stringify(answer));
+      for (const [k, v] of Object.entries(extra)) assert.deepEqual(r.json()[k], v, `${k} of ${JSON.stringify(answer)}`);
+      assert.doesNotMatch(r.text, /NODE WORDS|\\u202e/);
+    }
+    assert.equal(jobs.started.length, 0, 'no job for a refusal');
+    const lines = await auditLines(s);
+    assert.equal(lines.length, cases.length);
+    assert.ok(lines.every((l) => l.event === 'manage-reticulum' && l.id === null && l.keys[0] === 'interfaces/Hilltop TCP/enabled'));
+    assert.deepEqual(lines.slice(0, 3).map((l) => l.result), ['pending', 'pending', 'not_pending']);
+    // A settings change keeps its own stale words, and a restart while a change is pending says so.
+    client.answer = () => ({ ok: true, status: 409, body: { error: 'stale_revision', settings_revision: REV } });
+    const stale = await api(s, '/api/manage/settings', { host: HOST, revision: REV, changes: { pn_name: 'x' }, password: BOB, code: code() }, b);
+    assert.match(stale.json().error, /The settings were changed elsewhere/);
+    assert.equal(stale.json().settingsRevision, REV);
+    client.answer = () => ({ ok: true, status: 409, body: { error: 'pending', id: ID } });
+    const restart = await api(s, '/api/manage/restart', { host: HOST, password: BOB, code: code() }, b);
+    assert.equal(restart.status, 409);
+    assert.match(restart.json().error, /still being tested/);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the gates of a Reticulum change: the role, a recent sign in, the wait after a first factor, the budget and a session that ends meanwhile', async () => {
+  client = fakeClient(() => ({ ok: true, status: 202, body: { id: ID } }));
+  const waiters = [];
+  let hold = false;
+  const hasher = async (p) => {
+    if (hold) await new Promise((r) => waiters.push(r));
+    return fakeHasher(p);
+  };
+  const jobs = fakeJobs();
+  const s = await setup({ hasher, manage: { client, nodes: [HOST], confirmJobs: jobs } });
+  try {
+    const p = '/api/manage/reticulum';
+    const body = { host: HOST, revision: REV, changes: [RET_CHANGE] };
+    const v = await logIn(s, 'victor', VIC);
+    assert.equal((await api(s, p, { ...body, password: VIC }, v)).status, 403, 'a viewer');
+    assert.equal((await api(s, p, body)).status, 401, 'signed out');
+    assert.equal((await api(s, p, body, v, { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site', 'X-Rettui-Request': '1' })).status, 403, 'another site');
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB, { held: true });
+    const held = await api(s, p, { ...body, password: BOB, code: code() }, b);
+    assert.equal(held.status, 403);
+    assert.equal(held.json().code, 'second-factor-new');
+    s.holdClock.ahead += FIRST_FACTOR_HOLD_MS;
+    // The password alone is not enough.
+    assert.equal((await api(s, p, { ...body, password: BOB }, b)).json().field, 'code');
+    // A role taken away while the password is checked: nothing is sent.
+    hold = true;
+    const pending = api(s, p, { ...body, password: BOB, code: code() }, b);
+    for (let i = 0; i < 200 && waiters.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    await s.store.setRole('bob', 'viewer');
+    hold = false;
+    waiters.splice(0).forEach((r) => r());
+    assert.equal((await pending).status, 401);
+    assert.equal(client.calls.length, 0);
+    assert.equal(jobs.started.length, 0);
+    // A sign in older than 15 minutes: the password again first (alice, as bob's sessions ended
+    // with his role).
+    const a = await logIn(s, 'alice', ALICE);
+    const aliceCode = await withTotp(s, a, ALICE);
+    const fine = await api(s, p, { ...body, password: ALICE, code: aliceCode() }, a);
+    assert.equal(fine.status, 202, fine.text);
+    s.clock.t += RECENT_AUTH_MS;
+    const stale = await api(s, p, { ...body, password: ALICE, code: aliceCode() }, a);
+    assert.equal(stale.json().reauth, true, stale.text);
+    // Each change takes one of the 30 an hour, wrong passwords included, shared with the others.
+    const a2 = await logIn(s, 'alice', ALICE);
+    assert.equal(a2, '', 'a second factor is on: the password alone signs nobody in');
+    const v2 = await logIn(s, 'victor', VIC);
+    await s.store.setRole('victor', 'manage');
+    const v3 = await logIn(s, 'victor', VIC);
+    assert.notEqual(v2, v3);
+    const vicCode = await withTotp(s, v3, VIC);
+    assert.equal((await api(s, '/api/manage/restart', { host: HOST, password: VIC, code: vicCode() }, v3)).status, 202);
+    for (let used = 1; used < MANAGE_WRITES_PER_USER; used++) {
+      const w = await api(s, p, { ...body, password: 'wrong one' }, v3);
+      assert.ok(w.status === 400 || w.status === 429, w.text);
+      assert.doesNotMatch(w.text, /too many changes/);
+    }
+    const over = await api(s, p, { ...body, password: VIC, code: vicCode() }, v3);
+    assert.equal(over.status, 429);
+    assert.match(over.json().error, /You made too many changes/);
+    assert.equal(client.calls.length, 2, "alice's change and victor's restart");
+  } finally {
+    await s.close();
+  }
+});
+
+test('the pending change, the last result and the editable sections of a node are cleaned, whatever a hostile node sends', () => {
+  const P = ['interfaces', 'Hilltop TCP'];
+  const sections = [{ path: ['reticulum'], keys: [] }, { path: P, keys: [{ key: 'type', value: 'TCPClientInterface', set: true }] }, { path: ['interfaces', 'Pipe'], keys: [{ key: 'type', value: 'PipeInterface', set: true }] }, { path: ['interfaces', 'Cmd'], keys: [{ key: 'location_cmd', value: null, set: true }] }, { path: ['interfaces', 'Odd‮'], keys: [] }];
+  const ret = (editable, extra = {}) => cleanState({ ...STATE, reticulum: { revision: REV, sections, editable, ...extra } }).reticulum.editable;
+  assert.deepEqual(ret([['reticulum'], P]), [['reticulum'], P]);
+  const hostile = [
+    ['reticulum'], ['reticulum'], P, ['interfaces', 'hilltop tcp'], ['interfaces', 'Nowhere'], ['interfaces', 'Pipe'], ['interfaces', 'Cmd'], ['interfaces', 'Odd‮'], ['interfaces', 'Odd'],
+    ['interfaces'], ['interfaces', P[1], 'x'], ['logging'], 'reticulum', null, 5, [5], { path: P }, ['interfaces', '<img src=x onerror=alert(1)>'],
+  ];
+  assert.deepEqual(ret(hostile), [['reticulum'], P], 'each path once; only sections in the view, as sent, and none that runs a program');
+  // At most 33 are looked at.
+  assert.deepEqual(ret([...Array.from({ length: 33 }, () => ['interfaces', 'Nowhere']), ['reticulum']]), []);
+  // None while shared or cut by the node, and none that is not a list.
+  assert.deepEqual(ret([['reticulum']], { shared_instance: true }), []);
+  assert.deepEqual(ret([['reticulum']], { truncated: true }), []);
+  for (const v of [undefined, null, 'reticulum', { 0: ['reticulum'] }]) assert.deepEqual(ret(v), [], JSON.stringify(v));
+
+  const pending = (p) => cleanState({ ...STATE, pending: p }).pending;
+  const good = { id: ID, actor: 'bob', state: 'probation', applied_at: 10, confirm_seconds: 300, healthy_at: 20, confirm_by: 320, changes: [{ path: P, key: 'enabled', from: 'yes', to: 'no' }], problems: ['Hilltop TCP offline'] };
+  assert.deepEqual(pending(good), good);
+  for (const v of [null, undefined, 'x', [], {}, { ...good, id: 'nothex' }, { ...good, id: 5 }]) assert.equal(pending(v), null, JSON.stringify(v));
+  const messy = pending({
+    id: ID, actor: `<b>${'x'.repeat(80)}‮`, state: 'committed', applied_at: 'soon', confirm_seconds: -1, healthy_at: 1e12, confirm_by: 3.5,
+    changes: [
+      ...Array.from({ length: 20 }, () => ({ path: P, key: 'mode', from: 'full', to: 'v'.repeat(500) })),
+    ],
+    problems: ['ok', 7, '', 'p'.repeat(500), ...Array.from({ length: 40 }, () => 'more')],
+  });
+  assert.equal(messy.state, 'unknown', 'a state that is not one of the three');
+  assert.equal(messy.actor.length, 32);
+  assert.doesNotMatch(messy.actor, /‮/);
+  assert.deepEqual([messy.applied_at, messy.confirm_seconds, messy.healthy_at, messy.confirm_by], [null, null, null, null]);
+  assert.equal(messy.changes.length, 16);
+  assert.equal(messy.changes[0].to.length, 64);
+  assert.equal(messy.problems.length, 30, "32 looked at, the empty and the number dropped");
+  assert.equal(messy.problems[1].length, 200);
+  // A change of a key that is not shown keeps its values hidden; a malformed change is dropped.
+  const masked = pending({ ...good, changes: [{ path: P, key: 'passphrase', from: 'hunter2', to: 'hunter3' }, { path: P, key: 'enabled', from: '', to: 'no' }, { path: 'x', key: 'mode', from: 'a', to: 'b' }, { path: [P[0], ''], key: 'mode', from: 'a', to: 'b' }, { path: P, key: 'Bad Key', from: 'a', to: 'b' }, 'x', { path: P, key: 'mode', from: { x: 1 }, to: true }] }).changes;
+  assert.deepEqual(masked, [{ path: P, key: 'passphrase', from: '(hidden)', to: '(hidden)' }, { path: P, key: 'enabled', from: '', to: 'no' }, { path: P, key: 'mode', from: '', to: 'true' }]);
+  assert.doesNotMatch(JSON.stringify(masked), /hunter/);
+  for (const state of ['restarting', 'probation', 'rolling_back']) assert.equal(pending({ ...good, state }).state, state);
+
+  const result = (r) => cleanState({ ...STATE, reticulum_result: r }).reticulum_result;
+  assert.deepEqual(result({ id: ID, outcome: 'rolled_back', at: 5, message: 'no confirm by the deadline' }), { id: ID, outcome: 'rolled_back', at: 5, message: 'no confirm by the deadline' });
+  for (const outcome of ['committed', 'rolled_back', 'rollback_failed', 'left']) assert.equal(result({ id: ID, outcome }).outcome, outcome);
+  assert.deepEqual(result({ id: ID, outcome: '<script>', at: 'x', message: `m\u0000${'m'.repeat(400)}` }), { id: ID, outcome: 'unknown', at: null, message: 'm'.repeat(300) });
+  for (const v of [null, 'x', [], { outcome: 'committed' }, { id: 'zz', outcome: 'committed' }]) assert.equal(result(v), null, JSON.stringify(v));
+  // The audit list shows the section of a Reticulum change, and the old shape of a settings one.
+  const entries = cleanAudit({ entries: [{ seq: 1, time: 1, id: ID, actor: 'bob', op: 'reticulum', changes: [{ path: P, key: 'enabled', from: 'yes', to: 'no' }, { path: [], key: 'pn_name', from: 'a', to: 'b' }], result: 'ok', error: null }, { seq: 2, time: 2, id: ID, actor: 'bob', op: 'auto_rollback', changes: [], result: 'rolled_back', error: 'no confirm by the deadline' }] }).entries;
+  assert.deepEqual(entries[0].changes, [{ path: P, key: 'enabled', from: 'yes', to: 'no' }, { key: 'pn_name', from: 'a', to: 'b' }]);
+  assert.deepEqual([entries[1].op, entries[1].result], ['auto_rollback', 'rolled_back']);
+});
+
+test('GET /api/manage/confirm says how the confirm job goes, never asks the node, and is limited per user', async () => {
+  client = fakeClient();
+  const jobs = fakeJobs();
+  const s = await setup({ manage: { client, nodes: [HOST], confirmJobs: jobs } });
+  try {
+    const q = `/api/manage/confirm?host=${encodeURIComponent(HOST)}`;
+    assert.equal((await get(s, q)).status, 401);
+    const v = await logIn(s, 'victor', VIC);
+    assert.equal((await get(s, q, v)).status, 403);
+    const b = await logIn(s, 'bob', BOB);
+    assert.deepEqual((await get(s, q, b)).json(), { host: HOST, job: null });
+    assert.equal((await get(s, '/api/manage/confirm?host=c.test%3A3', b)).status, 404);
+    assert.equal((await get(s, '/api/manage/confirm', b)).status, 404);
+    jobs.start({ host: HOST, id: ID, actor: 'alice' });
+    const r = await get(s, q, b);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers['cache-control'], 'private, no-store');
+    assert.deepEqual(r.json().job, jobs.status(HOST));
+    assert.equal((await get(s, '/api/manage/confirm?host=A.TEST%3A1', b)).json().job.id, ID, 'the host is matched without regard to case');
+    assert.deepEqual((await get(s, q, b, 'HEAD')).text, '');
+    // The node state shows the job and the confirm window too.
+    const state = (await nodeGet(s, b)).json();
+    assert.deepEqual(state.confirm, jobs.status(HOST));
+    assert.equal(state.confirmSeconds, 300);
+    assert.equal(state.pending, null);
+    assert.equal(state.reticulum_result, null);
+    assert.equal(client.calls.length, 1, 'only the node state asked the node');
+    // 1200 an hour per user, apart from the reads of the node.
+    for (let i = 0; i < MANAGE_CONFIRM_READS_PER_USER - 4; i++) await get(s, q, b);
+    assert.equal((await get(s, q, b)).status, 200, 'the 1200th');
+    const over = await get(s, q, b);
+    assert.equal(over.status, 429);
+    assert.ok(Number(over.headers['retry-after']) > 0);
+    assert.equal((await nodeGet(s, b)).status, 200);
+    const a = await logIn(s, 'alice', ALICE);
+    assert.equal((await get(s, q, a)).status, 200);
+  } finally {
+    await s.close();
+  }
+  // Without a confirm job (no nodes), the answer is null.
+  const none = await setup({ manage: null });
+  try {
+    const c = await logIn(none, 'bob', BOB);
+    assert.equal((await get(none, `/api/manage/confirm?host=${HOST}`, c)).status, 404);
+  } finally {
+    await none.close();
+  }
+});
+
+test('end to end with the stub node: a Reticulum change goes on probation and the confirm job keeps it, or the node rolls back', async () => {
+  const { createConfirmJobs } = await import('../lib/manage-confirm.js');
+  const { editableReticulum } = await import('./helpers/manage-node.js');
+  const node = await startManageNode({ secret: SECRET });
+  node.reticulum = editableReticulum();
+  const real = createManageClient({ nodes: new Map([[HOST, { url: node.url, secret: SECRET, confirmSeconds: 90 }]]) });
+  // The real jobs, on fake timers; the store and audit log are the app's, made in setup.
+  const timers = [];
+  const probes = [];
+  let up = true;
+  let made = null;
+  const jobs = { start: (x) => made.start(x), status: (h) => made.status(h), stopAll: () => made?.stopAll() };
+  const s = await setup({ manage: { client: real, nodes: [HOST], confirmJobs: jobs } });
+  made = createConfirmJobs({ client: real, probeFn: async (h, p) => (probes.push([h, p]), { up }), targetOf: () => ({ host: 'a.test', port: 1 }), store: s.store, epochOf: s.login.epochOf, sessionLive: (id) => s.login.sessions.live(id), audit: s.audit, setTimer: (f) => (timers.push(f), timers.length), clearTimer: () => {} });
+  const tick = async () => timers.shift()();
+  try {
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB);
+    const state = (await nodeGet(s, b)).json();
+    assert.deepEqual(state.reticulum.editable, [['reticulum'], ['interfaces', 'Hilltop TCP']], 'the pipe is not editable');
+    assert.equal(state.confirmSeconds, 90);
+    const apply = (revision, changes = [RET_CHANGE]) => api(s, '/api/manage/reticulum', { host: HOST, revision, changes, password: BOB, code: code() }, b);
+    const r = await apply(state.reticulum.revision);
+    assert.equal(r.status, 202, r.text);
+    assert.deepEqual(r.json().applied, [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'Yes', to: 'no' }]);
+    assert.equal(node.pending.state, 'restarting');
+    assert.equal(node.pending.confirm_seconds, 90);
+    assert.equal(node.requests.at(-1).actor, 'bob');
+    // The stub edits the alias it found, as the node does.
+    assert.deepEqual(node.reticulum.sections[1].keys[1], { key: 'interface_enabled', value: 'no', set: true });
+    const seen = (await nodeGet(s, b)).json();
+    assert.equal(seen.pending.state, 'restarting');
+    assert.deepEqual(seen.pending.changes, [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'Yes', to: 'no' }]);
+    assert.equal(seen.confirm.state, 'waiting');
+    // A second change while one is pending, and the old revision: refused.
+    const second = await apply(r.json().reticulumRevision);
+    assert.equal(second.json().code, 'pending');
+    await tick();
+    assert.equal(probes.length, 0, 'not probed while restarting');
+    node.advance('probation');
+    await tick();
+    assert.deepEqual(probes, [['a.test', 1]]);
+    assert.equal(node.pending, null);
+    assert.equal(node.reticulumResult.outcome, 'committed');
+    assert.equal(made.status(HOST).outcome, 'committed');
+    const confirm = node.requests.filter((x) => x.path === '/manage/v1/confirm');
+    assert.equal(confirm.length, 1);
+    assert.equal(confirm[0].actor, 'bob', 'confirmed as the user who made the change');
+    assert.equal(confirm[0].signed, true);
+    assert.deepEqual(JSON.parse(confirm[0].body), { id: r.json().id });
+    // Stale now; then a change whose probe never works is left to the node, which rolls back.
+    assert.equal((await apply(state.reticulum.revision)).json().code, 'stale_revision');
+    // Turning transport on needs the node's yes, which it now gives.
+    node.reticulumEnableAllowed = true;
+    const fresh = (await nodeGet(s, b)).json();
+    assert.equal(fresh.reticulum_result.outcome, 'committed');
+    assert.equal(fresh.reticulum_enable_allowed, true);
+    up = false;
+    const r2 = await apply(fresh.reticulum.revision, [{ path: ['reticulum'], key: 'enable_transport', value: 'yes' }]);
+    assert.equal(r2.status, 202, r2.text);
+    node.advance('probation');
+    await tick();
+    await tick();
+    assert.equal(node.pending.state, 'probation', 'never confirmed');
+    node.finish('rolled_back', 'no confirm by the deadline');
+    await tick();
+    assert.equal(made.status(HOST).outcome, 'rolled_back');
+    assert.equal(made.status(HOST).message, 'The node put the old config back: no confirm by the deadline');
+    assert.equal(node.reticulum.sections[0].keys[0].value, 'no', 'the stub put the old value back');
+    assert.equal(node.requests.filter((x) => x.path === '/manage/v1/confirm').length, 1);
+    const lines = await auditLines(s);
+    assert.deepEqual(lines.map((l) => [l.event, l.result]), [['manage-reticulum', 'ok'], ['manage-reticulum', 'pending'], ['manage-confirm', 'ok'], ['manage-reticulum', 'stale_revision'], ['manage-reticulum', 'ok'], ['manage-confirm', 'not_pending']]);
+    assert.equal(lines[5].outcome, 'rolled_back');
+    const list = (await get(s, `/api/manage/audit?host=${HOST}`, b)).json();
+    assert.deepEqual(list.entries.map((e) => e.op), ['auto_rollback', 'reticulum', 'confirm', 'reticulum']);
+    assert.deepEqual(list.entries[3].changes, [{ path: ['interfaces', 'Hilltop TCP'], key: 'enabled', from: 'Yes', to: 'no' }]);
+    assert.ok(s.texts.every((t) => !t.includes(SECRET)));
+  } finally {
+    await s.close();
+    await node.close();
+  }
+});
+
+test('the app makes the confirm jobs itself: a change taken by the node shows a waiting job until the server stops', async () => {
+  client = fakeClient((host, method, target) => (target === '/manage/v1/reticulum' ? { ok: true, status: 202, body: { id: ID } } : { ok: true, status: 200, body: STATE }));
+  const s = await setup();
+  try {
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB);
+    assert.equal((await api(s, '/api/manage/reticulum', { host: HOST, revision: REV, changes: [RET_CHANGE], password: BOB, code: code() }, b)).status, 202);
+    const job = (await get(s, `/api/manage/confirm?host=${HOST}`, b)).json().job;
+    assert.equal(job.id, ID);
+    assert.equal(job.state, 'waiting');
+  } finally {
+    // Closing the server stops the job: nothing is left to run after the test.
     await s.close();
   }
 });

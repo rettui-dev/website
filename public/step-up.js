@@ -13,6 +13,9 @@
 // ({status, body}) or null. A wrong password or code (an answer of 400 with a field, or a 429)
 // is shown in the dialog, which stays open; anything else closes it, and ask() resolves with the
 // answer (null when the visitor gave up).
+//
+// opts.opens (a list of texts) and opts.acknowledge (the words of a checkbox): for a change that
+// opens something up, the dialog lists what, and Confirm does nothing until the box is ticked.
 (function () {
   'use strict';
   var dlg = null;
@@ -55,6 +58,22 @@
     title.id = 'stepup-title';
     var why = el('p', 'note login-why');
     why.id = 'stepup-why';
+    // What a change opens up, and the box that says the visitor knows (both only when asked for).
+    var opens = el('ul', 'manage-changes');
+    opens.id = 'stepup-opens';
+    opens.hidden = true;
+    var ackRow = el('div', 'users-radio');
+    ackRow.id = 'stepup-ack-row';
+    ackRow.hidden = true;
+    var ack = el('input');
+    ack.id = 'stepup-ack';
+    ack.type = 'checkbox';
+    ack.setAttribute('aria-describedby', 'stepup-opens stepup-error');
+    var ackLabel = el('label', null, '');
+    ackLabel.id = 'stepup-ack-label';
+    ackLabel.htmlFor = 'stepup-ack';
+    ackRow.appendChild(ack);
+    ackRow.appendChild(ackLabel);
     var err = el('p', 'login-error');
     err.id = 'stepup-error';
     err.setAttribute('role', 'alert');
@@ -99,7 +118,7 @@
     cancel.type = 'button';
     actions.appendChild(go);
     actions.appendChild(cancel);
-    [title, why, err, pwLabel, pw, codeLabel, code, recLabel, rec].concat(swaps, [actions]).forEach(function (x) { form.appendChild(x); });
+    [title, why, opens, ackRow, err, pwLabel, pw, codeLabel, code, recLabel, rec].concat(swaps, [actions]).forEach(function (x) { form.appendChild(x); });
     dlg.appendChild(form);
     document.body.appendChild(dlg);
 
@@ -180,7 +199,7 @@
 
   function setError(text, bad) {
     $('stepup-error').textContent = text;
-    ['stepup-password', 'stepup-code', 'stepup-recovery'].forEach(function (id) { $(id).setAttribute('aria-invalid', bad.indexOf(id) >= 0 ? 'true' : 'false'); });
+    ['stepup-password', 'stepup-code', 'stepup-recovery', 'stepup-ack'].forEach(function (id) { $(id).setAttribute('aria-invalid', bad.indexOf(id) >= 0 ? 'true' : 'false'); });
   }
 
   // A request of the same kind as the pages send: JSON with the X-Rettui-Request header.
@@ -223,6 +242,7 @@
     if (!state || state.busy) return;
     var pw = $('stepup-password');
     var fields = { password: pw.value };
+    if (state.acknowledge && !$('stepup-ack').checked) { setError('Tick the box first: it says you know what this change opens.', ['stepup-ack']); $('stepup-ack').focus(); return; }
     if (!pw.value) { setError('Enter your password.', ['stepup-password']); pw.focus(); return; }
     if (state.secondFactor && state.mode === 'code') {
       var c = $('stepup-code').value.replace(/\s+/g, '');
@@ -285,8 +305,16 @@
         if (!dlg) build();
         if (state) { resolve(null); return; }
         var methods = methodsOf(opts.methods, opts.secondFactor === true);
-        state = { resolve: resolve, answer: null, busy: false, mode: 'code', why: opts.why || '', methods: methods, secondFactor: methods.length > 0, send: opts.send, back: document.activeElement };
+        var opens = Array.isArray(opts.opens) ? opts.opens : [];
+        state = { resolve: resolve, answer: null, busy: false, mode: 'code', why: opts.why || '', methods: methods, secondFactor: methods.length > 0, send: opts.send, back: document.activeElement, acknowledge: typeof opts.acknowledge === 'string' && opts.acknowledge !== '' };
         $('stepup-title').textContent = opts.title;
+        var list = $('stepup-opens');
+        list.textContent = '';
+        opens.forEach(function (t) { list.appendChild(el('li', null, String(t))); });
+        list.hidden = opens.length === 0;
+        $('stepup-ack-row').hidden = !state.acknowledge;
+        $('stepup-ack').checked = false;
+        $('stepup-ack-label').textContent = state.acknowledge ? opts.acknowledge : '';
         $('stepup-go').textContent = opts.action || 'Confirm';
         $('stepup-go').className = opts.danger ? 'danger' : 'primary';
         setMode(firstMode());

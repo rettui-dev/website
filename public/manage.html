@@ -83,6 +83,19 @@
       <div id="manage-ret-sections"></div>
     </section>
 
+    <section id="manage-ret-edit" class="acct-card" aria-labelledby="manage-ret-edit-h" hidden>
+      <h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration</h2>
+      <p class="note">The node lets the website change a few Reticulum settings: transport, and for each interface whether it is enabled, its mode, announce cap, bitrate and ingress control. A change is tested before it is kept. Applying asks in a pop-up for your password and your passkey or a code from your app.</p>
+      <p id="manage-ret-pending" class="note" role="status"></p>
+      <p id="manage-ret-error" class="login-error" role="alert"></p>
+      <form id="manage-ret-form" class="acct-form manage-form" novalidate hidden>
+        <input id="manage-ret-revision" type="hidden" aria-label="Reticulum configuration revision" value="">
+        <div id="manage-ret-fields"></div>
+        <p id="manage-ret-apply-help" class="note">Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 5 minutes, the node puts the old config back by itself.</p>
+        <div class="login-actions"><button id="manage-ret-apply" type="submit" class="danger" aria-describedby="manage-ret-apply-help">Apply and test</button></div>
+      </form>
+    </section>
+
     <section id="manage-restart-card" class="acct-card" aria-labelledby="manage-restart-h" hidden>
       <h2 id="manage-restart-h">Restart Reticulum</h2>
       <p class="note">Stops and starts the node's Reticulum network. Connections drop for a moment; the management listener stays up, so this page can still reach the node. The node allows one restart every 5 minutes.</p>

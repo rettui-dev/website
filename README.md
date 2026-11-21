@@ -46,7 +46,8 @@ their node stats.
   The Sign in button on every page asks it. GET and HEAD only, never cached.
 - `/users` and `/api/users` are the Users page and its API, for admins only (see "Managing users").
 - `/manage` and `/api/manage` are the Manage page and its API, for the `manage` and `admin` roles
-  only, to change a few settings of rettui nodes and restart their Reticulum (see "Managing nodes").
+  only, to change a few settings of rettui nodes, a few of their Reticulum settings (tested before
+  they are kept), and restart their Reticulum (see "Managing nodes").
 
 ## Join page
 
@@ -120,7 +121,8 @@ follows the system (`prefers-color-scheme`), also when it changes while the page
 button saves a choice. `test/a11y.test.js` checks the files for these and the theme colours for
 contrast; it is not a replacement for running axe in a browser. The Account, Users and Manage pages
 are built the same way and are in those file checks too; run axe on `/manage` (signed in as a
-`manage` user, with a node set up) before a release that changes it.
+`manage` user, with a node set up, and once with a Reticulum change on probation) before a release
+that changes it.
 
 ## Link previews (Open Graph)
 
@@ -1153,7 +1155,8 @@ to give another admin a lower role is refused and written as `admin-demote-refus
 delete another admin as `admin-delete-refused`, both with the `actor` and the `target` admin; see
 "Managing users". Each line has the time, the user and the address. No password, secret, code or
 device id is ever in it. Changes asked of a node on the Manage page add `manage-settings`,
-`manage-restart` and `manage-rollback` (see "Managing nodes"). `device-added` is only written for a user's first new browser in 24
+`manage-restart`, `manage-rollback` and `manage-reticulum`, and the website's confirm of a Reticulum
+change adds `manage-confirm` (see "Managing nodes"). `device-added` is only written for a user's first new browser in 24
 hours, or when the new browser pushes out a known device older than that (`pushedOut`: how
 many); the other new browsers are summed up in `failures.log`, so that an account signing in from
 new browsers over and over cannot push the other events out of `audit.log`.
@@ -1494,15 +1497,16 @@ if you want it gone.
 
 ## Managing nodes
 
-Users with the role `manage` or `admin` can change a few settings of a rettui node, and restart its
-Reticulum, on the **Manage** page, `/manage`. The Account page shows a "Manage nodes" link to them.
+Users with the role `manage` or `admin` can change a few settings of a rettui node, a few of its
+Reticulum settings, and restart its Reticulum, on the **Manage** page, `/manage`. The Account page shows a "Manage nodes" link to them.
 For everyone else (signed out, `viewer`, or someone who still has to change a password an admin
 set) `/manage` answers 404 and `/api/manage` 401 or 403, and every way of writing the page's address
 (`/manage.html`, `/manage.html/`, `/%6Danage.html`, other cases) goes through the same check.
 
 This works only with nodes started as `rettui node` with a management listener (see below). The
 node decides what can be changed: the page shows the settings it lists, and nothing else. Keys,
-identities, interfaces, programs the node runs and the Reticulum config are not among them.
+identities, adding or removing interfaces, programs the node runs and any other Reticulum setting
+are not among them.
 
 **What the page shows.** A list to pick the node; then, for that node:
 
@@ -1520,6 +1524,11 @@ identities, interfaces, programs the node runs and the Reticulum config are not 
   settings may be another process's). There is nothing to edit. The website keeps at most 128
   sections of 64 keys, with texts cut at 256 characters, and says "Part of the config is not
   shown." when anything was cut. An older node that sends no Reticulum config gets a line saying so.
+- **Change the Reticulum configuration** (see "Reticulum changes on probation" below): for the
+  sections the node offers, `enable_transport` under `[reticulum]`, and per interface `enabled`,
+  `mode`, `announce_cap`, `bitrate` and `ingress_control`, with their current values. **Apply and
+  test** sends only what you changed. A status line says how the change goes: restarting, on
+  probation until a time, rolling back, kept, or rolled back with the node's reason.
 - the settings form, grouped, with the help text of each setting and its current value. **Save
   changes** sends only the settings you changed. If someone changed the settings meanwhile (in
   the terminal, or another user), the node refuses, the page loads the form again and says so.
@@ -1587,8 +1596,9 @@ The config keys, in the config file only (there are no variables for them):
   needs its own secret: two nodes with the same one stop the server at start, and so does a secret
   that is also a stats token (of any node). `manage_url` without a secret file, or the reverse,
   stops it too.
-- `manage_confirm_seconds`: 60 to 900, default 300. How long a node will wait for the website to
-  confirm a change of the Reticulum config; for a later version, it does nothing yet.
+- `manage_confirm_seconds`: 60 to 900, default 300. How long a node waits for the website to
+  confirm a change of its Reticulum config, once Reticulum is back with it (see "Reticulum changes
+  on probation"). Sent with each change.
 
 The secret is read once at start and kept in memory only: it is never in `users.db`, a log line,
 an error, an answer of the API or the page.
@@ -1621,7 +1631,7 @@ sign-in turned on for the account (without it the answer is 403 with `code:
 "second-factor-required"`, and the page only shows), and on for at least 24 hours when it was the
 first second factor (see below); the password and the passkey, a code from the app or a recovery
 code in the request itself, asked for in the step-up dialog; and the request header, same origin
-and JSON, at most 16 KiB (`POST /api/manage/settings`, `/restart`, `/rollback`). Each user may ask
+and JSON, at most 16 KiB (`POST /api/manage/settings`, `/restart`, `/rollback`, `/reticulum`). Each user may ask
 30 changes an hour of all nodes together, wrong passwords and codes included; a change the node was
 too busy for (503) does not count. Right before the node is asked, the server checks again that the
 session is there and still has the role, and that no wait has started meanwhile: if not, the answer is
@@ -1658,12 +1668,55 @@ accept, or a change it does not allow, are passed on, cut to 300 characters. Whe
 answer in time the page says so, and nothing is taken as done: reload the page to see what the node
 did.
 
+**Reticulum changes on probation.** A change of the Reticulum config is made by the node in its
+config file, one line per setting (the rest of the file stays as it is), and only when the node can
+tell for sure which line it is: a section or key that is there twice, or in two spellings, is
+refused with the node's reason, to be changed in the terminal. The node keeps the old file in its
+config history, then restarts Reticulum. Once Reticulum is back with every interface that was
+online and is still meant to be, the change is **on probation** for `manage_confirm_seconds`. In
+that time the website's confirm job tries a TCP connection to the node's `address` from the config
+file (the Reticulum port the status page checks), every 5 seconds; once that works, and the user who
+made the change still has the role `manage` or `admin`, it confirms the change as that user, and
+the node keeps it. If Reticulum does not come back within 90 seconds, or nothing confirms in time,
+the node puts the old file back by itself and restarts Reticulum again. So a change that cuts the
+website off from the node undoes itself.
+
+- Only one change at a time: while one is pending the node refuses another change and a restart
+  ("Another Reticulum change on this node is still being tested. Wait until it is kept or rolled
+  back."). A node with a shared Reticulum instance takes no change.
+- The confirm job lives in the website's memory. **When the website restarts during a probation,
+  nothing confirms, and the node rolls the change back** at its deadline. The same when the node
+  stops during a change: it puts the old file back before Reticulum starts again.
+- The probe only shows that the probed port is up. A LoRa or other link the change broke is not
+  checked; look at the interfaces on the status line.
+- Turning an interface or transport on is offered only when the node allows it
+  (`reticulum_enable_allowed` in its state); otherwise the page says it is only possible in the
+  terminal, and the website refuses it too. When it is allowed, the dialog lists what the change
+  opens (a server interface opens its listening port, transport relays for others) and **Apply and
+  test** needs a box ticked; once applied, the node's notes say what it opened.
+- The confirm job acts for the user who made the change only while that is still so: it gives up
+  (and the node rolls back) when the user loses the role, signs in differently (a new password, a
+  reset, two-step sign-in turned off, a password to change: `signin-changed`), or the session the
+  change was made in ends (`session-ended`). A node that limits requests (429) is waited out for
+  as long as it says, at most 5 minutes; the deadline is checked again right before the confirm.
+- The node allows one Reticulum restart every 5 minutes, changes included (its automatic roll back
+  aside).
+- The page asks the website how the confirm job goes every 3 seconds while it runs
+  (`GET /api/manage/confirm?host=`, which never asks the node; 1200 an hour per user), then reads the
+  node once. The job asks the node's state every 5 seconds without using your 120 reads, stops
+  sending 5 seconds before the deadline, and gives up 60 seconds after it, or 20 minutes in all.
+
 **Audit.** Each change asked of a node is a line in `audit.log`: `manage-settings`,
-`manage-restart` or `manage-rollback`, with the user (`actor`), the node (`host`), the setting
-names (`keys`), the node's change id (`id`, `null` when it refused), `result` (`ok`, or what went
-wrong, like `stale_revision`, `not_allowed`, `timeout` or `unsigned`), how the change was confirmed
-(`with`) and the address; a roll back also has the id it rolled back (`of`). The values are never
-in it: the node keeps them, in its own list of changes, which the page shows.
+`manage-restart`, `manage-rollback` or `manage-reticulum`, with the user (`actor`), the node
+(`host`), the setting names (`keys`; for a Reticulum change `interfaces/<name>/<key>` or
+`reticulum/<key>`), the node's change id (`id`, `null` when it refused), `result` (`ok`, or what went
+wrong, like `stale_revision`, `not_allowed`, `pending`, `timeout` or `unsigned`), how the change was
+confirmed (`with`) and the address; a roll back also has the id it rolled back (`of`). The end of
+each confirm job is a `manage-confirm` line with the `actor`, `host`, `id` and `result`: `ok` (kept),
+`not_pending` (the node ended it another way; `outcome` says how, like `rolled_back`),
+`probe-failed`, `role-gone`, `signin-changed`, `session-ended`, `gave-up` or the code the node
+refused the confirm with. The values are
+never in it: the node keeps them, in its own list of changes, which the page shows.
 
 ## The user store
 
