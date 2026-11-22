@@ -112,54 +112,57 @@ test('layout: zero links leaves everything as it was', () => {
   const l = layout(buildModel(hosts), 1000);
   assert.equal(l.linksHidden, false);
   assert.equal(l.edges.some((e) => e.kind === 'link'), false);
-  assert.ok(l.edges.every((e) => /^M[\d. -]+ C/.test(e.d)));
 });
 
-test('layout: arcs in lanes, depth 26 + 20 x lane, a gutter of 24 + 20 x lanes, nodes inside and apart', () => {
+// The points of a drawn line, and whether a straight leg from p to q passes through the inside of a box.
+const through = (p, q, n) => {
+  const [x1, y1] = p;
+  const [x2, y2] = q;
+  if (x1 === x2) return x1 > n.x + 0.5 && x1 < n.x + n.w - 0.5 && Math.max(y1, y2) > n.y + 0.5 && Math.min(y1, y2) < n.y + n.h - 0.5;
+  if (y1 === y2) return y1 > n.y + 0.5 && y1 < n.y + n.h - 0.5 && Math.max(x1, x2) > n.x + 0.5 && Math.min(x1, x2) < n.x + n.w - 0.5;
+  return false;
+};
+const legs = (e) => e.pts.slice(1).map((q, i) => [e.pts[i], q]);
+
+test('layout: neighbours get a short arrow in the gap, a link that skips a node an arc above the row in its lane', () => {
   const hosts = [door(), ...trio(), host(8, 'Hub-side', { role: 'node', proxiedBy: K(9) })];
   hosts[0].proxy.for.push(K(8));
-  const noLinks = layout(buildModel(hosts.map((h) => ({ ...h, links: undefined }))), 1200);
   const l = layout(buildModel(hosts), 1200);
-  assert.equal(l.mode, 'columns');
-  noOverlap(l);
+  assert.equal(l.mode, 'frame');
+  noOverlap({ ...l, nodes: l.nodes.filter((n) => !n.frame) });
   const arcs = l.edges.filter((e) => e.kind === 'link');
   assert.equal(arcs.length, 3);
-  assert.ok(arcs.every((e) => /^M[\d. -]+ C/.test(e.d)), arcs.map((e) => e.d).join('\n'));
-  const lanes = Math.max(...arcs.map((e) => e.lane)) + 1;
-  assert.ok(lanes >= 2, 'overlapping arcs take different lanes');
-  const node = l.nodes.find((n) => n.id === 'h:1');
-  const xr = node.x + node.w;
+  const by = Object.fromEntries(l.nodes.map((n) => [n.id, n]));
+  const rowY = by[K(1)].y;
   for (const e of arcs) {
-    // The path bulges 1.33 d to the control points, which is d at the middle.
-    const m = /^M([\d.]+) ([\d.]+) C([\d.]+) /.exec(e.d);
-    assert.equal(Number(m[1]), xr);
-    assert.ok(Math.abs(Number(m[3]) - xr - (26 + 20 * e.lane) * 1.33) < 0.2, e.d);
+    const a = by[e.from];
+    const b = by[e.to];
+    if (Math.abs(a.x - b.x) < a.w * 2.5 && e.pts.length === 2) {
+      // Neighbours: one straight line across the gap, at half the height of the boxes.
+      assert.equal(e.pts[0][1], a.y + a.h / 2);
+      assert.equal(e.lane, null);
+    } else {
+      assert.equal(e.pts.length, 4);
+      assert.equal(e.pts[0][1], rowY);
+      assert.equal(e.pts[3][1], rowY);
+      assert.equal(e.pts[1][1], rowY - 22 - 18 * e.lane, 'lane l is 22 + 18 l above the row');
+      assert.match(e.d, /^M[\d. ]+ L[\d. ]+ Q/, 'rounded corners');
+    }
+    for (const n of l.nodes.filter((x) => !x.frame)) for (const [p, q] of legs(e)) assert.ok(!through(p, q, n), `${e.from}>${e.to} through ${n.id}`);
   }
-  // Arcs sharing a lane never overlap vertically.
-  const span = (e) => { const ys = [...e.d.matchAll(/ ([\d.]+) /g)].map((x) => Number(x[1])); return [Math.min(...ys), Math.max(...ys)]; };
-  for (const a of arcs) for (const b of arcs) if (a !== b && a.lane === b.lane) assert.ok(span(a)[1] <= span(b)[0] || span(b)[1] <= span(a)[0]);
-  // The gutter is part of the node column: the proxy line still ends at the box, and the column moved over.
-  const before = noLinks.nodes.find((n) => n.id === 'h:1');
-  assert.ok(node.x >= 0 && before.x >= 0);
-  const gutter = 24 + 20 * lanes;
-  const right = Math.max(...l.nodes.filter((n) => n.kind === 'node').map((n) => n.x + n.w));
-  const proxyRight = l.nodes.find((n) => n.kind === 'proxy').x + l.nodes.find((n) => n.kind === 'proxy').w;
-  assert.ok(l.width - right >= 8, 'inside the width');
-  assert.ok(gutter > Math.max(...arcs.map((e) => 26 + 20 * e.lane)), 'every arc fits in the gutter');
-  assert.ok(proxyRight < node.x);
+  assert.equal(l.edges.filter((e) => e.kind === 'proxy').length, 0);
 });
 
-test('layout: the gutter counts in the columns or rows decision', () => {
-  const hosts = [door(), ...trio()];
-  const plainModel = buildModel(hosts.map((h) => ({ ...h, links: undefined })));
-  // Find the narrowest width that is still columns without links, then show that links tip it into rows.
-  let w = 280;
-  while (layout(plainModel, w).mode !== 'columns') w++;
-  const l = layout(buildModel(hosts), w);
-  assert.equal(l.mode, 'rows');
+test('layout: links the row cannot draw are counted, so the page can point to the cards', () => {
+  // A link to the proxy itself has no place in the row.
+  const hosts = [door(), ...trio(), ];
+  hosts[1] = { ...hosts[1], links: [...hosts[1].links, link(9)] };
+  const l = layout(buildModel(hosts), 1200);
+  assert.equal(l.mode, 'frame');
   assert.equal(l.linksHidden, true);
-  assert.equal(l.edges.some((e) => e.kind === 'link'), false, 'nothing is drawn in rows');
-  noOverlap(l, 'rows');
+  assert.equal(l.edges.filter((e) => e.kind === 'link').length, 3);
+  // The one-node view shows every link of the node picked, so nothing is hidden there.
+  assert.equal(layout(buildModel(hosts), 400).linksHidden, false);
 });
 
 test('layout: marks per kind of link, and the slashes of a down node', () => {
@@ -167,13 +170,19 @@ test('layout: marks per kind of link, and the slashes of a down node', () => {
     host(1, 'A', { links: [link(2), link(3, { source: 'declared', enabled: null }), link(4, { enabled: false }), link(5, { dir: 'unknown', source: 'declared', enabled: null })] }),
     host(2, 'B', { status: 'down' }), host(3, 'C'), host(4, 'D'), host(5, 'E'),
   ];
-  const arcs = layout(buildModel(hosts), 1400).edges.filter((e) => e.kind === 'link');
+  const l = layout(buildModel(hosts), 1400);
+  assert.equal(l.mode, 'frame');
+  const arcs = l.edges.filter((e) => e.kind === 'link');
   const get = (to) => arcs.find((e) => e.to === K(to));
   assert.deepEqual([get(2).start, get(2).end, get(2).off, get(2).declared, get(2).down, get(2).ticks.length], ['dot', 'arrow', false, false, true, 2]);
   assert.deepEqual([get(3).start, get(3).end, get(3).declared], ['dot', 'open', true]);
   assert.deepEqual([get(4).end, get(4).off, get(4).ticks.length], ['bar', true, 0]);
   assert.deepEqual([get(5).start, get(5).end, get(5).dir], ['ring', 'ring', 'unknown']);
   assert.ok(get(2).ticks.every((t) => /^M[\d. -]+ L[\d. -]+$/.test(t)));
+  // Without a proxy there is no frame, and the lines are not inside one.
+  assert.equal(l.nodes.some((n) => n.frame), false);
+  assert.ok(arcs.every((e) => e.inFrame === false));
+  assert.ok(layout(buildModel([door(), ...trio()]), 1200).edges.filter((e) => e.kind === 'link').every((e) => e.inFrame === true));
 });
 
 test('layout: a mutual link has an arrowhead at both ends and no dot; a mixed one marks each end', () => {
@@ -185,17 +194,21 @@ test('layout: a mutual link has an arrowhead at both ends and no dot; a mixed on
   assert.equal(e.off, false);
   const both = layout(buildModel([host(1, 'A', { links: [link(2)] }), host(2, 'B', { links: [link(1)] })]), 800).edges[0];
   assert.deepEqual([both.start, both.end], ['arrow', 'arrow']);
+  // The same marks in the one-node view, from either end.
+  for (const want of [K(1), K(2)]) {
+    const f = layout(buildModel([host(1, 'A', { links: [link(2)] }), host(2, 'B', { links: [link(1, { enabled: false })] })]), 400, want);
+    const fe = f.edges.find((x) => x.kind === 'link');
+    assert.deepEqual([fe.start, fe.end].sort(), ['arrow', 'bar'], want);
+  }
 });
 
-test('layout: many links stay inside the width, tighten the lanes and keep every arc in its gutter', () => {
-  const hosts = Array.from({ length: 9 }, (_, i) => host(i + 1, `N${i + 1}`));
-  hosts.forEach((h, i) => { h.links = [1, 2, 3].map((k) => link(((i + k) % 9) + 1)); });
+test('layout: many links in a row give way to the one-node view', () => {
+  const hosts = Array.from({ length: 8 }, (_, i) => host(i + 1, `N${i + 1}`));
+  hosts.forEach((h, i) => { h.links = [2, 3, 4].map((k) => link(((i + k) % 8) + 1)); });
   const l = layout(buildModel(hosts), 1400);
-  noOverlap(l);
-  const arcs = l.edges.filter((e) => e.kind === 'link');
-  assert.ok(arcs.length > 9);
-  assert.ok(arcs.every((e) => /^M[\d. -]+ C/.test(e.d)));
-  assert.ok(Math.max(...arcs.map((e) => e.lane)) >= 6);
+  assert.equal(l.mode, 'focus');
+  assert.equal(l.reason, 'lanes');
+  for (const n of l.nodes) assert.ok(n.x >= 0 && n.x + n.w <= l.width && n.y >= 0 && n.y + n.h <= l.height, n.id);
 });
 
 test('the page and styles: the legend, the phone note and the pinned rules of the map', () => {
@@ -338,52 +351,28 @@ test('chips: a card that is in a locked state says links are behind the sign-in'
   assert.match(read('status.js'), /links: 'links between nodes'/);
 });
 
-// Arc extents: every arc stays inside the width the layout reports, in columns and rows modes.
+// Every line stays inside the width the layout reports, in both views and at every width.
 
-// The largest x the curve itself reaches (sampled), not its control points; a tick is a plain line.
-const maxX = (d) => {
-  const n = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
-  if (n.length < 8) return Math.max(...n.filter((_, i) => i % 2 === 0));
-  const [x0, , x1, , x2, , x3] = n;
-  let m = -Infinity;
-  for (let i = 0; i <= 100; i++) {
-    const t = i / 100, u = 1 - t;
-    m = Math.max(m, u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3);
-  }
-  return m;
-};
-
-test('layout: no arc reaches past the layout width, with one tier or several, at every width', () => {
+test('layout: no line or box reaches past the layout width, at every width', () => {
   const sets = {
     single: trio(),
     proxied: [door(), ...trio()],
-    busy: Array.from({ length: 9 }, (_, i) => host(i + 1, `N${i + 1}`)).map((h, i, all) => ({ ...h, links: [1, 2, 3].map((k) => link(((i + k) % 9) + 1)) })),
+    busy: Array.from({ length: 9 }, (_, i) => host(i + 1, `N${i + 1}`)).map((h, i) => ({ ...h, links: [1, 2, 3].map((k) => link(((i + k) % 9) + 1)) })),
   };
-  let columns = 0;
+  const modes = { frame: 0, focus: 0 };
   for (const [name, hosts] of Object.entries(sets)) {
     for (let w = 260; w <= 1400; w += 4) {
       const l = layout(buildModel(hosts), w);
-      const arcs = l.edges.filter((e) => e.kind === 'link');
-      if (l.mode === 'rows') { assert.equal(arcs.length, 0, `${name} ${w}`); assert.equal(l.linksHidden, true); noOverlap(l, `${name} ${w}`); continue; }
-      columns++;
-      assert.ok(arcs.length > 0, `${name} ${w}`);
-      for (const e of arcs) {
-        assert.ok(maxX(e.d) <= l.width, `${name} at ${w}: ${e.d} past ${l.width}`);
-        for (const t of e.ticks) assert.ok(maxX(t) <= l.width, `${name} tick at ${w}`);
+      modes[l.mode]++;
+      for (const e of l.edges) {
+        for (const [x, y] of e.pts) assert.ok(x >= 0 && x <= l.width && y >= 0 && y <= l.height, `${name} at ${w}: ${e.d}`);
+        for (const t of e.ticks || []) for (const v of t.match(/-?\d+(?:\.\d+)?/g).map(Number).filter((_, i) => i % 2 === 0)) assert.ok(v >= 0 && v <= l.width, `${name} tick at ${w}`);
       }
-      noOverlap(l, `${name} ${w}`);
+      for (const t of l.texts) assert.ok(t.x >= 0 && t.x <= l.width, `${name} at ${w}: ${t.text}`);
+      noOverlap({ ...l, nodes: l.nodes.filter((n) => !n.frame) }, `${name} ${w}`);
     }
   }
-  assert.ok(columns > 100, 'columns mode was really exercised');
-});
-
-test('layout: a single tier narrow case from the review (3 lanes, 288 wide) keeps its arcs inside', () => {
-  const hosts = [host(1, 'A', { links: [link(2), link(3), link(4)] }), host(2, 'B', { links: [link(4)] }), host(3, 'C', { links: [link(4)] }), host(4, 'D')];
-  for (const w of [288, 300, 320, 360]) {
-    const l = layout(buildModel(hosts), w);
-    if (l.mode !== 'columns') continue;
-    for (const e of l.edges.filter((x) => x.kind === 'link')) assert.ok(maxX(e.d) <= l.width, `${w}: ${e.d}`);
-  }
+  assert.ok(modes.frame > 100 && modes.focus > 100, JSON.stringify(modes));
 });
 
 // The real draw(), run against a small fake document.
@@ -474,3 +463,4 @@ test('draw: without node links there are no markers, no legend and no note', () 
   assert.equal(p.legend.hidden, true);
   assert.equal(p.note.hidden, true);
 });
+

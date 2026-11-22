@@ -236,53 +236,67 @@ test('describe: the same words for the title, the name and the list', () => {
   assert.doesNotMatch(listItems(m)[2], /Connects/);
 });
 
-test('layout: wide gives a column per tier, inside the box, with a link for each edge', () => {
+const inside = (n, l, label = '') => assert.ok(n.x >= 0 && n.x + n.w <= l.width && n.y >= 0 && n.y + n.h <= l.height, `${label} ${n.id} outside`);
+const apart = (nodes, label = '') => {
+  for (const a of nodes) for (const b of nodes) {
+    if (a !== b) assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${label} ${a.id} overlaps ${b.id}`);
+  }
+};
+
+test('layout: wide draws the proxy as a frame around its nodes, with the external peers below it', () => {
   const m = buildModel([door, front, back]);
   const l = layout(m, 1000);
-  assert.equal(l.mode, 'columns');
-  assert.equal(l.nodes.length, 5);
-  assert.equal(l.edges.length, 5);
-  for (const n of l.nodes) {
-    assert.ok(n.x >= 0 && n.x + n.w <= l.width, n.id);
-    assert.ok(n.y >= 0 && n.y + n.h <= l.height, n.id);
+  assert.equal(l.mode, 'frame');
+  const frame = l.nodes.find((n) => n.id === 'h:1');
+  assert.equal(frame.frame, true);
+  const boxes = l.nodes.filter((n) => !n.frame);
+  for (const n of l.nodes) inside(n, l);
+  apart(boxes);
+  for (const id of ['h:2', 'h:3']) {
+    const n = l.nodes.find((x) => x.id === id);
+    assert.ok(n.x > frame.x && n.x + n.w < frame.x + frame.w && n.y > frame.y && n.y + n.h < frame.y + frame.h, `${id} is inside the frame`);
   }
-  const x = (id) => l.nodes.find((n) => n.id === id).x;
-  assert.ok(x('h:1') < x('h:2') && x('h:2') < x('ext:edge|e.test:1'));
-  assert.ok(l.edges.every((e) => /^M[\d. -]+ C/.test(e.d)));
-  // Each node carries its words, and no two nodes overlap.
+  for (const n of boxes.filter((x) => x.kind === 'external')) assert.ok(n.y > frame.y + frame.h, `${n.id} is below the frame`);
+  // No line from the proxy to its nodes: the frame says it. The peer listed by the proxy and by Front is one box with a line from each.
+  assert.equal(l.edges.filter((e) => e.kind === 'proxy').length, 0);
+  assert.deepEqual([...l.edges.filter((e) => e.kind === 'upstream').map((e) => `${e.from}>${e.to}`)].sort(), ['h:1>ext:edge|e.test:1', 'h:2>ext:edge|', 'h:2>ext:edge|e.test:1']);
+  assert.equal(l.nodes.filter((n) => n.id === 'ext:edge|e.test:1').length, 1);
+  // Each line starts at its node (the proxy's at the foot of its frame) and ends at the top of its peer.
+  for (const e of l.edges) {
+    const from = l.nodes.find((n) => n.id === e.from);
+    const to = l.nodes.find((n) => n.id === e.to);
+    const [sx, sy] = e.pts[0];
+    const [ex, ey] = e.pts.at(-1);
+    assert.equal(sy, from.y + from.h, e.from);
+    assert.ok(sx >= from.x && sx <= from.x + from.w);
+    assert.equal(ey, to.y);
+    assert.ok(ex > to.x && ex < to.x + to.w);
+  }
   assert.ok(l.nodes.every((n) => n.label.length > 0 && n.lines.length >= 2));
-  for (const a of l.nodes) for (const b of l.nodes) {
-    if (a !== b) assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.id} overlaps ${b.id}`);
-  }
 });
 
-test('layout: narrow stacks the tiers, fits 360px and wraps a crowded tier', () => {
+test('layout: narrow shows one node at a time, inside the width, from 360 down to 100 pixels', () => {
   const ups = Array.from({ length: 8 }, (_, i) => ({ name: `Peer ${i}` }));
   const m = buildModel([door, { ...front, upstreams: ups }, back]);
   for (const w of [360, 320, 280, 100]) {
     const l = layout(m, w);
-    assert.equal(l.mode, 'rows');
+    assert.equal(l.mode, 'focus');
+    assert.equal(l.reason, 'narrow');
     assert.ok(l.width >= 280);
-    for (const n of l.nodes) assert.ok(n.x >= 0 && n.x + n.w <= l.width + 0.5, `${w}: ${n.id}`);
-    const rows = new Set(l.nodes.filter((n) => n.kind === 'external').map((n) => n.y));
-    assert.ok(rows.size > 1, 'a tier of 8 wraps');
-    const y = (id) => l.nodes.find((n) => n.id === id).y;
-    assert.ok(y('h:1') < y('h:2'));
-    for (const a of l.nodes) for (const b of l.nodes) {
-      if (a !== b) assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${w}: ${a.id} overlaps ${b.id}`);
-    }
+    assert.equal(l.selected, 'h:2');
+    assert.deepEqual([...l.pills.map((p) => p.id)], ['h:2', 'h:3']);
+    for (const n of l.nodes) inside(n, l, String(w));
+    apart(l.nodes, String(w));
+    assert.equal(l.nodes.filter((n) => n.kind === 'external').length, 8);
     for (const n of l.nodes) for (const t of n.lines) assert.ok(t.text.length <= Math.floor((n.w - 10) / 6.8) + 1, t.text);
   }
-  // A proxy group alone fits three across at 360.
-  const g = layout(buildModel([door, front, back].map((h) => ({ ...h, upstreams: undefined }))), 360);
-  assert.equal(new Set(g.nodes.filter((n) => n.tier === undefined && n.kind === 'node').map((n) => n.y)).size, 1);
 });
 
-test('layout: a single tier is centred, and a down link is marked', () => {
-  const l = layout(buildModel([host(1, { role: 'proxy', proxy: { for: [] }, upstreams: [{ name: 'X' }] })]), 800);
-  assert.equal(l.nodes.length, 2);
-  const m = layout(buildModel([door, front, back]), 800);
-  assert.deepEqual([...m.edges.filter((e) => e.down).map((e) => e.to)], ['h:3']);
+test('layout: a down node greys its lines', () => {
+  const l = layout(buildModel([door, front, { ...back, upstreams: [{ name: 'X' }] }]), 1000);
+  assert.deepEqual([...l.edges.filter((e) => e.down).map((e) => e.to)], ['ext:x|']);
+  const one = layout(buildModel([host(1, { role: 'proxy', proxy: { for: [] }, upstreams: [{ name: 'X' }] })]), 800);
+  assert.equal(one.nodes.length, 2);
 });
 
 test('state is in words as well as colour, on every node', () => {
@@ -294,31 +308,28 @@ test('state is in words as well as colour, on every node', () => {
   assert.equal(layout(buildModel([host(1, { status: 'unknown', role: 'proxy', proxy: { for: [] } })]), 800).nodes[0].lines.find((t) => t.cls === 'nm-state').text, '? Unknown');
 });
 
-test('a proxy is a different kind of box: wider, taller, tagged, and still has its state', () => {
+test('a proxy is a frame with a header in the whole map, and a taller tagged box in the one-node view', () => {
   const m = buildModel([door, front, back]);
   assert.deepEqual([...m.nodes.filter((n) => n.kind !== 'external').map((n) => `${n.id}=${n.kind}`)], ['h:1=proxy', 'h:2=node', 'h:3=node']);
-  for (const w of [1000, 360]) {
-    const l = layout(m, w);
-    const by = Object.fromEntries(l.nodes.map((n) => [n.id, n]));
-    assert.ok(by['h:1'].w > by['h:2'].w || w < 400, `${w}: wider`);
-    assert.ok(by['h:1'].h > by['h:2'].h, `${w}: taller`);
-    // The tag is text, first in the box; the state word and glyph stay.
-    assert.deepEqual([...by['h:1'].lines.filter((t) => t.cls === 'nm-tag').map((t) => t.text)], ['Proxy']);
-    assert.equal(by['h:1'].lines[0].cls, 'nm-tag');
-    assert.equal(by['h:1'].lines.find((t) => t.cls === 'nm-state').text, '● Up');
-    assert.equal(by['h:2'].lines.some((t) => t.cls === 'nm-tag'), false);
-    assert.equal(by['ext:edge|e.test:1'].lines.some((t) => t.cls === 'nm-tag'), false);
-    // Every line is inside its box, and the lines do not collide.
-    for (const n of l.nodes) {
-      const ys = n.lines.map((t) => t.y);
-      assert.ok(ys.every((y, i) => y > 0 && y < n.h && (i === 0 || y - ys[i - 1] >= 15)), `${w}: ${n.id}`);
-    }
+  const wide = layout(m, 1000);
+  const frame = wide.nodes.find((n) => n.id === 'h:1');
+  assert.deepEqual([...frame.lines.map((t) => t.text)], ['Proxy', 'Front door', '● Up', '3 clients · 5 ms · 99.5% uptime', 'Passes visitors to the 2 nodes inside']);
+  assert.equal(frame.lines[0].cls, 'nm-tag');
+  for (const t of frame.lines) assert.ok(t.y > 0 && t.y < frame.h && t.x > 0 && t.x < frame.w, t.text);
+  const narrow = layout(m, 360);
+  const by = Object.fromEntries(narrow.nodes.map((n) => [n.id, n]));
+  assert.equal(by['h:1'].frame, undefined);
+  assert.ok(by['h:1'].h > 76, 'taller than a node');
+  assert.deepEqual([...by['h:1'].lines.filter((t) => t.cls === 'nm-tag').map((t) => t.text)], ['Proxy']);
+  assert.equal(by['h:1'].lines.find((t) => t.cls === 'nm-state').text, '● Up');
+  // The proxy is above the node, joined by a line that says it passes visitors to it.
+  assert.ok(by['h:1'].y + by['h:1'].h < by['h:2'].y);
+  assert.deepEqual([...narrow.edges.filter((e) => e.kind === 'proxy').map((e) => `${e.from}>${e.to}`)], ['h:1>h:2']);
+  assert.ok(narrow.texts.some((t) => t.text === 'passes visitors to'));
+  for (const n of narrow.nodes) {
+    const ys = n.lines.map((t) => t.y);
+    assert.ok(ys.every((y, i) => y > 0 && y < n.h && (i === 0 || y - ys[i - 1] >= 15)), n.id);
   }
-  // Wide mode: the proxy keeps its centre in line with the nodes, and links start at its right edge.
-  const l = layout(m, 1000);
-  const door1 = l.nodes.find((n) => n.id === 'h:1');
-  assert.ok(l.edges.filter((e) => e.kind === 'proxy').every((e) => e.d.startsWith('M' + (door1.x + door1.w) + ' ')));
-  // The same words in the list.
   assert.match(listItems(m)[0], /^Proxy Front door, up, /);
   assert.doesNotMatch(listItems(m)[1], /^Proxy/);
 });
@@ -328,7 +339,9 @@ test('a proxy with no nodes behind it, and a proxy that is down, are still drawn
   assert.equal(l.nodes[0].kind, 'proxy');
   assert.equal(l.nodes[0].state, 'down');
   assert.equal(l.nodes[0].label, 'Proxy Door, down, passes visitors to 0 nodes, uptime 99.5% over 90 days.');
-  assert.deepEqual([...l.nodes[0].lines.map((t) => t.text)], ['Proxy', 'Door', '✕ Down']);
+  assert.deepEqual([...l.nodes[0].lines.map((t) => t.text)], ['Proxy', 'Door', '✕ Down', '99.5% uptime', 'No nodes behind it on this page']);
+  const narrow = layout(buildModel([host(1, { name: 'Door', role: 'proxy', proxy: { for: [] }, status: 'down', latencyMs: null })]), 300);
+  assert.deepEqual([...narrow.nodes[0].lines.map((t) => t.text)], ['Door', '✕ Down', 'uptime 99.5% over 90 days']);
 });
 
 test('summaryText says proxies, nodes, external peers and links apart', () => {
@@ -360,3 +373,4 @@ test('wrap, clip and rowsOf', () => {
   assert.deepEqual([...rowsOf(2, 5)], [2]);
   assert.deepEqual([...rowsOf(3, 2)], [2, 1]);
 });
+
