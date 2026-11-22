@@ -193,23 +193,32 @@ was signed out.
 
 **LXMF alerts.** When the site has an LXMF bridge that takes addresses the website names (a webhook
 channel with `user_addresses: true`, see [Uptime and alerts](Uptime-and-Alerts#alerts)), the account page
-has an "LXMF alerts" card. Without it the card is not there. Enter an LXMF address (32 hex digits;
-angle brackets, spaces around it and capitals are fine, and it is kept in lower case) and the
-website sends a 6-digit code to it. Type the code back to confirm the address: until then
-nothing else is sent there. The code works for 15 minutes and ends after 5 wrong tries; ask for a
+has an "LXMF alerts" card. Without it the card is not there. You can have up to 3 addresses. The card lists
+them, each with its state (confirmed, or waiting for its code) and its own Remove button. To add one, enter an
+LXMF address (32 hex digits; angle brackets, spaces around it and capitals are fine, and it is kept in lower
+case); a pop-up asks for your password, and for your second step if two-step sign-in is on, and then the
+website sends a 6-digit code to that address. Each address has its own code. Pick the address under "Confirm an
+address", type its code back (the pop-up asks again) and the address is confirmed: until then
+nothing else is sent there. A 4th address is refused: remove one first. The code works for 15 minutes. Confirming is limited to 5 tries an hour from one session and 10 an hour for you in all, a wrong code included; ask for a
 new one with "Send a new code" (3 codes an hour for you, a small number for the whole site). A message
 can take a while to arrive over LXMF. If the bridge refuses, the page says why in plain words: the
 bridge has website addresses turned off, it has sent the most it allows to that address (and for how
 long to wait), or it is busy.
 
-Once it is confirmed, the address gets a message when something changes about your account: a
+Once an address is confirmed, it gets a message when something changes about your account: a
 passkey is added or removed, your password is changed (by you, or reset by an admin, who is named), your app code is turned off or your two-step
-sign-in is reset by an admin, or new recovery codes are made. Each says what happened and when, never a
-passkey id, a secret or an address. Admins and managers can also tick "Node down and recovered
-alerts" to get the node alerts the site's operator gets. Changing the address tells the old one; removing it
-too. Setting, changing and removing the address, asking for a code and the tick need your password
-from the last 15 minutes (a pop-up asks when it is older), like the other changes here; a session made with
-a passkey alone gives the password first, and does not show the address until then. The address stays
+sign-in is reset by an admin, new recovery codes are made, or an LXMF address is added or removed. All your
+confirmed addresses get every message. It also gets one when your password is used to sign in from a browser
+the site does not know as yours (a new device), even if the second step is never completed: if that was not
+you, change your password. At most one of these is sent every 15 minutes. Each says what happened and when,
+never a passkey id, a secret, an IP address or a device id. Admins and managers can also tick "Node down and
+recovered alerts" to get the node alerts the site's operator gets, at every confirmed address. Adding an
+address tells your other confirmed addresses; removing a confirmed one tells the others and the one removed. So
+nobody who gets into your account can quietly add their own address or take yours away. Adding, confirming and
+removing an address need the same pop-up as adding a passkey (your password, and your second step when
+two-step sign-in is on). Asking for a new code and the node alerts tick need only your password from the
+last 15 minutes (a pop-up asks when it is older); a session made with
+a passkey alone gives the password first, and does not show the addresses until then. The addresses stay
 when you change your password or remove a passkey, so that the alert about it still reaches you, and
 goes with the user when they are deleted. A bridge that is down never stops a change from being made.
 The details are in [Uptime and alerts](Uptime-and-Alerts#alerts).
@@ -219,11 +228,13 @@ changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enabl
 `/totp/disable`, `/recovery-codes`, `/sign-out-others`, `/devices/remove`,
 `/devices/remove-others`, `/passkeys/challenge`, `/passkeys/begin`, `/passkeys/finish`,
 `/passkeys/rename` and `/passkeys/remove`, and, only with an LXMF bridge for users' addresses,
-`/lxmf/set` (`{address}`: sends a code, keeps the address once the bridge took it),
-`/lxmf/resend`, `/lxmf/confirm` (`{code}`), `/lxmf/remove` and `/lxmf/node-alerts` (`{enabled}`).
-`GET /api/account` has an `lxmf` object (`available`, and with it `set`, `address`, `confirmed`,
-`canNodeAlerts`, `nodeAlerts`, `codeExpiresAt`; `address` is null with `hidden: true` in a session made
-with a passkey alone that has not given the password). `GET /api/account` also says whether passkeys are
+`/lxmf/set` (`{address}` and the step-up fields: sends a code, keeps the address once the bridge took it; at most 3 addresses),
+`/lxmf/resend` (`{address}`), `/lxmf/confirm` (`{address, lxmfCode}` and the step-up fields; the step-up's own `code` is a different field),
+`/lxmf/remove` (`{address}` and the step-up fields) and `/lxmf/node-alerts` (`{enabled}`). `set`, `confirm` and `remove`
+are limited like the passkey changes. `GET /api/account` has an `lxmf` object (`available`, and with it `set`,
+`count`, `max`, `addresses`: a list of `address`, `confirmed` and `codeExpiresAt`, `confirmed`: whether any is,
+`canNodeAlerts`, `nodeAlerts`; `addresses` is empty with `hidden: true` in a session made
+with a passkey alone that has not given the password, and `count` still says how many there are). `GET /api/account` also says whether passkeys are
 available here (`passkeys.available`, with `reason: "no-address"` when `site.url` is not set), and
 lists them (`passkeys.signIn` says whether signing in with a passkey alone is on; `passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and `here`, false for a
 passkey made for another address). Ids are short references, never the credential id or key. They
@@ -244,9 +255,10 @@ at start, `user` only, see [Managing users](Managing-Users#managing-users)),
 ended, `ended`). Turning on a first second factor (the app code, or a first passkey, with no
 other second factor on) adds `second-factor-first` as well (`role`, `method`: `totp` or
 `passkey`, and `nodeChangesFrom`: when the wait before node changes ends, see [Managing nodes](Managing-Nodes#managing-nodes)).
-The LXMF address adds `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`, `lxmf-address-removed`
-and `lxmf-node-alerts` (`enabled`), each with the `user` and `lxmf`: the first 8 digits of the address, never the
-whole one or a code. Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
+The LXMF addresses add `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`, `lxmf-address-removed`
+and `lxmf-node-alerts` (`enabled`), each with the `user` and `lxmf`: the first 8 digits of the address (for
+`lxmf-node-alerts`, those of each confirmed address), never the whole one or a code; set, confirmed and removed
+also have `with`, how the step-up was done. Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
 user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
 `ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
 its counter did not go up, see "Passkeys"; `step: "sign-in"` when it was a sign in with the passkey alone). `device-added` has `with: "passkey"` for a sign in with a passkey alone. A passkey is named by its name only: no credential id

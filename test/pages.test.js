@@ -323,7 +323,7 @@ test('the users page script only sets text, sends the request header, and asks b
   assert.match(html, /shown only now, and never again/);
   // The account page links to it, hidden until the server says this is an admin.
   assert.match(await read('account.html'), /<p id="acct-users" hidden><a href="\/users">Manage users<\/a>/);
-  assert.match(await read('account-page.js'), /\$\('acct-users'\)\.hidden = data\.canManageUsers !== true/);
+  assert.match(await read('account-page.js'), /setHidden\(\$\('acct-users'\), data\.canManageUsers !== true\)/);
 });
 
 test('the step-up dialog asks for the password, and the code only with two-step sign-in on; it is built without markup', async () => {
@@ -461,6 +461,7 @@ function makeDom({ prebuilt = false } = {}) {
     body,
     getElementById: byId,
     createElement: (tag) => Object.assign(new FakeElement(), { tag }),
+    createTextNode: (text) => Object.assign(new FakeElement(), { text }),
     querySelectorAll: () => [],
     addEventListener() {},
     dispatchEvent() {},
@@ -1064,11 +1065,13 @@ const ACCOUNT = {
 };
 const KEY = { id: 'aaaa1111bbbb2222', name: 'Work laptop', created: '2026-11-01T10:00:00.000Z', lastUsed: null, synced: false, here: true };
 
-async function accountPage({ account = ACCOUNT, routes = {}, ask, passkey = {} } = {}) {
+async function accountPage({ account = ACCOUNT, routes = {}, ask, passkey = {}, prepare } = {}) {
   const dom = makeDom({ prebuilt: true });
+  if (prepare) prepare(dom);
   dom.byId('codes-box').hidden = true;
   dom.byId('totp-setup-box').hidden = true;
   dom.byId('passkey-add').textContent = 'Add a passkey';
+  dom.byId('lxmf-set').textContent = 'Send a code';
   dom.byId('passkeys-note').textContent = /<p id="passkeys-note" class="note">([^<]*)<\/p>/.exec(await read('account.html'))[1];
   const state = { account: structuredClone(account) };
   const log = [];
@@ -1472,9 +1475,15 @@ test('account page: changes ask the step-up with the methods the server lists, a
 
 // ---- the LXMF alerts card of the account page ----
 
-const LXMF_OFF = { available: true, set: false, hidden: false, address: null, confirmed: false, canNodeAlerts: false, nodeAlerts: false, codeExpiresAt: null };
+const LXMF_OFF = { available: true, set: false, hidden: false, count: 0, max: 3, addresses: [], confirmed: false, canNodeAlerts: false, nodeAlerts: false };
 const LXMF_A = '0123456789abcdef0123456789abcdef';
+const LXMF_B = 'fedcba9876543210fedcba9876543210';
+const LXMF_C = '00112233445566778899aabbccddeeff';
+const lxmfWith = (addresses, extra = {}) => ({ ...LXMF_OFF, set: addresses.length > 0, count: addresses.length, addresses, confirmed: addresses.some((a) => a.confirmed), ...extra });
+const WAITING = (address, codeExpiresAt = '2026-11-20T10:15:00.000Z') => ({ address, confirmed: false, codeExpiresAt });
+const CONFIRMED = (address) => ({ address, confirmed: true, codeExpiresAt: null });
 const withLxmf = (lxmf, extra = {}) => ({ ...ACCOUNT, ...extra, lxmf });
+const rowsOf = (p) => p.$('lxmf-list').children.map((li) => li.all().map((e) => e.textContent).filter(Boolean).join('|'));
 
 test('account page: the LXMF alerts card is there only when the server says so, and not while the password has to be changed', async () => {
   const absent = await accountPage();
@@ -1484,40 +1493,54 @@ test('account page: the LXMF alerts card is there only when the server says so, 
   const on = await accountPage({ account: withLxmf(LXMF_OFF) });
   assert.equal(on.$('acct-lxmf').hidden, false);
   assert.equal(on.$('lxmf-state').textContent, 'No address is set.');
-  assert.equal(on.$('lxmf-address-label').textContent, 'LXMF address');
-  assert.equal(on.$('lxmf-set').textContent, 'Send a code');
+  assert.equal(on.$('lxmf-set-form').hidden, false);
+  assert.equal(on.$('lxmf-list-box').hidden, true);
   assert.equal(on.$('lxmf-confirm-form').hidden, true);
   assert.equal(on.$('lxmf-nodes-form').hidden, true);
-  assert.equal(on.$('lxmf-remove-box').hidden, true);
+  assert.equal(on.$('lxmf-full').hidden, true);
   const must = await accountPage({ account: withLxmf(LXMF_OFF, { mustChangePassword: true }) });
   assert.equal(must.$('acct-lxmf').hidden, true);
 });
 
-test('account page: an address waiting for its code shows the confirm form and until when the code works; a confirmed one shows the node alerts box for admins and managers only', async () => {
-  const waiting = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' }) });
-  assert.equal(waiting.$('lxmf-state').textContent, `Waiting for the code for ${LXMF_A}. Nothing is sent there until you confirm it.`);
-  assert.equal(waiting.$('lxmf-confirm-form').hidden, false);
-  assert.match(waiting.$('lxmf-code-help').textContent, /^The code works until .* and ends after 5 wrong tries\./);
-  assert.equal(waiting.$('lxmf-nodes-form').hidden, true, 'not before it is confirmed');
-  assert.equal(waiting.$('lxmf-remove-box').hidden, false);
-  assert.equal(waiting.$('lxmf-address-label').textContent, 'A different LXMF address');
-  const lapsed = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A }) });
+test('account page: the addresses are listed with their state and a Remove button each; the confirm form is for the ones waiting for a code, and the node alerts box for admins and managers with a confirmed one', async () => {
+  const p = await accountPage({ account: withLxmf(lxmfWith([CONFIRMED(LXMF_A), WAITING(LXMF_B)], { canNodeAlerts: true, nodeAlerts: true }), { role: 'manage' }) });
+  assert.equal(p.$('lxmf-state').textContent, 'Alerts go to 1 address. You have 2 of 3.');
+  assert.equal(p.$('lxmf-list-box').hidden, false);
+  const rows = rowsOf(p);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0], new RegExp(`^${LXMF_A}\\|Confirmed: alerts about your account go here\\.\\|`));
+  assert.match(rows[1], new RegExp(`^${LXMF_B}\\|Waiting for the code\\. Nothing is sent here until you confirm it\\.\\|`));
+  const remove = (address) => p.$('lxmf-list').all().find((e) => e.attrs['aria-label'] === `Remove the LXMF address ${address}`);
+  assert.ok(remove(LXMF_A) && remove(LXMF_B), 'each address has its own button, named for it');
+  // Only the one that waits can be confirmed, and the help says until when its code works.
+  assert.deepEqual(p.$('lxmf-code-for').children.map((o) => o.value), [LXMF_B]);
+  assert.equal(p.$('lxmf-confirm-form').hidden, false);
+  assert.match(p.$('lxmf-code-help').textContent, /^The code works until .*\. You can try to confirm 5 times an hour from one session, and 10 times an hour in all\./);
+  assert.equal(p.$('lxmf-nodes-form').hidden, false);
+  assert.equal(p.$('lxmf-nodes').checked, true);
+  // Nothing waits: no confirm form; no code is waiting for one that lapsed.
+  const none = await accountPage({ account: withLxmf(lxmfWith([CONFIRMED(LXMF_A)]), { role: 'viewer' }) });
+  assert.equal(none.$('lxmf-confirm-form').hidden, true);
+  assert.equal(none.$('lxmf-nodes-form').hidden, true, 'a viewer is not offered the node alerts');
+  const lapsed = await accountPage({ account: withLxmf(lxmfWith([{ address: LXMF_A, confirmed: false, codeExpiresAt: null }])) });
   assert.match(lapsed.$('lxmf-code-help').textContent, /^No code is waiting: send a new one\./);
-  const manager = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: true }, { role: 'manage' }) });
-  assert.equal(manager.$('lxmf-state').textContent, `Alerts go to ${LXMF_A}.`);
-  assert.equal(manager.$('lxmf-confirm-form').hidden, true);
-  assert.equal(manager.$('lxmf-nodes-form').hidden, false);
-  assert.equal(manager.$('lxmf-nodes').checked, true);
-  const viewer = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true }) });
-  assert.equal(viewer.$('lxmf-nodes-form').hidden, true);
-  // A session made with a passkey alone has not given its password: no address is shown.
-  const hidden = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, hidden: true, confirmed: true }) });
+  assert.equal(lapsed.$('lxmf-state').textContent, 'No address is confirmed yet. Nothing is sent until you confirm one.');
+  // Three addresses: no room for a 4th, and the page says so instead of the form.
+  const full = await accountPage({ account: withLxmf(lxmfWith([CONFIRMED(LXMF_A), CONFIRMED(LXMF_B), WAITING(LXMF_C)])) });
+  assert.equal(full.$('lxmf-set-form').hidden, true);
+  assert.equal(full.$('lxmf-full').hidden, false);
+  assert.equal(full.$('lxmf-full').textContent, 'You have 3 LXMF addresses, the most allowed. Remove one to add another.');
+  assert.equal(full.$('lxmf-state').textContent, 'Alerts go to 2 addresses. You have 3 of 3.');
+  // A session made with a passkey alone has not given its password: no address is shown, only how many.
+  const hidden = await accountPage({ account: withLxmf(lxmfWith([], { set: true, count: 2, hidden: true, confirmed: true })) });
   assert.equal(hidden.$('lxmf-hidden').hidden, false);
-  assert.match(hidden.$('lxmf-state').textContent, /^An address is set\. It is not shown until you give your password in this session\.$/);
-  assert.equal(hidden.$('lxmf-state').textContent.includes(LXMF_A), false);
+  assert.equal(hidden.$('lxmf-state').textContent, '2 addresses are set. They are not shown until you give your password in this session.');
+  assert.equal(hidden.$('lxmf-list-box').hidden, true);
+  const one = await accountPage({ account: withLxmf(lxmfWith([], { set: true, count: 1, hidden: true, confirmed: true })) });
+  assert.equal(one.$('lxmf-state').textContent, 'An address is set. It is not shown until you give your password in this session.');
 });
 
-test('account page: setting an address is checked here first, then sent; the server\'s refusals (the bridge, the limits) are shown as they are', async () => {
+test('account page: adding an address is checked here first, then asked for in the step-up dialog and sent; the server\'s refusals (the bridge, the limits) are shown as they are', async () => {
   const sent = [];
   let answer = [200, { ok: true, address: LXMF_A, codeSent: true }];
   const p = await accountPage({ account: withLxmf(LXMF_OFF), routes: { 'POST /api/account/lxmf/set': (o) => (sent.push(JSON.parse(o.body)), answer) } });
@@ -1529,12 +1552,15 @@ test('account page: setting an address is checked here first, then sent; the ser
     assert.equal(p.$('lxmf-address').attrs['aria-invalid'], 'true');
   }
   assert.deepEqual(sent, []);
-  // Angle brackets and capitals go to the server, which normalises them.
-  answer = [502, { error: 'The alert bridge has addresses named by the website turned off, so it cannot send to your address. Ask whoever runs this site to turn on website_recipients in the bridge.', code: 'bridge-off' }];
+  assert.equal(p.asked.length, 0, 'the dialog is not opened for an address that is plainly wrong');
+  // Angle brackets and capitals go to the server, which normalises them; the password comes from the dialog.
+  answer = [502, { error: 'The alert bridge has addresses named by the website turned off, so it cannot send to your address. Ask whoever runs this site to turn on website_recipients in the bridge.', code: 'bridge-off', field: 'address' }];
   p.$('lxmf-address').value = ` <${LXMF_A.toUpperCase()}> `;
   p.$('lxmf-set-form').fire('submit');
   await settle();
-  assert.deepEqual(sent, [{ address: `<${LXMF_A.toUpperCase()}>` }]);
+  assert.deepEqual(sent, [{ address: `<${LXMF_A.toUpperCase()}>`, password: 'pw' }]);
+  assert.equal(p.asked.length, 1);
+  assert.equal(p.asked[0].title, 'Add an LXMF address');
   assert.match(p.$('lxmf-set-error').textContent, /turned off, so it cannot send to your address/);
   assert.equal(p.$('lxmf-set').disabled, false);
   assert.equal(p.$('lxmf-set').textContent, 'Send a code');
@@ -1542,16 +1568,23 @@ test('account page: setting an address is checked here first, then sent; the ser
   p.$('lxmf-set-form').fire('submit');
   await settle();
   assert.equal(p.$('lxmf-set-error').textContent, 'You asked for 3 codes in the last hour, the most allowed. Try again in 40 minutes.');
-  // It worked: the field is cleared, the page is loaded again, and the focus is on the code.
-  answer = [200, { ok: true, address: LXMF_A, codeSent: true }];
-  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' });
+  // It worked: the field is cleared, the page is loaded again, the address just added is the one to confirm, and the focus is on the code.
+  answer = [200, { ok: true, address: LXMF_B, codeSent: true }];
+  p.state.account = withLxmf(lxmfWith([CONFIRMED(LXMF_A), WAITING(LXMF_C), WAITING(LXMF_B)]));
   p.$('lxmf-set-form').fire('submit');
   await settle();
   assert.equal(p.$('lxmf-address').value, '');
   assert.equal(p.$('lxmf-confirm-form').hidden, false);
+  assert.equal(p.$('lxmf-code-for').value, LXMF_B, 'the new address is picked');
   assert.equal(p.$('acct-status').textContent, 'A code was sent to your LXMF address. Type it below to confirm the address.');
   assert.equal(FakeElement.active.id, 'lxmf-code');
   assert.equal(p.log.find((l) => l.url.endsWith('/lxmf/set')).headers['X-Rettui-Request'], '1');
+  // The 4th is refused by the server (another tab filled the list): its words are shown.
+  answer = [409, { error: 'You have 3 LXMF addresses, the most allowed. Remove one first.', field: 'address' }];
+  p.$('lxmf-address').value = LXMF_A;
+  p.$('lxmf-set-form').fire('submit');
+  await settle();
+  assert.equal(p.$('lxmf-set-error').textContent, 'You have 3 LXMF addresses, the most allowed. Remove one first.');
 });
 
 test('account page: a change asks for the password again when the sign in is too old, and sends nothing more until it is given', async () => {
@@ -1563,25 +1596,35 @@ test('account page: a change asks for the password again when the sign in is too
       'POST /api/account/reauth': [200, { ok: true }],
     },
   });
-  // The reauth dialog is built by the page; its form takes the password and sends it.
   p.$('lxmf-address').value = LXMF_A;
   p.$('lxmf-set-form').fire('submit');
   await settle();
-  const reauth = p.log.filter((l) => l.method === 'POST').map((l) => l.url);
-  assert.deepEqual(reauth, ['/api/account/lxmf/set']);
-  assert.equal(tries, 1, 'the dialog is open and waits for the password; the set is not sent again before');
+  // The step-up dialog's own send asks for the password again and sends the change again.
+  assert.equal(tries, 2);
+  assert.deepEqual(p.log.filter((l) => l.method === 'POST').map((l) => l.url), ['/api/account/lxmf/set', '/api/account/reauth', '/api/account/lxmf/set']);
 });
 
-test('account page: confirming checks the 6 digits here, sends the code, and says plainly when it is wrong, ended or run out; a new code can be asked for', async () => {
+test('account page: confirming picks the address, checks the 6 digits here, sends them in the step-up dialog, and says plainly when the code is wrong, ended or run out; a new code can be asked for', async () => {
   const sent = [];
-  let answer = [400, { error: 'That code is not right. You have 4 tries left for this code.', field: 'code', reason: 'wrong' }];
+  const resent = [];
+  let answer = [400, { error: 'That code is not right. Check the digits, or send a new code.', field: 'lxmfCode', reason: 'wrong' }];
+  const waiting = lxmfWith([CONFIRMED(LXMF_A), WAITING(LXMF_B), WAITING(LXMF_C, null)]);
   const p = await accountPage({
-    account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' }),
+    account: withLxmf(waiting),
     routes: {
       'POST /api/account/lxmf/confirm': (o) => (sent.push(JSON.parse(o.body)), answer),
-      'POST /api/account/lxmf/resend': () => [200, { ok: true, codeSent: true }],
+      'POST /api/account/lxmf/resend': (o) => (resent.push(JSON.parse(o.body)), [200, { ok: true, codeSent: true }]),
     },
   });
+  // Two addresses wait, each with its own code; the first is picked, and the help is about it.
+  assert.deepEqual(p.$('lxmf-code-for').children.map((o) => o.value), [LXMF_B, LXMF_C]);
+  assert.equal(p.$('lxmf-code-for').value, LXMF_B);
+  assert.match(p.$('lxmf-code-help').textContent, /^The code works until /);
+  p.$('lxmf-code-for').value = LXMF_C;
+  p.$('lxmf-code-for').fire('change');
+  assert.match(p.$('lxmf-code-help').textContent, /^No code is waiting: send a new one\./, 'the help follows the address picked');
+  p.$('lxmf-code-for').value = LXMF_B;
+  p.$('lxmf-code-for').fire('change');
   for (const bad of ['', '12345', '1234567', 'abcdef']) {
     p.$('lxmf-code').value = bad;
     p.$('lxmf-confirm-form').fire('submit');
@@ -1589,71 +1632,128 @@ test('account page: confirming checks the 6 digits here, sends the code, and say
     assert.equal(p.$('lxmf-confirm-error').textContent, 'Enter the 6 digits that were sent to your LXMF address.', bad);
   }
   assert.deepEqual(sent, []);
+  assert.equal(p.asked.length, 0);
   p.$('lxmf-code').value = '123 456';
   p.$('lxmf-confirm-form').fire('submit');
   await settle();
-  assert.deepEqual(sent, [{ code: '123456' }]);
-  assert.equal(p.$('lxmf-confirm-error').textContent, 'That code is not right. You have 4 tries left for this code.');
+  assert.deepEqual(sent, [{ address: LXMF_B, lxmfCode: '123456', password: 'pw' }]);
+  assert.equal(p.asked[0].title, 'Confirm an LXMF address');
+  assert.equal(p.$('lxmf-confirm-error').textContent, 'That code is not right. Check the digits, or send a new code.');
   assert.equal(p.$('lxmf-code').value, '', 'a wrong code is cleared');
   assert.equal(FakeElement.active.id, 'lxmf-code');
-  answer = [400, { error: 'That code has run out. Send a new code.', field: 'code', reason: 'expired' }];
+  answer = [400, { error: 'That code has run out. Send a new code.', field: 'lxmfCode', reason: 'expired' }];
   p.$('lxmf-code').value = '654321';
   p.$('lxmf-confirm-form').fire('submit');
   await settle();
   assert.equal(p.$('lxmf-confirm-error').textContent, 'That code has run out. Send a new code.');
-  // A new code.
+  // A new code for the address picked: it needs no step-up.
+  const askedBefore = p.asked.length;
   p.$('lxmf-resend').fire('click');
   await settle();
+  assert.deepEqual(resent, [{ address: LXMF_B }]);
+  assert.equal(p.asked.length, askedBefore);
   assert.equal(p.$('lxmf-confirm-error').textContent, '');
   assert.equal(p.$('acct-status').textContent, 'A new code was sent to your LXMF address. The old one no longer works.');
   assert.equal(p.$('lxmf-resend').disabled, false);
-  // The right code: confirmed, and the page is loaded again.
+  // The right code: confirmed, the page is loaded again, and the list shows both.
   answer = [200, { ok: true }];
-  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true }, { role: 'manage' });
+  p.state.account = withLxmf(lxmfWith([CONFIRMED(LXMF_A), CONFIRMED(LXMF_B), WAITING(LXMF_C, null)], { canNodeAlerts: true }), { role: 'manage' });
   p.$('lxmf-code').value = '111111';
   p.$('lxmf-confirm-form').fire('submit');
   await settle();
-  assert.equal(p.$('lxmf-confirm-form').hidden, true);
+  assert.deepEqual(p.$('lxmf-code-for').children.map((o) => o.value), [LXMF_C], 'only the one that still waits');
   assert.equal(p.$('lxmf-nodes-form').hidden, false);
   assert.equal(p.$('acct-status').textContent, 'Your LXMF address is confirmed. Alerts about your account now go there.');
   assert.equal(FakeElement.active.id, 'acct-lxmf-h');
 });
 
-test('account page: removing the address and the node alerts box send what they say, and show what the server has when it refuses', async () => {
+test('account page: removing an address is asked for in the step-up dialog and names that address; the node alerts box sends what it says and shows what the server has when it refuses', async () => {
   const sent = [];
+  const removed = [];
   let nodes = [200, { ok: true }];
+  const both = lxmfWith([CONFIRMED(LXMF_A), CONFIRMED(LXMF_B)], { canNodeAlerts: true });
   const p = await accountPage({
-    account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true }, { role: 'manage' }),
+    account: withLxmf(both, { role: 'manage' }),
     routes: {
       'POST /api/account/lxmf/node-alerts': (o) => (sent.push(JSON.parse(o.body)), nodes),
-      'POST /api/account/lxmf/remove': [200, { ok: true }],
+      'POST /api/account/lxmf/remove': (o) => (removed.push(JSON.parse(o.body)), [200, { ok: true }]),
     },
   });
-  // Ticked: sent, said, and the page is loaded again from the server.
-  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: true }, { role: 'manage' });
+  // Ticked: sent (no step-up), said, and the page is loaded again from the server.
+  p.state.account = withLxmf({ ...both, nodeAlerts: true }, { role: 'manage' });
   p.$('lxmf-nodes').checked = true;
   p.$('lxmf-nodes').fire('change');
   await settle();
   assert.deepEqual(sent, [{ enabled: true }]);
-  assert.equal(p.$('acct-status').textContent, 'Node down and recovered alerts now go to your LXMF address too.');
+  assert.equal(p.asked.length, 0);
+  assert.equal(p.$('acct-status').textContent, 'Node down and recovered alerts now go to your confirmed LXMF addresses too.');
   assert.equal(p.$('lxmf-nodes').checked, true);
   assert.equal(p.$('lxmf-nodes').disabled, false);
   // Refused: the box goes back to what the server has, and says why.
   nodes = [403, { error: 'Only admins and managers can get node alerts.' }];
-  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: false }, { role: 'manage' });
+  p.state.account = withLxmf({ ...both, nodeAlerts: false }, { role: 'manage' });
   p.$('lxmf-nodes').checked = true;
   p.$('lxmf-nodes').fire('change');
   await settle();
   assert.equal(p.$('lxmf-nodes-error').textContent, 'Only admins and managers can get node alerts.');
   assert.equal(p.$('lxmf-nodes').checked, false);
-  // Removed.
+  // Remove the second one: the dialog is asked, the address is named, and the list is loaded again with one.
+  p.state.account = withLxmf(lxmfWith([CONFIRMED(LXMF_A)], { canNodeAlerts: true }), { role: 'manage' });
+  p.$('lxmf-list').all().find((e) => e.attrs['aria-label'] === `Remove the LXMF address ${LXMF_B}`).fire('click');
+  await settle();
+  assert.deepEqual(removed, [{ address: LXMF_B, password: 'pw' }]);
+  assert.equal(p.asked[0].title, 'Remove an LXMF address');
+  assert.equal(p.asked[0].danger, true);
+  assert.equal(rowsOf(p).length, 1);
+  assert.equal(p.$('acct-status').textContent, 'The LXMF address is removed. No more alerts go there.');
+  // The last one: the card goes back to no address.
   p.state.account = withLxmf(LXMF_OFF, { role: 'manage' });
-  p.$('lxmf-remove').fire('click');
+  p.$('lxmf-list').all().find((e) => e.attrs['aria-label'] === `Remove the LXMF address ${LXMF_A}`).fire('click');
   await settle();
   assert.equal(p.$('lxmf-state').textContent, 'No address is set.');
-  assert.equal(p.$('lxmf-remove-box').hidden, true);
-  assert.equal(p.$('acct-status').textContent, 'Your LXMF address is removed. No more alerts go there.');
-  assert.equal(p.$('lxmf-remove').disabled, false);
+  assert.equal(p.$('lxmf-list-box').hidden, true);
+});
+
+test('account page: a refresh with the same data replaces no list, shows and hides no card and writes no field, so a rename in progress and the focus stay', async () => {
+  const hiddenWrites = {};
+  const textWrites = {};
+  const watch = (dom, ids) => {
+    for (const id of ids) {
+      const e = dom.byId(id);
+      let hidden = e.hidden;
+      Object.defineProperty(e, 'hidden', { get: () => hidden, set: (v) => ((hidden = v), (hiddenWrites[id] = (hiddenWrites[id] ?? 0) + 1)) });
+      let text = e.text;
+      Object.defineProperty(e, 'text', { get: () => text, set: (v) => ((text = v), (textWrites[id] = (textWrites[id] ?? 0) + 1)) });
+    }
+  };
+  const IDS = ['acct-lxmf', 'acct-passkeys', 'acct-recovery', 'lxmf-set-form', 'lxmf-confirm-form', 'lxmf-nodes-form', 'lxmf-list-box', 'lxmf-state', 'lxmf-code-help', 'passkeys-list', 'lxmf-list', 'sessions-list', 'devices-list', 'pw-form', 'totp-state'];
+  const account = withLxmf(lxmfWith([CONFIRMED(LXMF_A), WAITING(LXMF_B)], { canNodeAlerts: true }), { role: 'manage', sessions: [{ created: '2026-11-01T10:00:00.000Z', lastSeen: '2026-11-02T10:00:00.000Z', current: true }], devices: [{ id: 'dddd', created: '2026-11-01T10:00:00.000Z', lastUsed: null, current: true }], passkeys: { ...ACCOUNT.passkeys, list: [KEY] } });
+  const p = await accountPage({ account, prepare: (dom) => watch(dom, IDS) });
+  const lists = ['lxmf-list', 'passkeys-list', 'sessions-list', 'devices-list'].map((id) => [id, p.$(id).children.slice()]);
+  assert.deepEqual(lists.map(([id, c]) => [id, c.length]), [['lxmf-list', 2], ['passkeys-list', 1], ['sessions-list', 1], ['devices-list', 1]]);
+  for (const k of Object.keys(hiddenWrites)) delete hiddenWrites[k];
+  for (const k of Object.keys(textWrites)) delete textWrites[k];
+  // The visitor renames a passkey: a form with a field takes the place of the item.
+  buttonOf(p, 'Rename the passkey Work laptop').fire('click');
+  const input = FakeElement.active;
+  assert.equal(input.id, 'passkey-rename-input');
+  const field = p.$('passkeys-list').children[0].all().find((e) => e.id === 'passkey-rename-input');
+  assert.equal(field, input);
+  // The page is loaded again (as after any change elsewhere, or a sign in or out in the header) with the same data.
+  p.$('lxmf-nodes').checked = true;
+  p.$('lxmf-nodes').fire('change');
+  await settle();
+  // Nothing was written again: not a card, not a form, not a status line, not a list.
+  assert.deepEqual(hiddenWrites, {}, 'no card or form was shown or hidden again');
+  assert.deepEqual(textWrites, {}, 'no list or line was rebuilt or rewritten');
+  for (const [id, before] of lists) {
+    if (id === 'passkeys-list') continue;
+    assert.deepEqual(p.$(id).children, before, `${id} kept its nodes`);
+  }
+  // The rename field is the very one the visitor was in, still in the list, with what was typed in it (the focus
+  // went to the box that was ticked, as it does when a visitor ticks it).
+  assert.equal(p.$('passkeys-list').children[0].all().find((e) => e.id === 'passkey-rename-input'), input);
+  assert.equal(input.value, 'Work laptop');
 });
 
 test('users page: the passkey count and kinds show, and the reset says what it removes', async () => {
@@ -2087,7 +2187,7 @@ test('the manage page: text only, the request header, the step-up for every chan
   assert.match(html, /<script src="\/step-up\.js" defer><\/script>\s*<script src="\/manage-page\.js" defer><\/script>/);
   // The account page links to it for the manage and admin roles only; the server checks again.
   assert.match(await read('account.html'), /<p id="acct-manage" hidden><a href="\/manage">Manage nodes<\/a>/);
-  assert.match(await read('account-page.js'), /\$\('acct-manage'\)\.hidden = !\(\(data\.role === 'manage' \|\| data\.role === 'admin'\) && data\.mustChangePassword !== true\);/);
+  assert.match(await read('account-page.js'), /setHidden\(\$\('acct-manage'\), !\(\(data\.role === 'manage' \|\| data\.role === 'admin'\) && !must\)\);/);
   // Long values wrap on a phone.
   assert.match(await read('site.css'), /\.manage-field \{[^}]*overflow-wrap: anywhere/);
 });

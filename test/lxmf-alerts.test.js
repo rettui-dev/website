@@ -22,10 +22,12 @@ import { createAudit, createFailureLog } from '../lib/audit.js';
 import { RECENT_AUTH_MS } from '../lib/account.js';
 import { createPasskeys } from '../lib/passkeys.js';
 import { Alerter } from '../lib/alerts.js';
-import { CODES_PER_HOUR, CODES_PER_USER, CODE_TRIES, CODE_TTL_MS, LxmfAlerts, accountMessage, lxmfPrefix, normaliseLxmfAddress } from '../lib/lxmf-alerts.js';
+import { CODES_PER_HOUR, CODES_PER_USER, CODE_TRIES, CODE_TTL_MS, LxmfAlerts, NEW_DEVICE_ALERT_MS, accountMessage, lxmfPrefix, normaliseLxmfAddress } from '../lib/lxmf-alerts.js';
 import { base32Decode, totp } from '../lib/totp.js';
 import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
+import { NO_SITE } from '../lib/site.js';
+import { DEVICE_COOKIE } from '../lib/login.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const NOW = 1_800_000_000_000;
@@ -74,8 +76,11 @@ test('the account messages say what happened and when, and for an admin\'s actio
   assert.match(m('second_factor_off', { secondFactorOff: false }), /Your passkeys still work as your second step\./);
   assert.match(m('second_factor_reset', { actor: 'alice' }), /The admin alice reset the two-step sign-in of your account bob at .* Your app code, passkeys and recovery codes were removed\./);
   assert.match(m('recovery_codes_new'), /New recovery codes were made for your account bob at .* The old ones no longer work\./);
-  assert.match(m('lxmf_address_changed', { what: 'removed' }), /alerts on your account bob was removed at/);
-  assert.match(m('lxmf_address_changed', { what: 'changed' }), /was changed at/);
+  assert.equal(m('lxmf_address_changed', { what: 'added', address: A1 }), '[rettui status] The LXMF address starting 01234567 was added to the alerts of your account bob at 2026-11-19 12:03 UTC. It gets alerts once the code sent to it is typed in. If this was not you, change your password.');
+  assert.equal(m('lxmf_address_changed', { what: 'removed', address: A1 }), '[rettui status] The LXMF address starting 01234567 was removed from the alerts of your account bob at 2026-11-19 12:03 UTC. It gets no more alerts. If this was not you, change your password.');
+  assert.equal(m('sign_in_new_device', { siteUrl: 'https://status.example.org' }), '[rettui status] The password of your account bob was just used to sign in to https://status.example.org from a new browser at 2026-11-19 12:03 UTC. If this was not you, change your password.');
+  assert.equal(m('sign_in_new_device'), '[rettui status] The password of your account bob was just used to sign in from a new browser at 2026-11-19 12:03 UTC. If this was not you, change your password.');
+  assert.doesNotMatch(m('lxmf_address_changed', { what: 'added', address: A1 }), new RegExp(A1));
   assert.throws(() => m('nonsense'), /unknown alert kind/);
   // A passkey name is typed by the user: it is a quoted JSON string, so a quote cannot end it.
   assert.match(m('passkey_added', { passkey: 'x" and then "y' }), /named "x\\" and then \\"y" was added/);
@@ -104,7 +109,7 @@ const channel = (extra = {}) => ({ type: 'webhook', url: 'http://172.28.0.10:874
 
 // Alice (admin) is in the config file; bob (manage), carol (viewer) and dave (admin) are website users.
 // userAddresses: false has the channel without the setting (the feature is off).
-async function setup({ userAddresses = true, channelExtra = {}, siteUrl = ORIGIN, lxmfExtra = {} } = {}) {
+async function setup({ userAddresses = true, channelExtra = {}, siteUrl = ORIGIN, lxmfExtra = {}, site = null } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lxmf-'));
   const hash = await hashPassword(ALICE, undefined, fakeHasher);
   const config = loadConfig(`users:\n  - name: Alice\n    password_hash: '${hash}'\n    role: admin\nnodes:\n  - address: a.test:1\n`);
@@ -126,7 +131,7 @@ async function setup({ userAddresses = true, channelExtra = {}, siteUrl = ORIGIN
     : null;
   const alerts = new Alerter({ channels: [channel({ userAddresses: undefined })].map((c) => (userAddresses ? channel(channelExtra) : c)), events: ['down', 'recovered', 'announce_queue'], lxmf, now, fetchFn: bridge.fetch, sleep: async () => {}, retryDelays: [0, 0], log: (m) => logs.push(m) });
   const monitor = new Monitor({ targets: config.targets, dataDir, probeFn: async () => ({ up: true, ms: 1 }) });
-  const server = createApp({ monitor, publicDir, login, alerts });
+  const server = createApp({ monitor, publicDir, login, alerts, ...(site ? { site: { ...NO_SITE, ...site } } : {}) });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return {
     port: server.address().port, clock, store, login, audit, dataDir, logs, bridge, codes, lxmf, alerts,
@@ -150,18 +155,35 @@ function request(port, { method = 'GET', path: p, headers = {}, body }) {
 const FORM = { 'Content-Type': 'application/x-www-form-urlencoded', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
 const postForm = (s, p, fields, cookie) => request(s.port, { method: 'POST', path: p, headers: { ...FORM, ...(cookie ? { Cookie: cookie } : {}) }, body: new URLSearchParams(fields).toString() });
-const api = (s, p, body, cookie) => request(s.port, { method: 'POST', path: p, headers: { ...JSON_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+// Who each session cookie belongs to, so that the changes that need the password (the step-up of adding, confirming
+// and removing an address) can be sent with it.
+const WHO = new Map();
+const STEP_UP_PATHS = new Set(['/api/account/lxmf/set', '/api/account/lxmf/confirm', '/api/account/lxmf/remove']);
+const rawApi = (s, p, body, cookie) => request(s.port, { method: 'POST', path: p, headers: { ...JSON_HEADERS, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+const api = (s, p, body, cookie) => {
+  const who = WHO.get(cookie);
+  const needs = STEP_UP_PATHS.has(p) && who !== undefined && body !== null && typeof body === 'object' && !('password' in body);
+  return rawApi(s, p, needs ? { ...body, password: PASSWORDS[who] } : body, cookie);
+};
+const lconfirm = (s, cookie, code, address = A1, extra = {}) => api(s, '/api/account/lxmf/confirm', { address, lxmfCode: code, ...extra }, cookie);
 const get = (s, p, cookie) => request(s.port, { path: p, headers: cookie ? { Cookie: cookie } : {} });
 const cookieOf = (r) => (r.headers['set-cookie']?.[0] ?? '').split(';')[0];
 const PASSWORDS = { alice: ALICE, bob: BOB, carol: CAROL };
 async function logIn(s, name = 'bob') {
   const r = await postForm(s, '/login', { name, password: PASSWORDS[name] });
   assert.equal(r.status, 200, r.text);
-  return cookieOf(r);
+  const cookie = cookieOf(r);
+  WHO.set(cookie, name);
+  return cookie;
 }
 const auditLines = async (s) => {
   await s.audit.flush();
   return (await fs.readFile(s.audit.file, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.event !== 'device-added');
+};
+// A new sign in an hour later: the budgets of the changes (5 an hour for a session, 10 for a user) are fresh.
+const later = async (s, name = 'bob') => {
+  s.clock.t += 61 * 60_000;
+  return logIn(s, name);
 };
 const lxmfView = async (s, cookie) => (await get(s, '/api/account', cookie)).json().lxmf;
 
@@ -170,9 +192,9 @@ async function confirmAddress(s, cookie, name = 'bob', address = A1) {
   s.codes.push('424242');
   const set = await api(s, '/api/account/lxmf/set', { address }, cookie);
   assert.equal(set.status, 200, set.text);
-  const done = await api(s, '/api/account/lxmf/confirm', { code: '424242' }, cookie);
+  const done = await lconfirm(s, cookie, '424242', address);
   assert.equal(done.status, 200, done.text);
-  assert.equal(s.store.lxmfOf(name).confirmed, true);
+  assert.equal(s.store.lxmfOf(name).addresses.find((e) => e.address === address).confirmed, true);
   await s.lxmf.idle();
   s.bridge.calls.length = 0;
 }
@@ -203,7 +225,7 @@ test('with the setting the account page is told the feature is there, with nothi
   const s = await setup();
   try {
     const cookie = await logIn(s);
-    assert.deepEqual(await lxmfView(s, cookie), { available: true, set: false, hidden: false, address: null, confirmed: false, canNodeAlerts: true, nodeAlerts: false, codeExpiresAt: null });
+    assert.deepEqual(await lxmfView(s, cookie), { available: true, set: false, hidden: false, count: 0, max: 3, addresses: [], confirmed: false, canNodeAlerts: true, nodeAlerts: false });
     // A viewer is not offered the node alerts.
     assert.equal((await lxmfView(s, await logIn(s, 'carol'))).canNodeAlerts, false);
     // Not signed in: nothing.
@@ -239,21 +261,21 @@ test('confirm flow: the address is normalised, a code goes to it through the bri
     const stamp = call.headers['X-Rettui-Timestamp'];
     assert.equal(call.headers['X-Rettui-Signature'], `sha256=${crypto.createHmac('sha256', HOOK_SECRET).update(`${stamp}.${call.raw}`).digest('hex')}`);
     // Kept, not confirmed.
-    assert.deepEqual(s.store.lxmfOf('bob'), { address: A1, confirmed: false, nodeAlerts: false });
-    assert.deepEqual(await lxmfView(s, cookie), { available: true, set: true, hidden: false, address: A1, confirmed: false, canNodeAlerts: true, nodeAlerts: false, codeExpiresAt: new Date(NOW + CODE_TTL_MS).toISOString() });
+    assert.deepEqual(s.store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }], nodeAlerts: false });
+    assert.deepEqual(await lxmfView(s, cookie), { available: true, set: true, hidden: false, count: 1, max: 3, addresses: [{ address: A1, confirmed: false, codeExpiresAt: new Date(NOW + CODE_TTL_MS).toISOString() }], confirmed: false, canNodeAlerts: true, nodeAlerts: false });
     // A wrong code does not confirm it, a right one does, once.
-    const wrong = await api(s, '/api/account/lxmf/confirm', { code: '111111' }, cookie);
+    const wrong = await lconfirm(s, cookie, '111111');
     assert.equal(wrong.status, 400);
-    assert.deepEqual(wrong.json(), { error: 'That code is not right. You have 4 tries left for this code.', field: 'code', reason: 'wrong' });
-    assert.equal(s.store.lxmfOf('bob').confirmed, false);
-    const right = await api(s, '/api/account/lxmf/confirm', { code: '073 519' }, cookie);
+    assert.deepEqual(wrong.json(), { error: 'That code is not right. Check the digits, or send a new code.', field: 'lxmfCode', reason: 'wrong' });
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, false);
+    const right = await lconfirm(s, cookie, '073 519');
     assert.equal(right.status, 200, right.text);
-    assert.deepEqual(s.store.lxmfOf('bob'), { address: A1, confirmed: true, nodeAlerts: false });
+    assert.deepEqual(s.store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: true }], nodeAlerts: false });
     assert.equal((await lxmfView(s, cookie)).confirmed, true);
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '073519' }, cookie)).status, 409, 'confirmed already');
+    assert.equal((await lconfirm(s, cookie, '073519')).status, 409, 'confirmed already');
     // The setting survives the server reading the store again.
     s.store.reload();
-    assert.equal(s.store.lxmfOf('bob').confirmed, true);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, true);
   } finally {
     await s.close();
   }
@@ -262,43 +284,59 @@ test('confirm flow: the address is normalised, a code goes to it through the bri
 test('confirm flow: bad input is refused before anything is sent (not an address, not text, the same address again, an unknown field)', async () => {
   const s = await setup();
   try {
-    const cookie = await logIn(s);
-    for (const address of ['', 'hello', A1.slice(1), `${A1}00`, 12, null, [A1], { a: A1 }, `<${A1}`]) {
+    let cookie = await logIn(s);
+    const bad = ['', 'hello', A1.slice(1), `${A1}00`, 12, null, [A1], { a: A1 }, `<${A1}`];
+    for (const [i, address] of bad.entries()) {
+      // Every change counts against 5 an hour for the session: a fresh sign in now and then.
+      if (i > 0 && i % 4 === 0) cookie = await later(s);
       const r = await api(s, '/api/account/lxmf/set', { address }, cookie);
       assert.equal(r.status, 400, JSON.stringify(address));
       assert.equal(r.json().field, 'address');
     }
+    cookie = await later(s);
     assert.equal((await api(s, '/api/account/lxmf/set', {}, cookie)).status, 400);
     assert.equal(s.bridge.calls.length, 0);
     assert.equal(s.store.lxmfOf('bob'), null);
-    // Nothing to confirm, resend or remove without an address.
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '123456' }, cookie)).status, 409);
-    assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 409);
-    assert.equal((await api(s, '/api/account/lxmf/remove', {}, cookie)).status, 409);
+    // Nothing to confirm, resend or remove without that address.
+    assert.equal((await lconfirm(s, cookie, '123456')).status, 409);
+    assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, cookie)).status, 409);
+    assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 400, 'no address named');
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A1 }, cookie)).status, 409);
     assert.equal((await api(s, '/api/account/lxmf/node-alerts', { enabled: true }, cookie)).status, 409);
     // A code that is not 6 digits is refused without counting as a try.
+    cookie = await later(s);
     s.codes.push('123456');
     assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
-    for (const code of ['', '12345', '1234567', 'abcdef', '12 34 5', 123456, null, 'x'.repeat(100)]) {
-      const r = await api(s, '/api/account/lxmf/confirm', { code }, cookie);
+    const codes = ['', '12345', '1234567', 'abcdef'];
+    for (const code of codes) {
+      const r = await lconfirm(s, cookie, code);
       assert.equal(r.status, 400, JSON.stringify(code));
-      assert.equal(r.json().field, 'code');
+      assert.equal(r.json().field, 'lxmfCode');
       assert.equal(r.json().reason, undefined, 'not a wrong try');
     }
-    const first = await api(s, '/api/account/lxmf/confirm', { code: '000000' }, cookie);
+    cookie = await later(s);
+    s.codes.push('123456');
+    await api(s, '/api/account/lxmf/resend', { address: A1 }, cookie);
+    for (const code of ['12 34 5', 123456, null, 'x'.repeat(100)]) {
+      const r = await lconfirm(s, cookie, code);
+      assert.equal(r.status, 400, JSON.stringify(code));
+      assert.equal(r.json().reason, undefined, 'not a wrong try');
+    }
+    const first = await lconfirm(s, cookie, '000000');
     assert.equal(first.json().reason, 'wrong');
-    assert.match(first.json().error, /4 tries left/);
+    assert.match(first.json().error, /not right\. Check the digits/, 'a wrong code is refused before the step-up and uses no try');
     // A confirmed address is not set again, the same one.
-    s.lxmf.checkCode('bob', '123456');
+    s.lxmf.checkCode('bob', A1, '123456');
     await s.store.confirmLxmf('bob', A1);
+    cookie = await later(s);
     assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 409);
-    assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 409);
+    assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, cookie)).status, 409);
   } finally {
     await s.close();
   }
 });
 
-test('confirm flow: 5 wrong tries end the code, and so does the time; a new code starts again', async () => {
+test('confirm flow: a wrong code is refused before the step-up and uses no try, and the code ends with the time; a new code starts again', async () => {
   const s = await setup();
   try {
     const cookie = await logIn(s);
@@ -306,34 +344,34 @@ test('confirm flow: 5 wrong tries end the code, and so does the time; a new code
     await api(s, '/api/account/lxmf/set', { address: A1 }, cookie);
     const reasons = [];
     for (let i = 0; i < CODE_TRIES; i++) {
-      const r = await api(s, '/api/account/lxmf/confirm', { code: '999999' }, cookie);
+      const r = await lconfirm(s, cookie, '999999');
       assert.equal(r.status, 400);
       reasons.push(r.json().reason);
+      assert.match(r.json().error, /^That code is not right\./);
+      assert.equal(r.json().left, undefined);
     }
-    assert.deepEqual(reasons, ['wrong', 'wrong', 'wrong', 'wrong', 'ended']);
-    // The right code is no good now.
-    const late = await api(s, '/api/account/lxmf/confirm', { code: '111222' }, cookie);
-    assert.equal(late.json().reason, 'none');
-    assert.match(late.json().error, /No code is waiting/);
-    assert.equal(s.store.lxmfOf('bob').confirmed, false);
-    assert.equal((await lxmfView(s, cookie)).codeExpiresAt, null);
+    assert.deepEqual(reasons, ['wrong', 'wrong', 'wrong', 'wrong', 'wrong']);
+    // The code is still there with all its tries: a guess before the step-up costs none (the route's own limit bounds the guesses).
+    assert.deepEqual(s.lxmf.peekCode('bob', A1, '111222'), { ok: true });
+    assert.equal(s.lxmf.peekCode('bob', A1, '000000').left, CODE_TRIES);
+    const again = await logIn(s);
     // A new code works.
     s.codes.push('333444');
-    assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, again)).status, 200);
     // After 15 minutes it has run out, however right.
     s.clock.t += CODE_TTL_MS;
-    await api(s, '/api/account/reauth', { password: BOB }, cookie);
-    const old = await api(s, '/api/account/lxmf/confirm', { code: '333444' }, cookie);
+    await api(s, '/api/account/reauth', { password: BOB }, again);
+    const old = await lconfirm(s, again, '333444');
     assert.equal(old.status, 400);
     assert.equal(old.json().reason, 'expired');
     assert.match(old.json().error, /run out/);
-    assert.equal(s.store.lxmfOf('bob').confirmed, false);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, false);
     // One minute before the end it still works.
     s.codes.push('555666');
-    assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, again)).status, 200);
     s.clock.t += CODE_TTL_MS - 60_000;
-    await api(s, '/api/account/reauth', { password: BOB }, cookie);
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '555666' }, cookie)).status, 200);
+    await api(s, '/api/account/reauth', { password: BOB }, again);
+    assert.equal((await lconfirm(s, again, '555666')).status, 200);
   } finally {
     await s.close();
   }
@@ -344,7 +382,7 @@ test('confirm flow: at most 3 codes an hour for a user, a small number for every
   try {
     const cookie = await logIn(s);
     const next = { n: 100_000 };
-    const resend = () => (s.codes.push(String(next.n++)), api(s, '/api/account/lxmf/resend', {}, cookie));
+    const resend = () => (s.codes.push(String(next.n++)), api(s, '/api/account/lxmf/resend', { address: A1 }, cookie));
     s.codes.push('100000');
     next.n = 100_001;
     assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
@@ -358,9 +396,9 @@ test('confirm flow: at most 3 codes an hour for a user, a small number for every
     assert.equal(fourth.json().retryAfter, Number(fourth.headers['retry-after']));
     assert.equal(s.bridge.named().length, 3, 'the fourth was not sent');
     // The first code stopped working when the second came; the third is the one that counts.
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '100000' }, cookie)).json().reason, 'wrong');
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '100001' }, cookie)).json().reason, 'wrong');
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '100002' }, cookie)).status, 200);
+    assert.equal((await lconfirm(s, cookie, '100000')).json().reason, 'wrong');
+    assert.equal((await lconfirm(s, cookie, '100001')).json().reason, 'wrong');
+    assert.equal((await lconfirm(s, cookie, '100002')).status, 200);
     // An hour later there is room again (for another address, to be rid of the confirmed one).
     s.clock.t += 60 * 60_000;
     const later = await logIn(s, 'bob');
@@ -387,10 +425,10 @@ test('confirm limits: the cap for everyone, an address that has had its hour\'s 
     const many = await api(s, '/api/account/lxmf/set', { address: dave }, bob);
     assert.equal(many.status, 429);
     assert.match(many.json().error, /That address has had the most messages allowed for now\./);
-    assert.equal(s.store.lxmfOf('bob').address, A1, 'nothing changed');
+    assert.equal(s.store.lxmfOf('bob').addresses[0].address, A1, 'nothing changed');
     // An address that already had messages only counts against its own limit (2 codes an hour at a budget of 6): one more is fine, the next is not.
-    assert.equal((await api(s, '/api/account/lxmf/resend', {}, bob)).status, 200);
-    const third = await api(s, '/api/account/lxmf/resend', {}, bob);
+    assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, bob)).status, 200);
+    const third = await api(s, '/api/account/lxmf/resend', { address: A1 }, bob);
     assert.equal(third.status, 429);
     assert.equal(s.bridge.to(A1).length, 2);
     // After the hour the room is back.
@@ -418,8 +456,8 @@ test('the code is never in the logs, the audit log, the store or an answer; it i
     const cookie = await logIn(s);
     s.codes.push('918273');
     await api(s, '/api/account/lxmf/set', { address: A1 }, cookie);
-    const wrong = await api(s, '/api/account/lxmf/confirm', { code: '918274' }, cookie);
-    const right = await api(s, '/api/account/lxmf/confirm', { code: '918273' }, cookie);
+    const wrong = await lconfirm(s, cookie, '918274');
+    const right = await lconfirm(s, cookie, '918273');
     for (const text of [wrong.text, right.text, s.logs.join('\n'), JSON.stringify(await auditLines(s)), (await fs.readFile(path.join(s.dataDir, DB_FILE))).toString('latin1')]) {
       assert.equal(text.includes('918273'), false);
       assert.equal(text.includes('918274'), false);
@@ -458,7 +496,8 @@ test('the bridge\'s refusals are shown plainly, and a refused address is not kep
     const held = await set(202);
     assert.equal(held.status, 429);
     assert.equal(s.bridge.calls.length, calls);
-    s.clock.t += 1801_000;
+    // (An hour on: the changes of an hour are limited, 5 for a session.)
+    s.clock.t += 61 * 60_000;
     cookie = await logIn(s);
     assert.match((await set(429)).json().error, /Try again later\./);
     const busy = await set(503);
@@ -467,6 +506,7 @@ test('the bridge\'s refusals are shown plainly, and a refused address is not kep
     assert.match(busy.json().error, /The alert bridge is busy with other messages\. Try again in 60 seconds\./);
     assert.equal(busy.headers['retry-after'], '60');
     assert.match((await set(503, { 'Retry-After': '120' })).json().error, /Try again in 2 minutes\./);
+    cookie = await logIn(s);
     const own = await set(422);
     assert.equal(own.status, 400);
     assert.equal(own.json().field, 'address');
@@ -484,7 +524,7 @@ test('the bridge\'s refusals are shown plainly, and a refused address is not kep
     assert.equal(s.store.lxmfOf('bob'), null);
     s.bridge.status = 202;
     s.bridge.headers = {};
-    for (let i = 0; i < CODES_PER_USER; i++) assert.equal((await api(s, '/api/account/lxmf/resend', {}, cookie)).status, 409, 'no address yet');
+    for (let i = 0; i < CODES_PER_USER; i++) assert.equal((await api(s, '/api/account/lxmf/resend', { address: A1 }, cookie)).status, 409, 'no address yet');
     s.clock.t += 0;
     // The bridge answers again: the set works.
     assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
@@ -500,13 +540,13 @@ test('a bridge that cannot be reached (or times out) is said so, and the address
     s.codes.push('121212');
     assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
     s.bridge.down = true;
-    const r = await api(s, '/api/account/lxmf/resend', {}, cookie);
+    const r = await api(s, '/api/account/lxmf/resend', { address: A1 }, cookie);
     assert.equal(r.status, 502);
     assert.equal(r.json().code, 'bridge-unreachable');
     assert.match(r.json().error, /could not be reached/);
     // The code that was sent before still stands.
     s.bridge.down = false;
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '121212' }, cookie)).status, 200);
+    assert.equal((await lconfirm(s, cookie, '121212')).status, 200);
     // The URL and the secret are in no answer and no log.
     for (const text of [r.text, s.logs.join('\n')]) {
       assert.equal(text.includes('172.28.0.10'), false);
@@ -524,7 +564,7 @@ test('every change needs the password from the last 15 minutes: after that the a
   try {
     const cookie = await logIn(s);
     s.clock.t += RECENT_AUTH_MS + 1;
-    for (const [p, body] of [['set', { address: A1 }], ['resend', {}], ['confirm', { code: '123456' }], ['remove', {}], ['node-alerts', { enabled: true }]]) {
+    for (const [p, body] of [['set', { address: A1 }], ['resend', { address: A1 }], ['confirm', { address: A1, lxmfCode: '123456' }], ['remove', { address: A1 }], ['node-alerts', { enabled: true }]]) {
       const r = await api(s, `/api/account/lxmf/${p}`, body, cookie);
       assert.equal(r.status, 403, p);
       assert.deepEqual(r.json(), { error: 'Enter your password again to do this.', reauth: true }, p);
@@ -536,8 +576,8 @@ test('every change needs the password from the last 15 minutes: after that the a
     // A wrong password does not make it recent.
     s.clock.t += RECENT_AUTH_MS + 1;
     assert.equal((await api(s, '/api/account/reauth', { password: 'not it' }, cookie)).status, 400);
-    assert.equal((await api(s, '/api/account/lxmf/remove', {}, cookie)).status, 403);
-    assert.deepEqual(s.store.lxmfOf('bob'), { address: A1, confirmed: false, nodeAlerts: false });
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A1 }, cookie)).status, 403);
+    assert.deepEqual(s.store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }], nodeAlerts: false });
     // The address is only read with a session, and what it asks is the same as for the other changes (the other site check).
     assert.equal((await request(s.port, { method: 'POST', path: '/api/account/lxmf/remove', headers: { ...JSON_HEADERS, 'Sec-Fetch-Site': 'cross-site', Cookie: cookie }, body: '{}' })).status, 403);
     assert.equal((await request(s.port, { method: 'POST', path: '/api/account/lxmf/remove', headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', Cookie: cookie }, body: '{}' })).status, 403);
@@ -559,6 +599,7 @@ async function passkeyOnlyBob(s) {
   const { token, options: o } = begun.json();
   const done = await postForm(s, '/login/passkey/finish', { token, credential: JSON.stringify(a.get({ challenge: o.challenge, origin: ORIGIN, rpId: o.rpId, userHandle: options.user.id })) });
   assert.equal(done.status, 200, done.text);
+  WHO.set(cookieOf(done), 'bob');
   return { a, password: cookie, passkey: cookieOf(done), handle: options.user.id };
 }
 
@@ -566,25 +607,29 @@ test('a session made with a passkey alone gives the password first: the address 
   const s = await setup();
   try {
     await confirmAddress(s, await logIn(s, 'bob'), 'bob', A1);
-    const { passkey } = await passkeyOnlyBob(s);
+    const { passkey, a } = await passkeyOnlyBob(s);
     const account = (await get(s, '/api/account', passkey)).json();
     assert.equal(account.signedInWith, 'passkey');
     assert.equal(account.recentSignIn, false);
-    assert.deepEqual(account.lxmf, { available: true, set: true, hidden: true, address: null, confirmed: true, canNodeAlerts: true, nodeAlerts: false, codeExpiresAt: null });
+    assert.deepEqual(account.lxmf, { available: true, set: true, hidden: true, count: 1, max: 3, addresses: [], confirmed: true, canNodeAlerts: true, nodeAlerts: false });
     assert.equal(JSON.stringify(account).includes(A1), false);
     s.bridge.calls.length = 0;
-    for (const [p, body] of [['set', { address: A2 }], ['resend', {}], ['confirm', { code: '123456' }], ['remove', {}], ['node-alerts', { enabled: true }]]) {
+    for (const [p, body] of [['set', { address: A2 }], ['resend', { address: A1 }], ['confirm', { address: A1, lxmfCode: '123456' }], ['remove', { address: A1 }], ['node-alerts', { enabled: true }]]) {
       const r = await api(s, `/api/account/lxmf/${p}`, body, passkey);
       assert.equal(r.status, 403, p);
       assert.equal(r.json().reauth, true, p);
     }
     assert.equal(s.bridge.calls.length, 0);
-    assert.equal(s.store.lxmfOf('bob').address, A1);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].address, A1);
     // With the password given, it is shown and a change goes through.
     assert.equal((await api(s, '/api/account/reauth', { password: BOB }, passkey)).status, 200);
-    assert.equal((await get(s, '/api/account', passkey)).json().lxmf.address, A1);
+    assert.deepEqual((await get(s, '/api/account', passkey)).json().lxmf.addresses, [{ address: A1, confirmed: true, codeExpiresAt: null }]);
+    // Bob has a passkey, so the step-up needs it too (the password alone is not enough).
     s.codes.push('909090');
-    assert.equal((await api(s, '/api/account/lxmf/set', { address: A2 }, passkey)).status, 200);
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A2 }, passkey)).json().secondFactor, true);
+    const c = await api(s, '/api/account/passkeys/challenge', {}, passkey);
+    const proof = a.get({ challenge: c.json().options.challenge, origin: ORIGIN, rpId: c.json().options.rpId });
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A2, passkey: proof }, passkey)).status, 200);
   } finally {
     await s.close();
   }
@@ -609,18 +654,18 @@ test('only a confirmed address gets alerts: none before the code, none after it 
     await s.lxmf.idle();
     assert.deepEqual(s.bridge.to(A1).map((c) => c.body.event), ['lxmf_check']);
     // Confirmed: the alerts about the account arrive.
-    await api(s, '/api/account/lxmf/confirm', { code: '123123' }, cookie);
+    await lconfirm(s, cookie, '123123');
     s.bridge.calls.length = 0;
     s.lxmf.notifyUser('bob', 'password_changed', {});
     await s.lxmf.idle();
     assert.deepEqual(s.bridge.to(A1).map((c) => c.body.event), ['password_changed']);
-    // Removed: nothing more, and only the old address was told it was removed.
+    // Removed: nothing more, and only the removed address was told (it was the user's only one).
     s.bridge.calls.length = 0;
-    assert.equal((await api(s, '/api/account/lxmf/remove', {}, cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A1 }, cookie)).status, 200);
     s.lxmf.notifyUser('bob', 'password_changed', {});
     await s.lxmf.idle();
     assert.deepEqual(s.bridge.named().map((c) => [c.body.to, c.body.event]), [[A1, 'lxmf_address_changed']]);
-    assert.match(s.bridge.named()[0].body.message, /was removed at/);
+    assert.match(s.bridge.named()[0].body.message, /starting 01234567 was removed from the alerts of your account bob at/);
     assert.equal(s.store.lxmfOf('bob'), null);
     // Someone else's address is never told about bob's account.
     s.lxmf.notifyUser('carol', 'password_changed', {});
@@ -631,29 +676,89 @@ test('only a confirmed address gets alerts: none before the code, none after it 
   }
 });
 
-test('changing the address: the new one is sent a code and gets nothing else until confirmed, the old one is told it was replaced', async () => {
+test('up to 3 addresses: each is added and confirmed on its own with its own code, a 4th is refused, and every confirmed one gets the alerts', async () => {
   const s = await setup();
   try {
     const cookie = await logIn(s);
     await confirmAddress(s, cookie, 'bob', A1);
+    // A second address: its own code goes to it, and the first (confirmed) one is told that it was added.
     s.codes.push('565656');
-    assert.equal((await api(s, '/api/account/lxmf/set', { address: A2 }, cookie)).status, 200);
+    const second = await api(s, '/api/account/lxmf/set', { address: A2 }, cookie);
+    assert.equal(second.status, 200, second.text);
     await s.lxmf.idle();
-    assert.deepEqual(s.store.lxmfOf('bob'), { address: A2, confirmed: false, nodeAlerts: false });
+    assert.deepEqual(s.store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: true }, { address: A2, confirmed: false }], nodeAlerts: false });
     assert.deepEqual(s.bridge.named().map((c) => [c.body.to, c.body.event]).sort(), [[A1, 'lxmf_address_changed'], [A2, 'lxmf_check']]);
-    assert.match(s.bridge.to(A1)[0].body.message, /was changed at 2027-01-15 08:00 UTC\. This address gets no more alerts\./);
+    assert.match(s.bridge.to(A1)[0].body.message, /The LXMF address starting fedcba98 was added to the alerts of your account bob at 2027-01-15 08:00 UTC\. It gets alerts once the code sent to it is typed in\./);
+    assert.equal(s.bridge.to(A1)[0].body.message.includes(A2), false, 'only the start of the address');
+    // Until it is confirmed it gets no alerts; the first address does.
     s.bridge.calls.length = 0;
     s.lxmf.notifyUser('bob', 'password_changed', {});
     await s.lxmf.idle();
-    assert.equal(s.bridge.calls.length, 0, 'the new address is not confirmed, the old one is not the address any more');
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '565656' }, cookie)).status, 200);
+    assert.deepEqual(s.bridge.named().map((c) => c.body.to), [A1]);
+    // Each address has its own code: the code of one does not confirm another, and a wrong try is that code's own.
+    const view = await lxmfView(s, cookie);
+    assert.deepEqual(view.addresses.map((a) => [a.address, a.confirmed, a.codeExpiresAt !== null]), [[A1, true, false], [A2, false, true]]);
+    s.codes.push('787878');
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A3 }, cookie)).status, 200);
+    const third = await logIn(s);
+    assert.equal((await lconfirm(s, third, '565656', A3)).json().reason, 'wrong', 'the code of A2 is not the code of A3');
+    assert.equal((await lconfirm(s, third, '565656', A2)).status, 200);
+    assert.equal((await lconfirm(s, third, '787878', A3)).status, 200);
+    assert.deepEqual(s.store.lxmfOf('bob').addresses.map((e) => e.confirmed), [true, true, true]);
+    // The 4th is refused with a plain message, before anything is sent or counted.
+    s.bridge.calls.length = 0;
+    const codesBefore = s.lxmf.codesPerUser.recent('bob').length;
+    const fourth = await api(s, '/api/account/lxmf/set', { address: '77777777777777777777777777777777' }, third);
+    assert.equal(fourth.status, 409);
+    assert.deepEqual(fourth.json(), { error: 'You have 3 LXMF addresses, the most allowed. Remove one first.', field: 'address' });
+    assert.equal(s.bridge.calls.length, 0);
+    assert.equal(s.lxmf.codesPerUser.recent('bob').length, codesBefore);
+    assert.equal(s.store.lxmfOf('bob').addresses.length, 3);
+    // Every confirmed address gets an account alert, once each.
     s.lxmf.notifyUser('bob', 'password_changed', {});
     await s.lxmf.idle();
-    assert.deepEqual(s.bridge.named().map((c) => c.body.to), [A2]);
-    // The code for the old address is no good for a new one: a changed address starts again.
-    s.codes.push('787878');
-    await api(s, '/api/account/lxmf/set', { address: A3 }, cookie);
-    assert.equal((await api(s, '/api/account/lxmf/confirm', { code: '565656' }, cookie)).status, 400);
+    assert.deepEqual(s.bridge.named().map((c) => [c.body.to, c.body.event]).sort(), [[A1, 'password_changed'], [A2, 'password_changed'], [A3, 'password_changed']].sort());
+    // Removing one tells the others and the removed one; it gets no more alerts, and the room is back for another.
+    s.bridge.calls.length = 0;
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A2 }, third)).status, 200);
+    await s.lxmf.idle();
+    assert.deepEqual(s.bridge.named().map((c) => [c.body.to, c.body.event]).sort(), [[A1, 'lxmf_address_changed'], [A2, 'lxmf_address_changed'], [A3, 'lxmf_address_changed']].sort());
+    for (const c of s.bridge.named()) assert.match(c.body.message, /starting fedcba98 was removed from the alerts of your account bob/);
+    s.bridge.calls.length = 0;
+    s.lxmf.notifyUser('bob', 'password_changed', {});
+    await s.lxmf.idle();
+    assert.deepEqual(s.bridge.named().map((c) => c.body.to).sort(), [A1, A3].sort());
+    // Removing an address that was never confirmed tells nobody (it never got alerts), and a stranger's address is no address of ours.
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A2 }, third)).status, 409);
+    // Audit lines hold the 8 digit start of the address, how it was confirmed, and never the address.
+    const lines = await auditLines(s);
+    assert.ok(lines.filter((l) => l.event.startsWith('lxmf-')).length >= 6);
+    assert.equal(JSON.stringify(lines).includes(A2), false);
+    assert.equal(lines.find((l) => l.event === 'lxmf-address-removed').lxmf, 'fedcba98');
+  } finally {
+    await s.close();
+  }
+});
+
+test('an address that waits for its code is told neither of its own adding nor of others', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s);
+    s.codes.push('111000', '222000');
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A2 }, cookie)).status, 200);
+    await s.lxmf.idle();
+    assert.deepEqual(s.bridge.named().map((c) => c.body.event), ['lxmf_check', 'lxmf_check'], 'no confirmed address, so nobody to tell');
+    // Removing one that was never confirmed tells nobody.
+    s.bridge.calls.length = 0;
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A2 }, cookie)).status, 200);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.calls.length, 0);
+    // Adding the same address again while it waits sends a new code and does not add another.
+    s.codes.push('333000');
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
+    assert.equal(s.store.lxmfOf('bob').addresses.length, 1);
+    assert.equal((await lconfirm(s, cookie, '333000')).status, 200);
   } finally {
     await s.close();
   }
@@ -668,7 +773,7 @@ async function addPasskey(s, cookie, password, stepUp = {}, name) {
   const credential = a.create({ challenge: options.challenge, origin: ORIGIN, rpId: options.rp.id, fmt: 'none' });
   const finish = await api(s, '/api/account/passkeys/finish', name === undefined ? { credential } : { credential, name }, cookie);
   assert.equal(finish.status, 200, finish.text);
-  return { a, ref: finish.json().passkey.id };
+  return { a, ref: finish.json().passkey.id, recoveryCodes: finish.json().recoveryCodes };
 }
 
 test('the account alerts: a passkey added and removed, the password changed, the app code off, new recovery codes, each with what and when', async () => {
@@ -718,7 +823,7 @@ test('the account alerts: a passkey added and removed, the password changed, the
     assert.equal(m.event, 'password_changed');
     assert.match(m.message, /The password of your account bob was changed at .* 1 passkey was removed with it\./);
     // The address stays when the password changes: that is when the alert matters most.
-    assert.equal(s.store.lxmfOf('bob').address, A1);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].address, A1);
     assert.equal(s.store.passkeys('bob').length, 1);
     // The last passkey removed: two-step sign-in goes off with it, and the same message says so.
     const last = s.store.passkeys('bob')[0].ref;
@@ -726,7 +831,7 @@ test('the account alerts: a passkey added and removed, the password changed, the
     [m] = await sent();
     assert.equal(m.event, 'passkey_removed');
     assert.match(m.message, /A passkey named "Work laptop" was removed from your account bob at .* It was your last second step, so two-step sign-in is now off\./);
-    assert.equal(s.store.lxmfOf('bob').address, A1, 'kept when a passkey is removed too');
+    assert.equal(s.store.lxmfOf('bob').addresses[0].address, A1, 'kept when a passkey is removed too');
     // Nothing sent holds an id, an address or a secret.
     assert.equal(s.bridge.calls.length, 0);
   } finally {
@@ -766,12 +871,12 @@ test('an admin\'s reset of a password or of two-step sign-in tells the user, wit
     assert.equal(n.body.event, 'second_factor_reset');
     assert.match(n.body.message, /The admin Alice reset the two-step sign-in of your account carol at 2027-01-15 08:00 UTC\./);
     // The addresses are kept.
-    assert.equal(s.store.lxmfOf('bob').address, A1);
-    assert.equal(s.store.lxmfOf('carol').address, A2);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].address, A1);
+    assert.equal(s.store.lxmfOf('carol').addresses[0].address, A2);
     // A user without an address: the reset sends nothing, and still works.
     s.bridge.calls.length = 0;
     await s.store.setPassword('bob', (await hashPassword(BOB, undefined, fakeHasher, s.store.currentPepper())));
-    await s.store.clearLxmf('bob');
+    await s.store.clearLxmf('bob', A1);
     const again = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, password: ALICE }, alice);
     assert.equal(again.status, 200, again.text);
     await s.lxmf.idle();
@@ -1069,11 +1174,11 @@ test('a code asked for an address another user has confirmed is answered as if s
     assert.equal(s.logs.length, logsBefore, 'nothing was logged');
     assert.equal(s.lxmf.perAddress.recent(A1).length, 2, 'the owner\'s code and the asker\'s count, as for a real send');
     // The asker's page and limits look as for any code.
-    assert.equal((await lxmfView(s, carol)).pending !== null, true);
+    assert.notEqual((await lxmfView(s, carol)).addresses[0].codeExpiresAt, null);
     assert.equal(s.lxmf.codesPerUser.recent('carol').length, 1);
     // The real owner's address is still theirs, confirmed.
-    assert.equal(s.store.lxmfOf('bob').confirmed, true);
-    assert.equal(s.store.lxmfOf('carol').confirmed, false);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, true);
+    assert.equal(s.store.lxmfOf('carol').addresses[0].confirmed, false);
   } finally {
     await s.close();
   }
@@ -1184,18 +1289,18 @@ test('overlapping sendCode calls: one that fails does not put back an old code o
     assert.equal((await third).ok, true);
     gates[1](503);
     assert.equal((await second).ok, false);
-    assert.deepEqual(s.lxmf.checkCode('bob', '333333'), { ok: true, address: A2 });
+    assert.deepEqual(s.lxmf.checkCode('bob', A2, '333333'), { ok: true, address: A2 });
     // And when it is still its own entry, the old code comes back (an hour on: the user's 3 codes are free again).
     s.clock.t += 60 * 60_000;
     s.codes.push('444444', '555555');
     const fine = s.lxmf.sendCode('bob', A1);
     gates[3](202);
     await fine;
-    const bad = s.lxmf.sendCode('bob', A2);
+    const bad = s.lxmf.sendCode('bob', A1);
     await new Promise((r) => setImmediate(r));
     gates[4](403);
     assert.equal((await bad).ok, false);
-    assert.deepEqual(s.lxmf.checkCode('bob', '444444'), { ok: true, address: A1 });
+    assert.deepEqual(s.lxmf.checkCode('bob', A1, '444444'), { ok: true, address: A1 });
   } finally {
     await s.close();
   }
@@ -1226,7 +1331,7 @@ test('at start the LXMF rows with no user, or of a user made again, are deleted;
   assert.equal(before, 6);
   sql.close();
   store = await open();
-  assert.equal(store.lxmfOf('bob').address, A1, 'a live row stays');
+  assert.equal(store.lxmfOf('bob').addresses[0].address, A1, 'a live row stays');
   assert.equal(store.lxmfOf('carol'), null, 'a row of an older user of the same name is not hers');
   store.close();
   const after = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
@@ -1249,26 +1354,26 @@ test('audit: setting, confirming and removing an address are lines with the user
     const cookie = await logIn(s, 'bob');
     s.codes.push('314159');
     await api(s, '/api/account/lxmf/set', { address: A1 }, cookie);
-    await api(s, '/api/account/lxmf/confirm', { code: '314159' }, cookie);
+    await lconfirm(s, cookie, '314159');
     await api(s, '/api/account/lxmf/node-alerts', { enabled: true }, cookie);
     s.codes.push('271828');
     await api(s, '/api/account/lxmf/set', { address: A2 }, cookie);
-    await api(s, '/api/account/lxmf/resend', {}, cookie);
-    await api(s, '/api/account/lxmf/remove', {}, cookie);
+    await api(s, '/api/account/lxmf/resend', { address: A2 }, cookie);
+    await api(s, '/api/account/lxmf/remove', { address: A2 }, cookie);
     const lines = (await auditLines(s)).filter((l) => l.event.startsWith('lxmf-'));
     assert.deepEqual(lines.map((l) => ({ ...l, time: undefined })), [
-      { event: 'lxmf-address-set', user: 'bob', lxmf: '01234567' },
-      { event: 'lxmf-address-confirmed', user: 'bob', lxmf: '01234567' },
+      { event: 'lxmf-address-set', user: 'bob', lxmf: '01234567', with: 'password' },
+      { event: 'lxmf-address-confirmed', user: 'bob', lxmf: '01234567', with: 'password', address: '127.0.0.1' },
       { event: 'lxmf-node-alerts', user: 'bob', enabled: true, lxmf: '01234567' },
-      { event: 'lxmf-address-set', user: 'bob', lxmf: 'fedcba98' },
+      { event: 'lxmf-address-set', user: 'bob', lxmf: 'fedcba98', with: 'password' },
       { event: 'lxmf-code-sent', user: 'bob', lxmf: 'fedcba98' },
-      { event: 'lxmf-address-removed', user: 'bob', lxmf: 'fedcba98' },
+      { event: 'lxmf-address-removed', user: 'bob', lxmf: 'fedcba98', with: 'password', address: '127.0.0.1' },
     ].map((l) => ({ ...l, time: undefined })));
     const text = await fs.readFile(s.audit.file, 'utf8');
     for (const secret of [A1, A2, '314159', '271828']) assert.equal(text.includes(secret), false, secret);
     // A refused attempt is no line: nothing was set.
     s.bridge.status = 403;
-    await api(s, '/api/account/lxmf/set', { address: A3 }, cookie);
+    await api(s, '/api/account/lxmf/set', { address: A3 }, await logIn(s, 'bob'));
     assert.equal((await auditLines(s)).filter((l) => l.event.startsWith('lxmf-')).length, 6);
   } finally {
     await s.close();
@@ -1299,34 +1404,35 @@ test('storage: the address, whether it is confirmed and the node alerts are kept
   assert.equal(store.lxmfOf('bob'), null);
   assert.equal(store.lxmfOf('nobody'), null);
   await store.setLxmf('bob', A1);
-  assert.deepEqual(store.lxmfOf('bob'), { address: A1, confirmed: false, nodeAlerts: false });
+  assert.deepEqual(store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }], nodeAlerts: false });
   // The config user has no record of their own until something is kept for them; this makes it.
   assert.equal(store.factorRecord('alice'), null);
   await store.setLxmf('Alice', A2);
   await store.confirmLxmf('alice', A2);
   await store.setLxmfNodeAlerts('alice', true);
-  assert.deepEqual(store.lxmfOf('alice'), { address: A2, confirmed: true, nodeAlerts: true });
+  assert.deepEqual(store.lxmfOf('alice'), { addresses: [{ address: A2, confirmed: true }], nodeAlerts: true });
   // Another user's, and a user that is not there: refused, and nothing is made.
   await assert.rejects(() => store.setLxmf('nobody', A3), { code: 'unknown' });
   await assert.rejects(() => store.confirmLxmf('bob', A2), { code: 'unknown' }, 'not the address that was set');
   await assert.rejects(() => store.setLxmfNodeAlerts('bob', true), { code: 'unknown' }, 'not confirmed');
-  await assert.rejects(() => store.clearLxmf('carol'), { code: 'unknown' });
+  await assert.rejects(() => store.clearLxmf('carol', A1), { code: 'unknown' });
+  await assert.rejects(() => store.clearLxmf('bob', A2), { code: 'unknown' }, 'not an address of bob');
   store.close();
   // On disk: one meta row each, with the address and the state, and no other row or column.
   const rows = sqlRows(dataDir, "SELECT key, value FROM meta WHERE key LIKE 'lxmf|%' ORDER BY key");
   assert.deepEqual(rows.map((r) => r.key), ['lxmf|config|alice', 'lxmf|store|bob']);
-  assert.deepEqual(JSON.parse(rows[1].value), { address: A1, confirmed: false, nodeAlerts: false, created: new Date(NOW).toISOString() });
+  assert.deepEqual(JSON.parse(rows[1].value), { created: new Date(NOW).toISOString(), nodeAlerts: false, addresses: [{ address: A1, confirmed: false }] });
   // A new start reads them again.
   store = await openStore(dataDir, { configUsers: config.users });
-  assert.deepEqual(store.lxmfOf('bob'), { address: A1, confirmed: false, nodeAlerts: false });
-  assert.deepEqual(store.lxmfOf('alice'), { address: A2, confirmed: true, nodeAlerts: true });
+  assert.deepEqual(store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }], nodeAlerts: false });
+  assert.deepEqual(store.lxmfOf('alice'), { addresses: [{ address: A2, confirmed: true }], nodeAlerts: true });
   assert.deepEqual(store.lxmfNodeRecipients(), [{ name: 'Alice', role: 'admin', address: A2 }]);
   // Logging in (a write of the record) leaves it alone.
   await store.recordLogin('bob');
   await store.recordLogin('alice');
-  assert.deepEqual(store.lxmfOf('bob').address, A1);
+  assert.deepEqual(store.lxmfOf('bob').addresses[0].address, A1);
   // Taking it away.
-  await store.clearLxmf('bob');
+  await store.clearLxmf('bob', A1);
   assert.equal(store.lxmfOf('bob'), null);
   assert.deepEqual(sqlRows(dataDir, "SELECT key FROM meta WHERE key LIKE 'lxmf|%'").map((r) => r.key), ['lxmf|config|alice']);
   store.close();
@@ -1374,10 +1480,25 @@ test('storage: a row left behind by a release that deleted the user is not given
   assert.equal(again.lxmfOf('bob'), null, 'a new bob is not the old bob');
   // The new one sets their own; the old row is overwritten.
   await again.setLxmf('bob', A2);
-  assert.equal(JSON.parse(sqlRows(dataDir, "SELECT value FROM meta WHERE key = 'lxmf|store|bob'")[0].value).address, A2);
+  assert.equal(JSON.parse(sqlRows(dataDir, "SELECT value FROM meta WHERE key = 'lxmf|store|bob'")[0].value).addresses[0].address, A2);
   again.close();
   // Damaged rows: not JSON, the wrong shape, an address that is not hex, too long. The store still opens, and the user has none.
-  for (const value of ['{not json', '[]', 'null', JSON.stringify({ address: 'zz', confirmed: true, nodeAlerts: false, created: null }), JSON.stringify({ address: A1, confirmed: 'yes', nodeAlerts: false, created: null }), JSON.stringify({ address: A1, confirmed: true, nodeAlerts: false, created: 5 }), `{"address":"${A1}","confirmed":true,"nodeAlerts":false,"created":null,"x":"${'y'.repeat(300)}"}`]) {
+  const list = (addresses, extra = {}) => JSON.stringify({ created: null, nodeAlerts: false, addresses, ...extra });
+  const entry = (address, confirmed = true) => ({ address, confirmed });
+  const more = ['0'.repeat(32), '1'.repeat(32)];
+  for (const value of [
+    '{not json', '[]', 'null',
+    JSON.stringify({ address: 'zz', confirmed: true, nodeAlerts: false, created: null }),
+    JSON.stringify({ address: A1, confirmed: 'yes', nodeAlerts: false, created: null }),
+    JSON.stringify({ address: A1, confirmed: true, nodeAlerts: false, created: 5 }),
+    `{"address":"${A1}","confirmed":true,"nodeAlerts":false,"created":null,"x":"${'y'.repeat(300)}"}`,
+    // The list shape, damaged: empty, not a list, 4 entries, the same address twice, a bad address or flag, node alerts with
+    // nothing confirmed, an entry that is not an object, a created that is not text, and a row longer than 3 entries need.
+    list([]), list('x'), list({}), list([entry(A1), entry(A2), entry(A3), entry(more[0])]), list([entry(A1), entry(A1, false)]),
+    list([entry('zz')]), list([entry(A1.toUpperCase())]), list([{ address: A1, confirmed: 1 }]), list([null]), list([A1]),
+    list([entry(A1, false)], { nodeAlerts: true }), list([entry(A1)], { nodeAlerts: 'yes' }), list([entry(A1)], { created: 5 }),
+    list([entry(A1)], { x: 'y'.repeat(300) }),
+  ]) {
     const db = new DatabaseSync(path.join(dataDir, DB_FILE));
     db.prepare("UPDATE meta SET value = ? WHERE key = 'lxmf|store|bob'").run(value);
     db.close();
@@ -1412,7 +1533,7 @@ test('storage: no schema change, so a release without this feature still reads t
   db.close();
   // The store opens with 40 junk rows beside the real one.
   const reopened = await openStore(dataDir);
-  assert.equal(reopened.lxmfOf('bob').address, A1);
+  assert.equal(reopened.lxmfOf('bob').addresses[0].address, A1);
   reopened.close();
 });
 
@@ -1421,18 +1542,102 @@ test('storage: a store without a database keeps the address in memory, and a rec
   await store.createUser({ name: 'bob', role: 'viewer', passwordHash: await hashPassword(BOB, undefined, fakeHasher) });
   await store.setLxmf('bob', A1);
   await store.confirmLxmf('bob', A1);
-  assert.equal(store.lxmfOf('bob').confirmed, true);
-  await store.clearLxmf('bob');
+  assert.equal(store.lxmfOf('bob').addresses[0].confirmed, true);
+  await store.clearLxmf('bob', A1);
   assert.equal(store.lxmfOf('bob'), null);
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lxmf-store-'));
   const real = await openStore(dataDir);
   await real.createUser({ name: 'bob', role: 'viewer', passwordHash: await hashFor(real) });
   for (const bad of ['', 'zz', A1.toUpperCase(), `${A1}0`, null, 5]) {
-    await assert.rejects(() => real.setLxmf('bob', bad), /lxmf must be a 32 digit lower-case hex address/, String(bad));
+    await assert.rejects(() => real.setLxmf('bob', bad), /lxmf must be a list of 1 to 3 different 32 digit lower-case hex addresses/, String(bad));
   }
   assert.equal(real.lxmfOf('bob'), null);
   real.close();
 });
+
+test('storage: up to 3 addresses in one row, the 4th refused, each confirmed on its own, and node alerts follow the confirmed ones', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lxmf-store-'));
+  let store = await openStore(dataDir);
+  await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashFor(store) });
+  const A4 = '77777777777777777777777777777777';
+  await store.setLxmf('bob', A1);
+  await store.setLxmf('bob', A2);
+  await store.setLxmf('bob', A3);
+  await store.setLxmf('bob', A2);
+  assert.equal(store.lxmfOf('bob').addresses.length, 3, 'one the user has is not added twice');
+  await assert.rejects(() => store.setLxmf('bob', A4), { code: 'limit' });
+  assert.equal(store.lxmfOf('bob').addresses.length, 3);
+  await assert.rejects(() => store.setLxmfNodeAlerts('bob', true), { code: 'unknown' }, 'none is confirmed');
+  await store.confirmLxmf('bob', A2);
+  await assert.rejects(() => store.confirmLxmf('bob', A4), { code: 'unknown' });
+  await store.confirmLxmf('bob', A3);
+  await store.setLxmfNodeAlerts('bob', true);
+  assert.deepEqual(store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }, { address: A2, confirmed: true }, { address: A3, confirmed: true }], nodeAlerts: true });
+  assert.deepEqual(store.lxmfNodeRecipients().map((r) => [r.name, r.address]), [['bob', A2], ['bob', A3]], 'one for each confirmed address');
+  assert.equal(store.lxmfConfirmedElsewhere(A2, 'carol'), true);
+  assert.equal(store.lxmfConfirmedElsewhere(A2, 'bob'), false);
+  assert.equal(store.lxmfConfirmedElsewhere(A1, 'carol'), false, 'not confirmed');
+  // One row, of the longest length a user can make, which is still read.
+  const rows = sqlRows(dataDir, "SELECT key, value FROM meta WHERE key LIKE 'lxmf|%'");
+  assert.deepEqual(rows.map((r) => r.key), ['lxmf|store|bob']);
+  assert.ok(rows[0].value.length <= 274);
+  store.close();
+  store = await openStore(dataDir);
+  assert.equal(store.lxmfOf('bob').addresses.length, 3);
+  assert.equal(store.lxmfOf('bob').nodeAlerts, true);
+  // Taking away the unconfirmed one keeps the rest; taking the confirmed ones away turns the node alerts off.
+  await store.clearLxmf('bob', A1);
+  assert.equal(store.lxmfOf('bob').nodeAlerts, true);
+  await store.clearLxmf('bob', A2);
+  assert.equal(store.lxmfOf('bob').nodeAlerts, true, 'one confirmed is left');
+  await store.setLxmf('bob', A1);
+  await store.clearLxmf('bob', A3);
+  assert.deepEqual(store.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: false }], nodeAlerts: false });
+  await store.clearLxmf('bob', A1);
+  assert.equal(store.lxmfOf('bob'), null);
+  assert.deepEqual(sqlRows(dataDir, "SELECT key FROM meta WHERE key LIKE 'lxmf|%'"), []);
+  store.close();
+});
+
+test('storage: the row of the first version (one address) is read as a list of one, and is written in the list shape when it changes', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lxmf-store-'));
+  const store = await openStore(dataDir);
+  await store.createUser({ name: 'bob', role: 'manage', passwordHash: await hashFor(store) });
+  await store.createUser({ name: 'carol', role: 'viewer', passwordHash: await hashFor(store, CAROL) });
+  await store.createUser({ name: 'dave', role: 'manage', passwordHash: await hashFor(store) });
+  store.close();
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE));
+  const created = (n) => sql.prepare('SELECT created FROM users WHERE name_key = ?').get(n).created;
+  const old = (n, confirmed, nodeAlerts, address = A1) => sql.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(`lxmf|store|${n}`, JSON.stringify({ address, confirmed, nodeAlerts, created: created(n) }));
+  old('bob', true, true);
+  old('carol', false, false, A2);
+  old('dave', false, true, A3);
+  sql.close();
+  const again = await openStore(dataDir);
+  assert.deepEqual(again.lxmfOf('bob'), { addresses: [{ address: A1, confirmed: true }], nodeAlerts: true });
+  assert.deepEqual(again.lxmfOf('carol'), { addresses: [{ address: A2, confirmed: false }], nodeAlerts: false });
+  assert.equal(again.lxmfOf('dave'), null, 'node alerts without a confirmed address was never made, and is no address');
+  assert.deepEqual(again.lxmfNodeRecipients().map((r) => r.address), [A1]);
+  // A change brings the list shape, with the old address kept.
+  await again.setLxmf('bob', A2);
+  const row = JSON.parse(sqlRows(dataDir, "SELECT value FROM meta WHERE key = 'lxmf|store|bob'")[0].value);
+  assert.deepEqual(row.addresses, [{ address: A1, confirmed: true }, { address: A2, confirmed: false }]);
+  assert.equal(row.address, undefined);
+  assert.equal(row.nodeAlerts, true);
+  again.close();
+  // The longest row 3 addresses need is read, and one longer is not.
+  const sql2 = new DatabaseSync(path.join(dataDir, DB_FILE));
+  const longest = JSON.stringify({ created: created2(sql2, 'carol'), nodeAlerts: false, addresses: [A1, A2, A3].map((a) => ({ address: a, confirmed: false })) });
+  assert.ok(longest.length <= 274);
+  sql2.prepare('UPDATE meta SET value = ? WHERE key = ?').run(longest, 'lxmf|store|carol');
+  sql2.close();
+  const third = await openStore(dataDir);
+  assert.equal(third.lxmfOf('carol').addresses.length, 3);
+  third.close();
+});
+function created2(sql, n) {
+  return sql.prepare('SELECT created FROM users WHERE name_key = ?').get(n).created;
+}
 
 test('four codes an hour to a fresh address and to one another user confirmed get the same answers, 429 and Retry-After included', async () => {
   const s = await setup();
@@ -1513,4 +1718,347 @@ test('different addresses an hour: codes take at most half, node alerts leave 5,
     await t.close();
   }
   assert.throws(() => new LxmfAlerts({ channel: channel({ addressesPerHour: 9 }), store: {}, fetchFn: async () => ({}) }), /addresses_per_hour must be a whole number of at least 10/);
+});
+
+// ---- the step-up of adding, confirming and removing an address ----
+
+test('adding, confirming and removing an address need the password (and the second step when one is on), and are limited like the other factor changes', async () => {
+  const s = await setup();
+  try {
+    let cookie = await logIn(s);
+    s.codes.push('246810', '135791');
+    // No password, a wrong one: refused, nothing is sent or kept.
+    const noPassword = await rawApi(s, '/api/account/lxmf/set', { address: A1 }, cookie);
+    assert.equal(noPassword.status, 400);
+    assert.equal(noPassword.json().field, 'password');
+    const wrong = await rawApi(s, '/api/account/lxmf/set', { address: A1, password: 'not it' }, cookie);
+    assert.equal(wrong.status, 400);
+    assert.equal(wrong.json().field, 'password');
+    assert.equal(s.bridge.calls.length, 0);
+    assert.equal(s.store.lxmfOf('bob'), null);
+    // The password given: it goes through, and the audit line says how it was confirmed.
+    assert.equal((await rawApi(s, '/api/account/lxmf/set', { address: A1, password: BOB }, cookie)).status, 200);
+    // Confirming asks for it too: the right code with no password confirms nothing.
+    assert.equal((await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '246810' }, cookie)).json().field, 'password');
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, false);
+    // A new code needs only the recent password: no step-up.
+    assert.equal((await rawApi(s, '/api/account/lxmf/resend', { address: A1 }, cookie)).status, 200);
+    assert.equal((await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '135791', password: BOB }, cookie)).status, 200);
+    // Removing asks for it.
+    const removeWithout = await rawApi(s, '/api/account/lxmf/remove', { address: A1 }, cookie);
+    assert.equal(removeWithout.status, 400);
+    assert.equal(removeWithout.json().field, 'password');
+    assert.equal(s.store.lxmfOf('bob').addresses.length, 1);
+    assert.equal((await rawApi(s, '/api/account/lxmf/remove', { address: A1, password: BOB }, cookie)).status, 200);
+    // The node alerts box is not one of them: the recent password is enough.
+    await confirmAddress(s, await later(s), 'bob', A1);
+    assert.equal((await rawApi(s, '/api/account/lxmf/node-alerts', { enabled: true }, await later(s))).status, 200);
+    // They are limited, like the passkey changes: 5 an hour for a session.
+    cookie = await later(s);
+    s.codes.push('111111');
+    const results = [];
+    for (let i = 0; i < 6; i++) results.push((await rawApi(s, '/api/account/lxmf/remove', { address: A2, password: BOB }, cookie)).status);
+    assert.deepEqual(results, [409, 409, 409, 409, 409, 429]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('with two-step sign-in on, an address is changed only with the second step as well: a code from the app, or a passkey', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    const { a } = await addPasskey(s, cookie, BOB, {}, 'Work laptop');
+    const stepUp = async () => {
+      const c = await api(s, '/api/account/passkeys/challenge', {}, cookie);
+      return { passkey: a.get({ challenge: c.json().options.challenge, origin: ORIGIN, rpId: c.json().options.rpId }) };
+    };
+    s.codes.push('654321');
+    const without = await rawApi(s, '/api/account/lxmf/set', { address: A1, password: BOB }, cookie);
+    assert.equal(without.status, 400);
+    assert.equal(without.json().secondFactor, true);
+    assert.equal(s.bridge.calls.length, 0);
+    assert.equal(s.store.lxmfOf('bob'), null);
+    // A wrong code is told as one, and sends nothing.
+    const bad = await rawApi(s, '/api/account/lxmf/set', { address: A1, password: BOB, code: '000000' }, cookie);
+    assert.equal(bad.status, 400);
+    assert.equal(bad.json().field, 'code');
+    // The passkey confirms it.
+    const done = await rawApi(s, '/api/account/lxmf/set', { address: A1, password: BOB, ...(await stepUp()) }, cookie);
+    assert.equal(done.status, 200, done.text);
+    // Confirming and removing need it too (the LXMF code is its own field, lxmfCode).
+    assert.equal((await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '654321', password: BOB }, cookie)).json().secondFactor, true);
+    assert.equal((await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '654321', password: BOB, ...(await stepUp()) }, cookie)).status, 200);
+    assert.equal((await rawApi(s, '/api/account/lxmf/remove', { address: A1, password: BOB }, cookie)).json().secondFactor, true);
+    assert.equal(s.store.lxmfOf('bob').addresses.length, 1);
+    assert.equal((await rawApi(s, '/api/account/lxmf/remove', { address: A1, password: BOB, ...(await stepUp()) }, cookie)).status, 200);
+    assert.equal(s.store.lxmfOf('bob'), null);
+    const lines = (await auditLines(s)).filter((l) => l.event.startsWith('lxmf-'));
+    assert.deepEqual(lines.map((l) => l.with), ['password+passkey', 'password+passkey', 'password+passkey']);
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- the password used from a new browser ----
+
+const deviceCookieOf = (r) => (r.headers['set-cookie'] ?? []).map((c) => c.split(';')[0]).find((c) => c.startsWith(`${DEVICE_COOKIE}=`));
+const loginFrom = (s, name, password, device) => request(s.port, { method: 'POST', path: '/login', headers: { ...FORM, ...(device ? { Cookie: device } : {}) }, body: new URLSearchParams({ name, password }).toString() });
+const newDeviceAlerts = (s) => s.bridge.named().filter((c) => c.body.event === 'sign_in_new_device');
+
+test('a right password from a browser that is not a known device is told to every confirmed address of the user, with the site address and no IP address or device id', async () => {
+  const s = await setup({ site: { url: ORIGIN } });
+  try {
+    await confirmDirect(s, 'bob', A1);
+    await confirmDirect(s, 'bob', A2);
+    await s.store.setLxmf('bob', A3);
+    const first = await loginFrom(s, 'bob', BOB);
+    assert.equal(first.status, 200, first.text);
+    await s.lxmf.idle();
+    const sent = newDeviceAlerts(s);
+    assert.deepEqual(sent.map((c) => c.body.to).sort(), [A1, A2].sort(), 'every confirmed address, not the one that waits for its code');
+    assert.equal(sent[0].body.message, '[rettui status] The password of your account bob was just used to sign in to https://status.example.org from a new browser at 2027-01-15 08:00 UTC. If this was not you, change your password.');
+    const device = deviceCookieOf(first);
+    assert.ok(device);
+    for (const c of sent) {
+      assert.equal(c.raw.includes('127.0.0.1'), false, 'no IP address');
+      assert.equal(c.raw.includes(device.split('=')[1]), false, 'no device id');
+    }
+    // The browser is known now: signing in from it again says nothing.
+    s.bridge.calls.length = 0;
+    s.clock.t += 20 * 60_000;
+    assert.equal((await loginFrom(s, 'bob', BOB, device)).status, 200);
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 0);
+    // Without the site address the words stay as they are.
+    assert.equal(accountMessage('sign_in_new_device', 'bob', {}, NOW, 'x').includes('undefined'), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the alert about a new browser is sent before the second step, whether or not it is completed, and a wrong password, a user with no confirmed address and a passkey alone send none', async () => {
+  const s = await setup();
+  try {
+    // A user who has an address that is not confirmed: nothing.
+    await s.store.setLxmf('carol', A2);
+    assert.equal((await loginFrom(s, 'carol', CAROL)).status, 200);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().length, 0);
+    // A wrong password: nothing.
+    await confirmDirect(s, 'bob', A1);
+    assert.equal((await loginFrom(s, 'bob', 'not it')).status, 401);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().length, 0);
+    // With a passkey as the second step the password alone is not a sign in, and is told all the same.
+    const { a, handle } = await passkeyOnlyBob(s);
+    await confirmDirect(s, 'bob', A1);
+    await s.lxmf.idle();
+    s.bridge.calls.length = 0;
+    s.clock.t += 20 * 60_000;
+    const step = await loginFrom(s, 'bob', BOB);
+    assert.equal(step.status, 200);
+    assert.equal(step.json().secondFactor, true, 'the second step is still to come');
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 1, 'told although the second step is never completed');
+    // A passkey alone: it is not the password, so nothing is sent.
+    s.clock.t += 20 * 60_000;
+    s.bridge.calls.length = 0;
+    const begin = await request(s.port, { method: 'POST', path: '/login/passkey/begin', headers: FORM, body: '' });
+    const { token, options } = begin.json();
+    const done = await postForm(s, '/login/passkey/finish', { token, credential: JSON.stringify(a.get({ challenge: options.challenge, origin: ORIGIN, rpId: options.rpId, userHandle: handle })) });
+    assert.equal(done.status, 200, done.text);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().length, 0, 'a passkey alone is no password');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the alert about a new browser is at most one in 15 minutes for a user, takes the share of the account alerts, and never delays or fails the sign in', async () => {
+  const s = await setup();
+  try {
+    await confirmDirect(s, 'bob', A1);
+    for (let i = 0; i < 5; i++) assert.equal((await loginFrom(s, 'bob', BOB)).status, 200);
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 1, 'five sign ins from new browsers, one alert');
+    s.clock.t += NEW_DEVICE_ALERT_MS - 1000;
+    await loginFrom(s, 'bob', BOB);
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 1);
+    s.clock.t += 1000;
+    await loginFrom(s, 'bob', BOB);
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 2, '15 minutes on, another');
+    // Another user has a count of their own.
+    await confirmDirect(s, 'carol', A2);
+    await loginFrom(s, 'carol', CAROL);
+    await s.lxmf.idle();
+    assert.equal(newDeviceAlerts(s).length, 3);
+  } finally {
+    await s.close();
+  }
+  // An account alert: it goes out when the node alerts have used up their share of the address.
+  const t = await setup();
+  try {
+    await confirmDirect(t, 'bob', A1, true);
+    for (let i = 0; i < 20; i++) t.lxmf.notifyNode('down', 'a.test:1 is down');
+    await t.lxmf.idle();
+    assert.equal(t.bridge.to(A1).length, 7);
+    assert.equal((await loginFrom(t, 'bob', BOB)).status, 200);
+    await t.lxmf.idle();
+    assert.equal(newDeviceAlerts(t).length, 1);
+  } finally {
+    await t.close();
+  }
+  // A bridge that never answers, and a queue that throws: the sign in is answered at once all the same.
+  const u = await setup();
+  try {
+    await confirmDirect(u, 'bob', A1);
+    u.lxmf.fetchFn = () => new Promise(() => {});
+    const t0 = Date.now();
+    assert.equal((await loginFrom(u, 'bob', BOB)).status, 200);
+    assert.ok(Date.now() - t0 < 2000);
+    u.clock.t += NEW_DEVICE_ALERT_MS;
+    u.lxmf.notifyUser = () => {
+      throw new Error('boom');
+    };
+    assert.equal((await loginFrom(u, 'bob', BOB)).status, 200);
+  } finally {
+    u.lxmf.stop();
+    await u.close();
+  }
+});
+
+// ---- races and the second step ----
+
+test('a resend whose post is still on its way when the address is removed does not bring the address back', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s);
+    s.codes.push('111111', '222222');
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
+    // The bridge holds the next post open.
+    let release;
+    let started;
+    const reached = new Promise((r) => (started = r));
+    const realFetch = s.lxmf.fetchFn;
+    s.lxmf.fetchFn = (url, opts) => {
+      started();
+      return new Promise((resolve) => (release = () => resolve(realFetch(url, opts))));
+    };
+    const resend = api(s, '/api/account/lxmf/resend', { address: A1 }, cookie);
+    await reached;
+    assert.equal((await api(s, '/api/account/lxmf/remove', { address: A1 }, cookie)).status, 200);
+    release();
+    const answer = await resend;
+    assert.equal(answer.status, 409);
+    assert.deepEqual(answer.json(), { error: 'Your LXMF addresses changed meanwhile. Reload the page.' });
+    assert.equal(s.store.lxmfOf('bob'), null, 'still removed, and nobody asked for the password to add it');
+    assert.equal(s.lxmf.pendingFor('bob', A1), null, 'the code that went out is no good');
+    assert.equal(s.lxmf.peekCode('bob', A1, '222222').reason, 'none');
+  } finally {
+    await s.close();
+  }
+});
+
+test('two adds at once with 2 addresses saved: only one goes on, and only one code is sent', async () => {
+  const s = await setup();
+  try {
+    await confirmDirect(s, 'bob', A1);
+    await s.store.setLxmf('bob', A2);
+    const a = await logIn(s);
+    const b = await logIn(s);
+    s.codes.push('121212', '343434');
+    const [x, y] = await Promise.all([api(s, '/api/account/lxmf/set', { address: A3 }, a), api(s, '/api/account/lxmf/set', { address: '77777777777777777777777777777777' }, b)]);
+    assert.deepEqual([x.status, y.status].sort(), [200, 409]);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().filter((c) => c.body.event === 'lxmf_check').length, 1);
+    assert.equal(s.store.lxmfOf('bob').addresses.length, 3);
+    // The same address twice at once: one code too.
+    const t = await setup();
+    try {
+      const c = await logIn(t);
+      const d = await logIn(t);
+      t.codes.push('565656', '787878');
+      const [p, q] = await Promise.all([api(t, '/api/account/lxmf/set', { address: A1 }, c), api(t, '/api/account/lxmf/set', { address: A1 }, d)]);
+      assert.equal(t.store.lxmfOf('bob').addresses.length, 1);
+      assert.equal([p.status, q.status].filter((n) => n === 200).length >= 1, true);
+    } finally {
+      await t.close();
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test('a mistyped LXMF code does not spend the second step: the recovery code sent with it is still good', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    const { a, recoveryCodes } = await addPasskey(s, cookie, BOB, {}, 'Work laptop');
+    assert.ok(recoveryCodes.length > 0);
+    const stepUp = async () => {
+      const c = await api(s, '/api/account/passkeys/challenge', {}, cookie);
+      return { passkey: a.get({ challenge: c.json().options.challenge, origin: ORIGIN, rpId: c.json().options.rpId }) };
+    };
+    s.codes.push('456456');
+    assert.equal((await rawApi(s, '/api/account/lxmf/set', { address: A1, password: BOB, ...(await stepUp()) }, cookie)).status, 200);
+    const recovery = recoveryCodes[0];
+    const wrong = await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '000000', password: BOB, recovery }, cookie);
+    assert.equal(wrong.status, 400);
+    assert.equal(wrong.json().field, 'lxmfCode');
+    assert.equal(wrong.json().reason, 'wrong');
+    // The recovery code was never looked at, so it still works, with the right LXMF code.
+    const right = await rawApi(s, '/api/account/lxmf/confirm', { address: A1, lxmfCode: '456456', password: BOB, recovery }, cookie);
+    assert.equal(right.status, 200, right.text);
+    const lines = (await auditLines(s)).filter((l) => l.event === 'recovery-code-used');
+    assert.deepEqual(lines.map((l) => l.left), [recoveryCodes.length - 1], 'used once, by the confirm that worked');
+    assert.equal((await auditLines(s)).find((l) => l.event === 'lxmf-address-confirmed').with, 'password+recovery');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the alert about a new browser is queued after the reply: a slow store lookup cannot hold the sign in', async () => {
+  const s = await setup();
+  try {
+    await confirmDirect(s, 'bob', A1);
+    let called = false;
+    s.lxmf.notifyUser = () => {
+      called = true;
+    };
+    const reply = await loginFrom(s, 'bob', BOB);
+    assert.equal(reply.status, 200);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(called, true, 'queued once the reply was sent');
+    assert.match(await fs.readFile(path.join(publicDir, '..', 'lib', 'app.js'), 'utf8'), /setImmediate\(\(\) => \{\s*try \{\s*alerts\?\.lxmf\?\.notifyUser\(who, 'sign_in_new_device'/);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the limit of the confirm route stops guessing: the 6th wrong code in an hour from one session is refused, and a new session is limited per user', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s);
+    s.codes.push('808080');
+    assert.equal((await api(s, '/api/account/lxmf/set', { address: A1 }, cookie)).status, 200);
+    const other = await logIn(s);
+    const answers = [];
+    for (let i = 0; i < 6; i++) answers.push((await lconfirm(s, cookie, '000000')).status);
+    assert.deepEqual(answers, [400, 400, 400, 400, 400, 429], 'the 6th is refused before the code is looked at');
+    // The right code is refused too while the session is held (the guess and the answer cost the same).
+    assert.equal((await lconfirm(s, cookie, '808080')).status, 429);
+    // Another session of the same user: 5 more, but the user's 10 an hour are shared (the first session used 5 of them).
+    const more = [];
+    for (let i = 0; i < 6; i++) more.push((await lconfirm(s, other, '000000')).status);
+    assert.deepEqual(more, [400, 400, 400, 400, 400, 429]);
+    assert.equal(s.store.lxmfOf('bob').addresses[0].confirmed, false);
+    // An hour on the room is back, and the code (15 minutes) has run out: a new one is needed.
+    const later1 = await later(s);
+    assert.equal((await lconfirm(s, later1, '808080')).json().reason, 'expired');
+  } finally {
+    await s.close();
+  }
 });

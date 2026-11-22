@@ -146,36 +146,48 @@
 
     <section id="acct-lxmf" class="acct-card" data-after-password aria-labelledby="acct-lxmf-h" hidden>
       <h2 id="acct-lxmf-h" tabindex="-1">LXMF alerts</h2>
-      <p class="note">Get a message at your own LXMF address when something changes about your account: a passkey added or removed, your password changed or reset, two-step sign-in turned off or reset, new recovery codes. Each says what happened and when, and which admin did it if one did. It never holds a passkey id, a secret or an IP address.</p>
+      <p class="note">Get a message at your own LXMF addresses (up to 3) when something changes about your account: a passkey added or removed, your password changed or reset, two-step sign-in turned off or reset, new recovery codes, an LXMF address added or removed. Each says what happened and when, and which admin did it if one did. It never holds a passkey id, a secret or an IP address. Every confirmed address gets every alert, and is told when another address is added or removed.</p>
       <p id="lxmf-state" role="status"></p>
-      <p id="lxmf-hidden" class="note" hidden>Your password has not been given in this session, so the address is not shown. Setting, changing or removing it asks for your password.</p>
+      <p id="lxmf-hidden" class="note" hidden>Your password has not been given in this session, so the addresses are not shown. Adding, confirming or removing one asks for your password.</p>
+
+      <div id="lxmf-list-box" hidden>
+        <h3 id="lxmf-list-h">Your addresses</h3>
+        <ul id="lxmf-list" class="acct-passkeys" aria-labelledby="lxmf-list-h"></ul>
+      </div>
+
       <form id="lxmf-set-form" class="acct-form" novalidate>
+        <h3>Add an address</h3>
         <p id="lxmf-set-error" class="login-error" role="alert"></p>
-        <label id="lxmf-address-label" for="lxmf-address">LXMF address</label>
+        <label for="lxmf-address">LXMF address</label>
         <input id="lxmf-address" type="text" inputmode="text" autocomplete="off" maxlength="80" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-address-help lxmf-set-error">
-        <p id="lxmf-address-help" class="note">32 hex digits, for example 0123456789abcdef0123456789abcdef; angle brackets around it are fine. The website sends a 6-digit code to it, and you type the code back to confirm it. Nothing else is sent there until you do. A pop-up may ask for your password first.</p>
+        <p id="lxmf-address-help" class="note">32 hex digits, for example 0123456789abcdef0123456789abcdef; angle brackets around it are fine. The website sends a 6-digit code to it, and you type the code back to confirm it. Nothing else is sent there until you do. A pop-up asks for your password, and for your second step if you have one.</p>
         <div class="login-actions"><button id="lxmf-set" type="submit" class="primary">Send a code</button></div>
       </form>
+      <p id="lxmf-full" class="note" hidden></p>
+
       <form id="lxmf-confirm-form" class="acct-form" novalidate hidden>
-        <h3>Confirm the address</h3>
+        <h3>Confirm an address</h3>
         <p id="lxmf-confirm-error" class="login-error" role="alert"></p>
-        <label for="lxmf-code">Code sent to your LXMF address</label>
+        <label for="lxmf-code-for">Address to confirm</label>
+        <select id="lxmf-code-for" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true"></select>
+        <label for="lxmf-code">Code sent to that address</label>
         <input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-code-help lxmf-confirm-error">
-        <p id="lxmf-code-help" class="note">The code works for 15 minutes and ends after 5 wrong tries. A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.</p>
+        <p id="lxmf-code-help" class="note">The code works for 15 minutes. You can try to confirm 5 times an hour from one session, and 10 times an hour in all. A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.</p>
         <div class="login-actions">
           <button id="lxmf-confirm" type="submit" class="primary">Confirm</button>
           <button id="lxmf-resend" type="button">Send a new code</button>
         </div>
       </form>
+
       <form id="lxmf-nodes-form" class="acct-form" novalidate hidden>
+        <h3>Node alerts</h3>
         <p id="lxmf-nodes-error" class="login-error" role="alert"></p>
         <div class="acct-check">
           <input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">
           <label for="lxmf-nodes">Node down and recovered alerts</label>
-          <p id="lxmf-nodes-help" class="note">Also get the node alerts the site's operator gets, such as an entry point going down and coming back. For admins and managers.</p>
+          <p id="lxmf-nodes-help" class="note">Also get the node alerts the site's operator gets, such as an entry point going down and coming back, at every confirmed address. For admins and managers.</p>
         </div>
       </form>
-      <div id="lxmf-remove-box" class="login-actions" hidden><button id="lxmf-remove" type="button">Remove the address</button></div>
     </section>
 
     <section id="acct-recovery" class="acct-card" data-after-password aria-labelledby="acct-recovery-h" hidden>

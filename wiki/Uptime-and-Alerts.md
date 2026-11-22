@@ -265,26 +265,36 @@ of it, so 5 new addresses an hour are always theirs. So `addresses_per_hour` mus
 smaller number is refused when the site starts.
 
 On the account page ([Accounts and second factor](Accounts-and-Second-Factor)) each user
-may enter their own LXMF address. It only counts once the user has typed back a 6-digit code that the
-website sent to it through the bridge (`to` is that address, `event` is `lxmf_check`). The code works
-for 15 minutes, ends after 5 wrong tries, and a user gets at most 3 codes an hour (and the whole site
-30 an hour). A code asked for an address that another user has already confirmed is answered as if
+may enter up to 3 LXMF addresses of their own. Each is added and confirmed on its own: an address only
+counts once the user has typed back a 6-digit code that the website sent to it through the bridge (`to` is
+that address, `event` is `lxmf_check`; every address has its own code). The code works
+for 15 minutes (confirming is limited to 5 tries an hour from one session and 10 an hour for the user, a wrong code included, and a wrong code is refused before the second step is asked), and a user gets at most 3 codes an hour for all their addresses
+together (and the whole site 30 an hour). Every limit above is kept for each address. A code asked for an address that another user has already confirmed is answered as if
 it was sent, and counts against the same limits as a real send (for the address, the different
 addresses, the user and the site), with the same answer and the same "try again in" time when a
 limit is reached, but nothing is posted to the bridge. So nobody can find out who has which address
 by counting codes. The answer comes after a short random wait (20 to 150 ms); a bridge that is slow
 or hangs still shows in the time a real send takes. The code is kept in memory only, as an HMAC, compared in constant time, and is in no log,
 no audit line and no answer. While an address is not confirmed nothing else is sent there. Once it
-is, it gets:
+is, it gets (every confirmed address of the user gets each message):
 
 - **Alerts about the user's own account**, each with what happened and when, and for an admin's
   action which admin: a passkey added (`passkey_added`) or removed (`passkey_removed`, saying so when
   it was the last second step), the password changed by the user or reset by an admin
   (`password_changed`, `password_reset`; with how many passkeys went with it), the app code turned off
   (`second_factor_off`) or two-step sign-in reset by an admin (`second_factor_reset`), and new
-  recovery codes (`recovery_codes_new`). When the user changes or removes the address, the old one is
-  told (`lxmf_address_changed`), so that someone who got into the account cannot move the alerts away
-  unseen. For example: `[rettui status] The admin alice reset the password of your account bob at
+  recovery codes (`recovery_codes_new`). When an address is added, every other confirmed address is told
+  (`lxmf_address_changed`, with the first 8 digits of the new address); when a confirmed address is removed,
+  every other confirmed address and the removed one are told. So someone who got into the account cannot
+  add their own address or take the owner's away unseen. When the password is used to sign in from a browser
+  that is not a known device of the user (the same "known device" as for sign in waits, see [Logins](Logins)),
+  every confirmed address is told (`sign_in_new_device`): the password was just used to sign in to the
+  site's address (`site.url`, when it is set) from a new browser at that time, and the user should change the
+  password if it was not them. It is sent when the password is right, whether or not the second step is
+  completed afterwards, and not for a sign in with a passkey alone. It has no IP address and no device id,
+  at most one is sent per user in 15 minutes (the ones in between are counted, not sent), it uses the share
+  of the budget kept for account alerts, and it never delays or fails the sign in. The other channels do not
+  get it. For example: `[rettui status] The admin alice reset the password of your account bob at
   2026-11-19 12:03 UTC. 1 passkey was removed with it. You choose a new one when you next sign in.`
   They never hold a credential id, a secret, a code or an IP address. They are sent whatever
   `alerts.events` lists (that list is for the operator's own channels).
@@ -300,17 +310,22 @@ logged without the address, the URL or the secret. Delivery is best effort: a 20
 means it took the message. What the bridge answers while a code is sent is shown to the user plainly:
 403 (the bridge has website addresses turned off), 429 (with its wait), 503 (busy, with its wait), 400
 and 422 (not an address it can send to, or its own), 401 (the secret differs) and an unreachable
-bridge. An address the bridge refuses is not kept. Only the user's own session, with a password from
-the last 15 minutes, can set, change or remove an address (a session made with a passkey alone
-gives the password first and does not see the address until then).
+bridge. An address the bridge refuses is not kept. Only the user's own session can add, confirm or remove an
+address, and it needs the same step-up as adding a passkey or the app code: the password, and the second step
+as well when two-step sign-in is on (these three are limited to 5 an hour for a session, 10 for a user). Asking
+for a new code for an address that is waiting for one and the node alerts tick need only the password from
+the last 15 minutes. A session made with a passkey alone gives the password first and does not see the
+addresses until then. A 4th address is refused with a plain message before any code is sent.
 
-The address, whether it is confirmed and the node alerts tick are kept per user, for users made on the
+The addresses, whether each is confirmed and the node alerts tick are kept per user, for users made on the
 website and for users in the config file, in `users.db` without a schema change (see [The user
 store](User-Store)). They stay when the password changes or a passkey is
 removed (that is when an alert matters most), and go when the user is deleted. Changes made with
 `scripts/users.js` (`reset-password`, `reset-2fa`) send no message, as the command line has no alerter.
 The audit log gets `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`,
-`lxmf-address-removed` and `lxmf-node-alerts`, with the user and the first 8 digits of the address.
+`lxmf-address-removed` and `lxmf-node-alerts`, with the user and the first 8 digits of the address (and, for the
+first three, `with`: how the step-up was done). The password used from a new browser is no audit line of its own: a
+new device is `device-added`, as before.
 
 **Announce queue.** Off unless `announce_queue` is listed in `events` (the default stays
 `[down, recovered]`). A rettui node reports the announces waiting to go out in `stats.json`

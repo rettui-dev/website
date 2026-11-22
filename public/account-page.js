@@ -8,8 +8,13 @@
 // with nothing else on asks there for the password only. A passkey is made in two steps: the server
 // gives options (after the step-up), the browser makes the passkey (passkey.js), and the answer goes
 // back to the server.
-// The LXMF alert address (shown only when the site has a bridge that takes users' own addresses) is set, confirmed
-// with the 6-digit code the site sends to it, changed and removed with send(): the recent password, nothing more.
+// The LXMF alert addresses (shown only when the site has a bridge that takes users' own addresses; up to 3) are
+// added, confirmed one by one with the 6-digit code the site sends to each, and removed in the step-up dialog
+// (confirmed(), as for a passkey: the password, and the second step when one is on); a new code is sent with
+// send(): the recent password, nothing more.
+// A page refresh (load) paints only what changed: a node whose text, state or list is the same is not written
+// again, and the lists are not rebuilt, so a field the visitor is typing in (the rename of a passkey, the code)
+// is never replaced or hidden by a refresh, and password managers see a page that holds still.
 // Everything is set as text: nothing from the server becomes markup. The QR code is drawn from its
 // rows of modules as SVG elements.
 (function () {
@@ -44,6 +49,22 @@
   }
 
   function say(text) { statusEl.textContent = text; }
+
+  // Writes only when the value differs, so a refresh with the same data changes nothing in the page.
+  function setText(e, text) { if (e.textContent !== text) e.textContent = text; }
+  function setHidden(e, hidden) { if (e.hidden !== hidden) e.hidden = hidden; }
+  function setValue(e, value) { if (e.value !== value) e.value = value; }
+  function setChecked(e, checked) { if (e.checked !== checked) e.checked = checked; }
+  // What a list was last built from: a list is built again only when this changes.
+  var shown = {};
+  function changed(key, value) {
+    var sig = JSON.stringify(value);
+    if (shown[key] === sig) return false;
+    shown[key] = sig;
+    return true;
+  }
+  // The cards that paintPasskeys, the recovery codes and paintLxmf show or hide themselves.
+  var OWN_VISIBILITY = { 'acct-passkeys': true, 'acct-recovery': true, 'acct-lxmf': true };
 
   function api(path, body) {
     return fetch(path, {
@@ -225,74 +246,129 @@
   }
 
   function paint() {
-    $('acct-name').textContent = data.name;
-    $('acct-role').textContent = data.role;
-    $('acct-last').textContent = when(data.lastLogin);
-    $('acct-config-note').hidden = !data.managedByConfig;
-    $('acct-users').hidden = data.canManageUsers !== true;
+    var must = data.mustChangePassword === true;
+    setText($('acct-name'), data.name);
+    setText($('acct-role'), data.role);
+    setText($('acct-last'), when(data.lastLogin));
+    setHidden($('acct-config-note'), !data.managedByConfig);
+    setHidden($('acct-users'), data.canManageUsers !== true);
     // The manage page checks the role again; this only shows the way there.
-    $('acct-manage').hidden = !((data.role === 'manage' || data.role === 'admin') && data.mustChangePassword !== true);
+    setHidden($('acct-manage'), !((data.role === 'manage' || data.role === 'admin') && !must));
     // A password an admin set: the password change is all there is until a new one is chosen.
-    $('acct-must-change').hidden = data.mustChangePassword !== true;
-    Array.prototype.forEach.call(document.querySelectorAll('[data-after-password]'), function (x) { x.hidden = data.mustChangePassword === true; });
-    $('pw-config').hidden = data.canChangePassword;
-    $('pw-form').hidden = !data.canChangePassword;
+    setHidden($('acct-must-change'), !must);
+    // The cards that decide for themselves below are left out here: setting them twice would show and hide a
+    // card with fields in it on every refresh.
+    Array.prototype.forEach.call(document.querySelectorAll('[data-after-password]'), function (x) { if (!OWN_VISIBILITY[x.id]) setHidden(x, must); });
+    setHidden($('pw-config'), data.canChangePassword);
+    setHidden($('pw-form'), !data.canChangePassword);
     // Only offered while there are passkeys to remove.
-    $('pw-remove-box').hidden = passkeyList().length === 0;
+    setHidden($('pw-remove-box'), passkeyList().length === 0);
     // Ticked by default: a passkey someone planted keeps signing in after the password changes. With none
     // listed the box is hidden but still ticked, and sent: a passkey added since the list was loaded goes too.
-    if (passkeyList().length === 0) $('pw-remove').checked = true;
+    if (passkeyList().length === 0) setChecked($('pw-remove'), true);
     // For password managers: the name the new password belongs to.
-    $('pw-user').value = data.name;
+    setValue($('pw-user'), data.name);
     var on = Boolean(data.totp && data.totp.enabled);
     var keys = passkeyList().length;
-    $('totp-state').textContent = on
+    setText($('totp-state'), on
       ? (keys > 0 ? 'On: after your password you can also use a code from your app.' : 'On: signing in needs your password and a code from your app.')
-      : (keys > 0 ? 'Off: no app code is set up. Your passkeys are your second step.' : 'Off: your password alone signs you in.');
-    $('totp-off').hidden = on || !$('totp-setup-box').hidden;
-    $('sessions-end').hidden = data.sessions.length < 2;
-    $('totp-on').hidden = !on;
+      : (keys > 0 ? 'Off: no app code is set up. Your passkeys are your second step.' : 'Off: your password alone signs you in.'));
+    setHidden($('totp-off'), on || !$('totp-setup-box').hidden);
+    setHidden($('sessions-end'), data.sessions.length < 2);
+    setHidden($('totp-on'), !on);
     // Recovery codes belong to any second step, not just the app code.
     var left = typeof data.recoveryCodesLeft === 'number' ? data.recoveryCodesLeft : on && data.totp ? data.totp.recoveryCodesLeft : 0;
-    $('codes-left').textContent = left === 1 ? '1 recovery code left.' : left + ' recovery codes left.';
-    $('codes-on').hidden = !secondFactorOn() || !$('codes-box').hidden;
-    var list = $('sessions-list');
-    list.textContent = '';
-    data.sessions.forEach(function (s) {
-      var li = el('li');
-      li.appendChild(el('span', null, 'Signed in ' + when(s.created) + ', last used ' + when(s.lastSeen)));
-      if (s.current) li.appendChild(el('strong', 'acct-current', ' (this browser)'));
-      list.appendChild(li);
-    });
-    // These are set after the loop above, which hides everything marked for after the password change.
-    $('acct-passkeys').hidden = data.mustChangePassword === true || !data.passkeys;
-    $('acct-recovery').hidden = data.mustChangePassword === true || !(secondFactorOn() || !$('codes-box').hidden);
+    setText($('codes-left'), left === 1 ? '1 recovery code left.' : left + ' recovery codes left.');
+    setHidden($('codes-on'), !secondFactorOn() || !$('codes-box').hidden);
+    if (changed('sessions', data.sessions)) {
+      var list = $('sessions-list');
+      list.textContent = '';
+      data.sessions.forEach(function (s) {
+        var li = el('li');
+        li.appendChild(el('span', null, 'Signed in ' + when(s.created) + ', last used ' + when(s.lastSeen)));
+        if (s.current) li.appendChild(el('strong', 'acct-current', ' (this browser)'));
+        list.appendChild(li);
+      });
+    }
+    setHidden($('acct-passkeys'), must || !data.passkeys);
+    setHidden($('acct-recovery'), must || !(secondFactorOn() || !$('codes-box').hidden));
     paintPasskeys();
     paintLxmf();
     paintDevices();
   }
 
-  // The LXMF alerts card: hidden unless the server says the site has a bridge for it.
+  // The LXMF alerts card: hidden unless the server says the site has a bridge for it. The card holds, top to
+  // bottom, its state, the addresses (each with its Remove button), the form to add one, the form to confirm
+  // one that waits for its code, and the node alerts choice.
   function paintLxmf() {
     var l = data.lxmf;
     var card = $('acct-lxmf');
-    card.hidden = data.mustChangePassword === true || !l || l.available !== true;
+    setHidden(card, data.mustChangePassword === true || !l || l.available !== true);
     if (card.hidden) return;
-    var set = l.set === true;
+    var items = Array.isArray(l.addresses) ? l.addresses : [];
+    var max = typeof l.max === 'number' ? l.max : 3;
+    var count = typeof l.count === 'number' ? l.count : items.length;
+    var waiting = items.filter(function (a) { return !a.confirmed; });
+    var live = items.length - waiting.length;
     var state;
-    if (!set) state = 'No address is set.';
-    else if (l.hidden) state = 'An address is set. It is not shown until you give your password in this session.';
-    else if (l.confirmed) state = 'Alerts go to ' + l.address + '.';
-    else state = 'Waiting for the code for ' + l.address + '. Nothing is sent there until you confirm it.';
-    $('lxmf-state').textContent = state;
-    $('lxmf-hidden').hidden = !(l.hidden === true);
-    $('lxmf-address-label').textContent = set ? 'A different LXMF address' : 'LXMF address';
-    $('lxmf-set').textContent = set ? 'Send a code to the new address' : 'Send a code';
-    $('lxmf-confirm-form').hidden = !set || l.confirmed === true;
-    $('lxmf-code-help').textContent = (l.codeExpiresAt ? 'The code works until ' + when(l.codeExpiresAt) + ' and ends after 5 wrong tries. ' : 'No code is waiting: send a new one. ') + 'A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.';
-    $('lxmf-nodes-form').hidden = !(l.confirmed === true && l.canNodeAlerts === true);
-    $('lxmf-nodes').checked = l.nodeAlerts === true;
-    $('lxmf-remove-box').hidden = !set;
+    if (count === 0) state = 'No address is set.';
+    else if (l.hidden) state = (count === 1 ? 'An address is set. It is' : count + ' addresses are set. They are') + ' not shown until you give your password in this session.';
+    else if (live === 0) state = 'No address is confirmed yet. Nothing is sent until you confirm one.';
+    else state = 'Alerts go to ' + live + (live === 1 ? ' address' : ' addresses') + '. You have ' + count + ' of ' + max + '.';
+    setText($('lxmf-state'), state);
+    setHidden($('lxmf-hidden'), l.hidden !== true);
+    // The addresses.
+    setHidden($('lxmf-list-box'), items.length === 0);
+    if (changed('lxmf-list', items.map(function (a) { return [a.address, a.confirmed === true]; }))) {
+      var list = $('lxmf-list');
+      list.textContent = '';
+      items.forEach(function (a) {
+        var li = el('li', 'acct-passkey');
+        li.appendChild(el('code', 'acct-passkey-name', a.address));
+        li.appendChild(el('span', 'acct-passkey-info', a.confirmed ? 'Confirmed: alerts about your account go here.' : 'Waiting for the code. Nothing is sent here until you confirm it.'));
+        var actions = el('div', 'login-actions');
+        var remove = el('button', null, 'Remove');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', 'Remove the LXMF address ' + a.address);
+        remove.addEventListener('click', function () { removeLxmf(remove, a.address); });
+        actions.appendChild(remove);
+        li.appendChild(actions);
+        list.appendChild(li);
+      });
+    }
+    // Adding.
+    var full = count >= max;
+    setHidden($('lxmf-set-form'), full);
+    setHidden($('lxmf-full'), !full);
+    setText($('lxmf-full'), 'You have ' + max + ' LXMF addresses, the most allowed. Remove one to add another.');
+    // Confirming: one form, for the address picked in the list of those that wait.
+    setHidden($('lxmf-confirm-form'), waiting.length === 0);
+    var pick = $('lxmf-code-for');
+    if (changed('lxmf-waiting', waiting.map(function (a) { return a.address; }))) {
+      var keep = wanted || pick.value;
+      pick.textContent = '';
+      waiting.forEach(function (a) {
+        var o = el('option', null, a.address);
+        o.value = a.address;
+        pick.appendChild(o);
+      });
+      if (waiting.length > 0) pick.value = waiting.some(function (a) { return a.address === keep; }) ? keep : waiting[0].address;
+    } else if (wanted && waiting.some(function (a) { return a.address === wanted; })) {
+      setValue(pick, wanted);
+    }
+    wanted = null;
+    paintCodeHelp();
+    // Node alerts.
+    setHidden($('lxmf-nodes-form'), !(l.confirmed === true && l.canNodeAlerts === true));
+    setChecked($('lxmf-nodes'), l.nodeAlerts === true);
+  }
+
+  // The words under the code field, for the address picked.
+  function paintCodeHelp() {
+    var items = data && data.lxmf && Array.isArray(data.lxmf.addresses) ? data.lxmf.addresses : [];
+    var at = $('lxmf-code-for').value;
+    var mine = items.filter(function (a) { return a.address === at; })[0];
+    setText($('lxmf-code-help'), (mine && mine.codeExpiresAt ? 'The code works until ' + when(mine.codeExpiresAt) + '. You can try to confirm 5 times an hour from one session, and 10 times an hour in all. ' : 'No code is waiting: send a new one. ') + 'A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.');
   }
 
   // The passkeys: what the server lists, and what can be done here. A passkey made for another address
@@ -300,27 +376,30 @@
   function paintPasskeys() {
     var p = data.passkeys;
     var list = $('passkeys-list');
-    list.textContent = '';
-    passkeyButtons = {};
-    if (!p) return;
+    if (!p) { list.textContent = ''; passkeyButtons = {}; shown.passkeys = null; return; }
     var items = passkeyList();
     var max = typeof p.max === 'number' ? p.max : 10;
     var here = p.available === true;
     var browser = canPasskey();
     // Where passkeys can also sign in on their own, the note says so (the file's words are true without that).
-    $('passkeys-note').textContent = p.signIn === true && here
+    setText($('passkeys-note'), p.signIn === true && here
       ? "A passkey can sign you in on its own: press 'Sign in with a passkey' and confirm on your device. It also works as the second step after your password. Passkeys made on phones, computers and password managers usually work on their own. Some security keys only work as the second step: if yours does not show up, add it again here."
-      : DEFAULT_PASSKEYS_NOTE;
-    $('passkeys-unavailable').hidden = here;
-    $('passkeys-unavailable').textContent = p.reason === 'no-address'
+      : DEFAULT_PASSKEYS_NOTE);
+    setHidden($('passkeys-unavailable'), here);
+    setText($('passkeys-unavailable'), p.reason === 'no-address'
       ? "Passkeys need this site's https address in the config file (site.url, or SITE_URL)."
-      : 'Passkeys are not available on this site.';
-    $('passkeys-none').hidden = items.length > 0;
-    $('passkeys-browser').hidden = !here || browser;
+      : 'Passkeys are not available on this site.');
+    setHidden($('passkeys-none'), items.length > 0);
+    setHidden($('passkeys-browser'), !here || browser);
     var full = here && items.length >= max;
-    $('passkeys-full').hidden = !full;
-    $('passkeys-full').textContent = 'You have ' + items.length + ' passkeys, the most allowed. Remove one first.';
-    $('passkey-add-form').hidden = !here || !browser || full;
+    setHidden($('passkeys-full'), !full);
+    setText($('passkeys-full'), 'You have ' + items.length + ' passkeys, the most allowed. Remove one first.');
+    setHidden($('passkey-add-form'), !here || !browser || full);
+    // The list is built again only when what it shows changed (or to leave a rename), so a rename in progress
+    // is not replaced by a refresh that brings nothing new.
+    if (!changed('passkeys', items)) return;
+    list.textContent = '';
+    passkeyButtons = {};
     items.forEach(function (pk) {
       var li = el('li', 'acct-passkey');
       li.appendChild(el('strong', 'acct-passkey-name', pk.name));
@@ -347,15 +426,16 @@
   function paintDevices() {
     var devices = data.devices || [];
     var list = $('devices-list');
+    setHidden($('devices-none'), devices.length > 0);
+    var others = devices.filter(function (d) { return !d.current; }).length;
+    setHidden($('devices-others'), others === 0);
+    if (!changed('devices', devices)) return;
     list.textContent = '';
-    $('devices-none').hidden = devices.length > 0;
-    var others = 0;
     devices.forEach(function (d) {
       var li = el('li');
       var label = 'First used ' + when(d.created) + ', last used ' + when(d.lastUsed);
       li.appendChild(el('span', null, label));
       if (d.current) li.appendChild(el('strong', 'acct-current', ' (this browser)'));
-      else others++;
       var remove = el('button', null, 'Remove');
       remove.type = 'button';
       remove.setAttribute('aria-label', 'Remove the device ' + label.charAt(0).toLowerCase() + label.slice(1));
@@ -364,7 +444,6 @@
       li.appendChild(remove);
       list.appendChild(li);
     });
-    $('devices-others').hidden = others === 0;
   }
 
   function removeDevice(button, id) {
@@ -697,6 +776,7 @@
     li.appendChild(form);
     input.focus();
     function back() {
+      shown.passkeys = null;
       paintPasskeys();
       if (passkeyButtons[pk.id]) passkeyButtons[pk.id].rename.focus();
     }
@@ -712,6 +792,8 @@
         return send('/api/account/passkeys/rename', { id: pk.id, name: name }).then(function (r) {
           if (!r) return;
           if (r.status !== 200) { err.textContent = errorOf(r); input.setAttribute('aria-invalid', 'true'); input.focus(); return; }
+          // The form goes, whatever the list says now.
+          shown.passkeys = null;
           return load().then(function () {
             say('The passkey is renamed.');
             if (passkeyButtons[pk.id]) passkeyButtons[pk.id].rename.focus();
@@ -723,6 +805,8 @@
 
   // ---- LXMF alerts ----
   var LXMF_ADDRESS = /^<?\s*[0-9a-fA-F]{32}\s*>?$/;
+  // The address the next paint picks in the list of those that wait for a code (the one just added or sent to).
+  var wanted = null;
 
   $('lxmf-set-form').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -731,16 +815,23 @@
     if (!LXMF_ADDRESS.test(address)) { setFormError('lxmf-set-error', 'An LXMF address is 32 hex digits, such as 0123456789abcdef0123456789abcdef.', ['lxmf-address']); input.focus(); return; }
     setFormError('lxmf-set-error', '', ['lxmf-address']);
     busy($('lxmf-set'), 'Sending...', function () {
-      return send('/api/account/lxmf/set', { address: address }).then(function (r) {
+      // Like adding a passkey: the step-up dialog asks for the password, and for the second step when one is on.
+      return confirmed('/api/account/lxmf/set', { address: address }, { title: 'Add an LXMF address', why: 'A code is sent to the address next, and you type it back to confirm it. Your other confirmed addresses are told that it was added.', action: 'Send a code' }).then(function (r) {
         if (!r) return;
         if (r.status !== 200) { setFormError('lxmf-set-error', errorOf(r), r.body && r.body.field === 'address' ? ['lxmf-address'] : []); input.focus(); return; }
         input.value = '';
+        wanted = r.body && typeof r.body.address === 'string' ? r.body.address : null;
         return load().then(function () {
           say('A code was sent to your LXMF address. Type it below to confirm the address.');
           $('lxmf-code').focus();
         });
       });
     });
+  });
+
+  $('lxmf-code-for').addEventListener('change', function () {
+    setFormError('lxmf-confirm-error', '', ['lxmf-code']);
+    paintCodeHelp();
   });
 
   $('lxmf-confirm-form').addEventListener('submit', function (e) {
@@ -750,9 +841,9 @@
     if (!/^[0-9]{6}$/.test(code)) { setFormError('lxmf-confirm-error', 'Enter the 6 digits that were sent to your LXMF address.', ['lxmf-code']); input.focus(); return; }
     setFormError('lxmf-confirm-error', '', ['lxmf-code']);
     busy($('lxmf-confirm'), 'Checking...', function () {
-      return send('/api/account/lxmf/confirm', { code: code }).then(function (r) {
+      return confirmed('/api/account/lxmf/confirm', { address: $('lxmf-code-for').value, lxmfCode: code }, { title: 'Confirm an LXMF address', why: 'Once confirmed, this address gets the alerts about your account.', action: 'Confirm the address' }).then(function (r) {
         if (!r) return;
-        if (r.status !== 200) { setFormError('lxmf-confirm-error', errorOf(r), ['lxmf-code']); input.value = ''; input.focus(); return; }
+        if (r.status !== 200) { setFormError('lxmf-confirm-error', errorOf(r), r.body && r.body.field === 'lxmfCode' ? ['lxmf-code'] : []); input.value = ''; input.focus(); return; }
         input.value = '';
         return load().then(function () {
           say('Your LXMF address is confirmed. Alerts about your account now go there.');
@@ -763,11 +854,13 @@
   });
 
   $('lxmf-resend').addEventListener('click', function () {
+    var address = $('lxmf-code-for').value;
     busy($('lxmf-resend'), 'Sending...', function () {
-      return send('/api/account/lxmf/resend', {}).then(function (r) {
+      return send('/api/account/lxmf/resend', { address: address }).then(function (r) {
         if (!r) return;
         if (r.status !== 200) { setFormError('lxmf-confirm-error', errorOf(r), []); return; }
         setFormError('lxmf-confirm-error', '', ['lxmf-code']);
+        wanted = address;
         return load().then(function () {
           say('A new code was sent to your LXMF address. The old one no longer works.');
           $('lxmf-code').focus();
@@ -776,18 +869,18 @@
     });
   });
 
-  $('lxmf-remove').addEventListener('click', function () {
-    busy($('lxmf-remove'), 'Removing...', function () {
-      return send('/api/account/lxmf/remove', {}).then(function (r) {
+  function removeLxmf(button, address) {
+    busy(button, 'Removing...', function () {
+      return confirmed('/api/account/lxmf/remove', { address: address }, { title: 'Remove an LXMF address', why: 'It gets no more alerts. Your other confirmed addresses are told that it was removed.', action: 'Remove', danger: true }).then(function (r) {
         if (!r) return;
         if (r.status !== 200) { say(errorOf(r)); return; }
         return load().then(function () {
-          say('Your LXMF address is removed. No more alerts go there.');
+          say('The LXMF address is removed. No more alerts go there.');
           $('acct-lxmf-h').focus();
         });
       });
     });
-  });
+  }
 
   $('lxmf-nodes').addEventListener('change', function () {
     var box = $('lxmf-nodes');
@@ -798,7 +891,7 @@
       if (!r) return;
       if (r.status !== 200) { setFormError('lxmf-nodes-error', errorOf(r), []); return; }
       setFormError('lxmf-nodes-error', '', []);
-      told = on ? 'Node down and recovered alerts now go to your LXMF address too.' : 'Node alerts no longer go to your LXMF address.';
+      told = on ? 'Node down and recovered alerts now go to your confirmed LXMF addresses too.' : 'Node alerts no longer go to your LXMF addresses.';
     }).catch(function () { told = 'Could not reach the server. Try again.'; }).then(function () {
       // Shows what the server has, whatever happened; load() clears the status line, so it is said after.
       return load();

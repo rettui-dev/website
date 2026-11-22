@@ -252,13 +252,24 @@ test('the LXMF alerts card is a named region that is hidden until the server say
   // The state is a status line; the page moves the focus to the heading after a change.
   assert.match(inner, /<p id="lxmf-state" role="status"><\/p>/);
   // Every field has a visible label of its own, and its help and error are read with it.
-  assert.match(inner, /<label id="lxmf-address-label" for="lxmf-address">[^<]+<\/label>\s*<input id="lxmf-address" type="text"[^>]*aria-describedby="lxmf-address-help lxmf-set-error"/);
+  assert.match(inner, /<label for="lxmf-address">[^<]+<\/label>\s*<input id="lxmf-address" type="text"[^>]*aria-describedby="lxmf-address-help lxmf-set-error"/);
+  assert.match(inner, /<label for="lxmf-code-for">[^<]+<\/label>\s*<select id="lxmf-code-for"/);
   assert.match(inner, /<label for="lxmf-code">[^<]+<\/label>\s*<input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="\[0-9\]\{6\}" maxlength="6"[^>]*aria-describedby="lxmf-code-help lxmf-confirm-error"/);
   assert.match(inner, /<input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">\s*<label for="lxmf-nodes">Node down and recovered alerts<\/label>/);
   for (const id of ['lxmf-set-error', 'lxmf-confirm-error', 'lxmf-nodes-error']) assert.match(inner, new RegExp(`<p id="${id}" class="login-error" role="alert"></p>`), id);
   for (const id of ['lxmf-address-help', 'lxmf-code-help', 'lxmf-nodes-help']) assert.match(inner, new RegExp(`<p id="${id}" class="note">`), id);
-  // The text fields are left alone by password managers, the buttons have their words, the checkbox sits in the same grid as the others.
-  for (const [tag] of inner.matchAll(/<input\b[^>]*type="text"[^>]*>/g)) for (const a of ['data-bwignore="true"', 'data-1p-ignore="true"', 'data-lpignore="true"']) assert.ok(tag.includes(a), `${a} on ${tag}`);
+  // The list of addresses is named by its heading; each address gets a Remove button of its own from the script, named for it.
+  assert.match(inner, /<h3 id="lxmf-list-h">Your addresses<\/h3>\s*<ul id="lxmf-list" class="acct-passkeys" aria-labelledby="lxmf-list-h"><\/ul>/);
+  // Password managers leave the LXMF address and code fields alone (they are not credentials): no autofill, and the three
+  // marks the managers read; the code field is a one-time code, numeric. Real passwords keep their own autocomplete.
+  const ignore = ['data-bwignore="true"', 'data-1p-ignore="true"', 'data-lpignore="true"'];
+  for (const [tag] of inner.matchAll(/<(?:input|select)\b[^>]*(?:type="text"|<select)[^>]*>|<select\b[^>]*>/g)) for (const a of ignore) assert.ok(tag.includes(a), `${a} on ${tag}`);
+  assert.match(inner, /<input id="lxmf-address" type="text" inputmode="text" autocomplete="off"/);
+  assert.match(inner, /<select id="lxmf-code-for" autocomplete="off"/);
+  assert.match(inner, /<input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code"/);
+  assert.match(html, /<input id="pw-next" type="password" autocomplete="new-password"/);
+  assert.match(html, /<input id="pw-again" type="password" autocomplete="new-password"/);
+  assert.doesNotMatch(html, /type="password"(?![^>]*autocomplete="(?:new|current)-password")/);
   for (const [, b] of inner.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)) assert.ok(b.trim().length > 0);
   assert.match(inner, /<div class="acct-check">\s*<input id="lxmf-nodes"/);
   // The words the card says about what is sent: what and when, never an id, a secret or an address.
@@ -267,6 +278,38 @@ test('the LXMF alerts card is a named region that is hidden until the server say
   const js = await read('account-page.js');
   // The script only sets text, and the node alerts box says what happened (the status line is polite).
   assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-  assert.match(js, /\$\('lxmf-state'\)\.textContent = state;/);
+  assert.match(js, /setText\(\$\('lxmf-state'\), state\);/);
   assert.match(js, /\$\('acct-lxmf-h'\)\.focus\(\);/);
+});
+
+test('the LXMF alerts card is laid out in groups with the same space between them as the other account cards: each group has its own heading, and no button sits on the next control', async () => {
+  const html = await read('account.html');
+  const css = await read('site.css');
+  const inner = /<section id="acct-lxmf"[^>]*>([\s\S]*?)<\/section>/.exec(html)[1];
+  // The groups, in reading order, each started by an h3 (the space above a group is the h3's margin, as in the passkeys card).
+  const groups = [...inner.matchAll(/<h3\b[^>]*>([^<]+)<\/h3>/g)].map((m) => m[1]);
+  assert.deepEqual(groups, ['Your addresses', 'Add an address', 'Confirm an address', 'Node alerts']);
+  // Every form of the card starts with its heading, so the checkbox cannot sit right under the button above it.
+  for (const [, tag, body] of inner.matchAll(/<form\b([^>]*)>\s*([\s\S]*?)<\/form>/g)) {
+    assert.match(tag, /class="acct-form"/);
+    assert.match(body, /^<h3\b/, tag);
+  }
+  assert.match(css, /\.acct-card h3 \{ margin: 16px 0 6px;/);
+  assert.match(css, /\.login-actions \{[^}]*margin-top: 10px;/);
+  assert.match(css, /\.acct-form \{ display: grid; gap: 6px;/);
+  // The select is drawn like the text fields.
+  assert.match(css, /\.acct-form input, \.acct-form select \{/);
+  assert.doesNotMatch(inner, /\sstyle=/);
+});
+
+test('the account page does not rewrite itself when it is loaded again: no timers, no observers, no markup, and what is painted is only written when it changed', async () => {
+  const js = await read('account-page.js');
+  assert.doesNotMatch(js, /setInterval|MutationObserver|requestAnimationFrame|innerHTML|replaceChildren|replaceWith|\.outerHTML/);
+  // paint() sets every state through the helpers that write only a difference, and leaves the cards that decide for themselves alone.
+  assert.match(js, /function setText\(e, text\) \{ if \(e\.textContent !== text\) e\.textContent = text; \}/);
+  assert.match(js, /function setHidden\(e, hidden\) \{ if \(e\.hidden !== hidden\) e\.hidden = hidden; \}/);
+  assert.match(js, /if \(!OWN_VISIBILITY\[x\.id\]\) setHidden\(x, must\)/);
+  assert.doesNotMatch(js, /x\.hidden = data\.mustChangePassword/, 'a card is not shown and hidden again in one pass');
+  // A list is built again only when the data it shows changed.
+  for (const key of ['sessions', 'passkeys', 'devices', 'lxmf-list', 'lxmf-waiting']) assert.match(js, new RegExp(`changed\\('${key}'`), key);
 });
