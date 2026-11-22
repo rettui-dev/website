@@ -6,10 +6,11 @@
 (function () {
   var WORD = { up: 'Up', down: 'Down', unknown: 'Unknown', external: 'External' };
   var GLYPH = { up: '●', down: '✕', unknown: '?', external: '↗' };
-  var BOX_H = 76;
+  // Each box has one more line under its facts: the address, in small type.
+  var BOX_H = 88;
   // A proxy drawn as a box (in the one-node view) has one more line, its tag, and a double border.
-  var PROXY_H = 96;
-  var EXT_H = 56;
+  var PROXY_H = 104;
+  var EXT_H = 68;
   var MAX_BOX_W = 176;
   var MIN_BOX_W = 104;
   var PAD = 8;
@@ -26,7 +27,7 @@
   // The frame: from its outer line to the row of nodes, the height of its header, and the room under
   // the row before the frame closes.
   var FRAME_INSET = 20;
-  var HEADER_H = 104;
+  var HEADER_H = 118;
   var FRAME_FOOT = 24;
   // Nodes in a row: the gap between neighbours holds a short arrow, so it is never narrower than this.
   var MIN_GAP = 24;
@@ -40,10 +41,11 @@
   var BUS_STEP = 10;
   var EXT_GAP = 12;
   var GROUP_GAP = 28;
+  var LOOSE_HEAD = 24;
 
   // The one-node view: the node in the middle, and at most this many neighbours on each side.
   var FOCUS_W = 240;
-  var FOCUS_H = 110;
+  var FOCUS_H = 124;
   var MAX_SIDE = 8;
   var PHONE_SIDE = 6;
   var MAX_PROXIES = 3;
@@ -62,7 +64,8 @@
   // Lookups by a host key use objects with no prototype, so a key such as "toString" is only a key.
   function hostKey(h) { return h.host + ':' + h.port; }
   function displayName(h) { return h.name || clip(hostKey(h), MAX_NAME); }
-  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+  // n may be a number or a number already formatted as text ("1", "1,200").
+  function plural(n, one, many) { return n + ' ' + (n === 1 || n === '1' ? one : many); }
 
   function num(n) {
     return n.toLocaleString === undefined ? String(n) : n.toLocaleString('en-US');
@@ -243,7 +246,7 @@
       var tier = h.role === 'proxy' ? 0 : (h.proxiedBy || hasProxy) ? 1 : 0;
       var n = {
         id: hostKey(h), kind: h.role === 'proxy' ? 'proxy' : 'node', name: displayName(h), state: h.status || 'unknown', tier: tier,
-        clients: h.status === 'down' ? null : clients(h), ms: h.latencyMs,
+        clients: h.status === 'down' ? null : clients(h), ms: h.latencyMs, addr: hostKey(h),
         uptime: h.uptime90 && typeof h.uptime90.percent90 === 'number' ? h.uptime90.percent90 : null,
         members: h.proxy && Array.isArray(h.proxy.for) ? h.proxy.for.length : 0, address: null, usedBy: []
       };
@@ -259,7 +262,7 @@
         // The same peer listed by two nodes is one box.
         var id = 'ext:' + u.name.toLowerCase() + '|' + (u.address || '');
         if (!byId[id]) {
-          byId[id] = { id: id, kind: 'external', name: u.name, state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [] };
+          byId[id] = { id: id, kind: 'external', name: u.name, addr: null, state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [] };
           nodes.push(byId[id]);
           externals++;
         }
@@ -284,9 +287,12 @@
   }
 
   // One node in words, for the title, the accessible name and the list.
-  function describe(n) {
+  // withAddress adds the address a proxy or node is checked at, for the boxes of the map (the list
+  // has the cards beside it, which show it already).
+  function describe(n, withAddress) {
     var out = [n.kind === 'proxy' ? 'Proxy ' + n.name + ', ' + WORD[n.state].toLowerCase()
       : n.name + ': ' + (n.kind === 'external' ? 'external backbone peer, not monitored' : WORD[n.state].toLowerCase())];
+    if (withAddress && n.kind !== 'external' && n.addr && n.addr !== n.name) out.push('address ' + n.addr);
     if (n.kind === 'proxy') out.push('passes visitors to ' + plural(n.members, 'node', 'nodes'));
     if (n.kind === 'external' && n.address) out.push('address ' + n.address + ' (not checked)');
     if (n.kind === 'external' && n.usedBy.length) out.push('used by ' + n.usedBy.join(', '));
@@ -399,10 +405,19 @@
 
   // The lines of text in a box: the tag of a proxy, the name (two lines at most, one for an external
   // peer), the state and one fact, centred.
+  // The address shown in small type under a box's facts: where a proxy or node is checked, or what
+  // the operator gave for an external peer; none when it is the name already.
+  function addressOf(n) {
+    var a = n.kind === 'external' ? n.address : n.addr;
+    return a && a !== n.name ? a : null;
+  }
+
   function boxLines(n, w, h) {
     var max = Math.max(4, Math.floor((w - 10) / CHAR_W));
     var names = wrap(n.name, max, n.kind === 'external' ? 1 : 2);
     var texts = facts(n).map(function (f) { return clip(f, max); });
+    var addr = addressOf(n);
+    if (addr) texts.push(clip(addr, max));
     var label = tag(n);
     var count = (label ? 1 : 0) + names.length + texts.length;
     var top = (h - count * LINE_H) / 2 + 11;
@@ -411,12 +426,12 @@
     if (label) at(label, 0, 'nm-tag');
     var first = label ? 1 : 0;
     names.forEach(function (t, i) { at(t, first + i, 'nm-name'); });
-    texts.forEach(function (t, i) { at(t, first + names.length + i, i === 0 ? 'nm-state' : 'nm-fact'); });
+    texts.forEach(function (t, i) { at(t, first + names.length + i, i === 0 ? 'nm-state' : addr && i === texts.length - 1 ? 'nm-addr' : 'nm-fact'); });
     return lines;
   }
 
   function nodeOut(n, x, y, w, h, id) {
-    return { id: id || n.id, kind: n.kind, state: n.state, x: Math.round(x), y: Math.round(y), w: w, h: h, lines: boxLines(n, w, h), label: describe(n) };
+    return { id: id || n.id, kind: n.kind, state: n.state, x: Math.round(x), y: Math.round(y), w: w, h: h, lines: boxLines(n, w, h), label: describe(n, true) };
   }
 
   // The facts of a proxy in its frame header, on one line.
@@ -429,7 +444,7 @@
   }
 
   // The frame of a proxy: its outer line has the state colour, and its header says what it is.
-  function frameNode(p, top, W, h, members) {
+  function frameNode(p, top, W, h, members, elsewhere) {
     var fw = W - 2 * PAD;
     var state = GLYPH[p.state] + ' ' + WORD[p.state];
     var lines = [
@@ -440,9 +455,14 @@
     var factX = 26 + Math.round(state.length * 7.5) + 14;
     var f = proxyFacts(p);
     if (f) lines.push({ text: clip(f, Math.floor((fw - factX - 26) / CHAR_W)), x: factX, y: 78, cls: 'nm-fact', anchor: 'start' });
-    var right = members ? 'Passes visitors to the ' + plural(members, 'node', 'nodes') + ' inside' : 'No nodes behind it on this page';
+    // A node behind two proxies is drawn in the first one's frame; the other says where it went.
+    var right = members && elsewhere ? 'Passes visitors to the ' + plural(members, 'node', 'nodes') + ' inside and ' + elsewhere + ' in another frame'
+      : members ? 'Passes visitors to the ' + plural(members, 'node', 'nodes') + ' inside'
+        : elsewhere ? 'Passes visitors to ' + plural(elsewhere, 'node', 'nodes') + ' in another frame' : 'No nodes behind it on this page';
     lines.push({ text: right, x: fw - 26, y: 34, cls: 'nm-fact', anchor: 'end' });
-    return { id: p.id, kind: 'proxy', frame: true, state: p.state, x: PAD, y: Math.round(top), w: fw, h: Math.round(h), lines: lines, label: describe(p) };
+    var addr = addressOf(p);
+    if (addr) lines.push({ text: clip(addr, Math.max(8, Math.floor((fw - 52) / CHAR_W))), x: 26, y: 98, cls: 'nm-addr', anchor: 'start' });
+    return { id: p.id, kind: 'proxy', frame: true, state: p.state, x: PAD, y: Math.round(top), w: fw, h: Math.round(h), lines: lines, label: describe(p, true) };
   }
 
   // The rows of the map: one per proxy, with the nodes it passes visitors to (a node listed by two
@@ -610,9 +630,17 @@
       var xs = mem.map(function (m, i) { return x0 + i * (w + gap); });
       var laneH = row.lanes ? LANE_BASE + LANE_STEP * (row.lanes - 1) + 10 : 0;
       var top = y;
-      var ny = top + (framed ? HEADER_H : 0) + laneH;
-      var bottom = framed ? (n ? ny + BOX_H + FRAME_FOOT : top + PROXY_H) : ny + BOX_H;
-      if (framed) out.nodes.push(frameNode(grp.proxy, top, W, bottom - top, n));
+      // Under frames, the row of nodes behind no proxy says so, so it is not read as part of the frame above.
+      var loose = !framed && groups.length > 1;
+      if (loose) out.texts.push({ text: 'Behind no proxy', x: PAD, y: top + 12, cls: 'nm-head', anchor: 'start' });
+      var ny = top + (framed ? HEADER_H : 0) + (loose ? LOOSE_HEAD : 0) + laneH;
+      var bottom = framed ? (n ? ny + BOX_H + FRAME_FOOT : top + HEADER_H - 6) : ny + BOX_H;
+      if (framed) {
+        var inside = Object.create(null);
+        mem.forEach(function (m) { inside[m.id] = true; });
+        var elsewhere = model.edges.filter(function (e) { return e.kind === 'proxy' && e.from === grp.proxy.id && !inside[e.to] && byId[e.to].kind === 'node'; }).length;
+        out.nodes.push(frameNode(grp.proxy, top, W, bottom - top, n, elsewhere));
+      }
       mem.forEach(function (m, i) { out.nodes.push(nodeOut(m, xs[i], ny, w, BOX_H)); });
       row.near.forEach(function (r) {
         var ltr = r.ia < r.ib;
@@ -649,6 +677,24 @@
   function focusChoices(model) {
     var nodes = model.nodes.filter(function (n) { return n.kind === 'node'; });
     return (nodes.length ? nodes : model.nodes.filter(function (n) { return n.kind === 'proxy'; })).slice(0, MAX_PILLS);
+  }
+
+  // The buttons of the one-node view. Two nodes with the same name are told apart by the proxy they
+  // are behind, or by their address when that does not tell them apart either.
+  function pillsOf(model) {
+    var choices = focusChoices(model);
+    var byId = index(model);
+    var count = Object.create(null);
+    choices.forEach(function (n) { count[n.name] = (count[n.name] || 0) + 1; });
+    var behind = Object.create(null);
+    model.edges.forEach(function (e) { if (e.kind === 'proxy' && !behind[e.to]) behind[e.to] = byId[e.from].name; });
+    var hint = choices.map(function (n) { return count[n.name] > 1 ? behind[n.id] || n.addr || '' : ''; });
+    var seen = Object.create(null);
+    choices.forEach(function (n, i) { var k = n.name + '|' + hint[i]; seen[k] = (seen[k] || 0) + 1; });
+    return choices.map(function (n, i) {
+      var h = hint[i] && seen[n.name + '|' + hint[i]] > 1 ? n.addr : hint[i];
+      return { id: n.id, name: h ? clip(n.name, 24) + ' (' + clip(h, 24) + ')' : clip(n.name, 32), state: n.state };
+    });
   }
 
   // The node to show: the one asked for while it is still there, else the first node with links
@@ -698,10 +744,12 @@
     if (row1.length) texts.push(row1.join(' · '));
     if (n.uptime !== null) texts.push('uptime ' + n.uptime + '% over 90 days');
     var max = Math.max(4, Math.floor((w - 16) / CHAR_W));
+    var addr = addressOf(n);
+    if (addr) texts.push(addr);
     var top = (h - (44 + texts.length * 18)) / 2 + 16;
     lines.push({ text: clip(n.name, Math.max(4, Math.floor((w - 16) / 9))), x: w / 2, y: round1(top), cls: 'nm-name big', anchor: 'middle' });
     lines.push({ text: GLYPH[n.state] + ' ' + WORD[n.state], x: w / 2, y: round1(top + 22), cls: 'nm-state', anchor: 'middle' });
-    texts.forEach(function (t, i) { lines.push({ text: clip(t, max), x: w / 2, y: round1(top + 44 + i * 18), cls: 'nm-fact', anchor: 'middle' }); });
+    texts.forEach(function (t, i) { lines.push({ text: clip(t, max), x: w / 2, y: round1(top + 44 + i * 18), cls: addr && i === texts.length - 1 ? 'nm-addr' : 'nm-fact', anchor: 'middle' }); });
     return lines;
   }
 
@@ -717,7 +765,7 @@
     var sel = pickFocus(model, want);
     var out = {
       width: W, height: 2 * PAD, mode: 'focus', reason: reason, nodes: [], edges: [], texts: [], selected: sel, linksHidden: false,
-      pills: focusChoices(model).map(function (n) { return { id: n.id, name: clip(n.name, 32), state: n.state }; })
+      pills: pillsOf(model)
     };
     var fm = sel === null ? null : focusModel(model, sel);
     if (!fm) return out;
@@ -736,7 +784,7 @@
     var FW = phone ? Math.min(360, W - 2 * PAD - 40) : Math.min(FOCUS_W, W - 2 * PAD);
     var fx = Math.round(cx - FW / 2);
     var y = PAD;
-    var proxies = fm.proxies.slice(0, phone ? 1 : MAX_PROXIES);
+    var proxies = fm.proxies.slice(0, phone ? 2 : MAX_PROXIES);
     var pFeet = [];
     if (proxies.length) {
       var k = proxies.length;
@@ -875,7 +923,19 @@
       var pts = Math.abs(f.x - tx) < 0.5 ? [[tx, pBottom], [tx, fy]] : [[f.x, pBottom], [f.x, pBottom + 16], [tx, pBottom + 16], [tx, fy]];
       edges.push({ from: f.p.id, to: sel, kind: 'proxy', down: f.p.state === 'down' || fm.node.state === 'down', d: rpath(pts, 8), pts: pts });
     });
-    if (pFeet.length) text('passes visitors to', cx + 10, pBottom + 28, 'nm-label');
+    // The words sit right of every line down from the proxies, or left of them, so no line runs
+    // through them; on a screen too narrow for either they are left out (the legend says it).
+    if (pFeet.length) {
+      var lineXs = [];
+      // Only the last leg of each line, straight down into the node, is beside the words.
+      edges.forEach(function (e) { if (e.kind === 'proxy') lineXs.push(e.pts[e.pts.length - 1][0]); });
+      var words = 'passes visitors to';
+      var wordsW = words.length * CHAR_W;
+      var right = Math.max.apply(null, lineXs) + 10;
+      var left = Math.min.apply(null, lineXs) - 10;
+      if (right + wordsW <= W - PAD) text(words, right, pBottom + 28, 'nm-label');
+      else if (left - wordsW >= PAD) text(words, left, pBottom + 28, 'nm-label', 'end');
+    }
     var exts = fm.externals.slice(0, MAX_EXTERNALS);
     if (exts.length) {
       var etop = end + 44;

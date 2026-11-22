@@ -278,17 +278,23 @@ other request.
 - **The proxy frame** has a double border: the outer line has the proxy's state colour and the
   inner line the accent colour. Its header names it, with the tag "Proxy", its state in words and
   a mark, and the facts the page already shows (clients, connect time, 90 day uptime, for example
-  `7 ms · 100% uptime`). On the right it says how many nodes are inside ("Passes visitors to the 3
-  nodes inside"). Its name for screen readers and in "Show as list" starts with "Proxy"
+  `7 ms · 100% uptime`), with the address it is checked at under them. On the right it says how
+  many nodes are inside ("Passes visitors to the 3 nodes inside"). A node that two proxies list is
+  drawn in the first one's frame, and the other frame says so ("... and 1 in another frame"). Under
+  the frames, the nodes behind no proxy sit in a row headed "Behind no proxy". Its name for screen readers and in "Show as list" starts with "Proxy"
   (`Proxy Front door, up, passes visitors to 3 nodes, ...`). The heading counts the proxies, nodes
   and external peers apart (`1 proxy, 3 nodes, 1 external peer, 4 links`).
 - **Nodes** show their name, their state in words and a mark (`● Up`, `✕ Down`, `? Unknown`, so it
   is not colour alone) and a short fact: the clients, when the node's stats are fresh, else the
   connect time. A node that is down shows no clients. Up nodes pulse gently unless the visitor
-  prefers reduced motion. Boxes are 176 pixels wide and get narrower, down to 104, when a row has
-  many nodes; long names are cut short with "…".
+  prefers reduced motion. Under the facts, in small type, is the address the status page checks
+  (the same `host:port` as on the node's card); it is left out when the node has no name, because
+  the name is the address then. Boxes are 176 pixels wide and get narrower, down to 104, when a row
+  has many nodes; long names and addresses (IPv6 ones too) are cut short with "…", and the full
+  address is in the box's tooltip and in what a screen reader says.
 - **External peers** hang below the node that uses them, joined by a dashed line that crosses the
-  foot of the frame. A peer that several nodes of one row use is one box: each node's dashed line
+  foot of the frame. They show the address the operator gave, in small type under "not checked",
+  when there is one. A peer that several nodes of one row use is one box: each node's dashed line
   turns once under the frame and ends at its own spot on the box. A peer used in two frames is
   drawn under each of them. A dashed line is grey when its node is down.
 - **Links between nodes** are arrows in the accent colour: a dot at the node that dials, an
@@ -310,10 +316,11 @@ other request.
 - **One node at a time:** the whole map gives way to a view of one node when the map is narrower
   than 640 pixels (phones), when a frame or row would hold more than 8 nodes, when the arcs above
   a row would need more than 4 lanes, or when the boxes would not fit side by side. A row of
-  buttons above the map names every node, with a mark for its state; pick one with a click or a
+  buttons above the map names every node, with a mark for its state (two nodes with the same name
+  also show the proxy they are behind, or their address); pick one with a click or a
   tap, or move along the buttons with the arrow keys, Home and End. The node picked is drawn large
-  in the middle with all its facts. Its proxy is above it, joined by a solid line ("passes
-  visitors to"). The nodes that dial it are on the left ("Dialled by", with links in a direction
+  in the middle with all its facts and its address. Its proxy is above it, joined by a solid line
+  ("passes visitors to"); a node behind two proxies shows both. The nodes that dial it are on the left ("Dialled by", with links in a direction
   not known), the nodes it dials on the right ("Dials", with nodes it dials both ways), and its
   external peers below ("connects out to"). On a phone the neighbours sit under the node instead:
   in one row when they fit, else in two columns. At most 8 neighbours are drawn on each side (6

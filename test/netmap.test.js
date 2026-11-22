@@ -313,7 +313,7 @@ test('a proxy is a frame with a header in the whole map, and a taller tagged box
   assert.deepEqual([...m.nodes.filter((n) => n.kind !== 'external').map((n) => `${n.id}=${n.kind}`)], ['h:1=proxy', 'h:2=node', 'h:3=node']);
   const wide = layout(m, 1000);
   const frame = wide.nodes.find((n) => n.id === 'h:1');
-  assert.deepEqual([...frame.lines.map((t) => t.text)], ['Proxy', 'Front door', '● Up', '3 clients · 5 ms · 99.5% uptime', 'Passes visitors to the 2 nodes inside']);
+  assert.deepEqual([...frame.lines.map((t) => t.text)], ['Proxy', 'Front door', '● Up', '3 clients · 5 ms · 99.5% uptime', 'Passes visitors to the 2 nodes inside', 'h:1']);
   assert.equal(frame.lines[0].cls, 'nm-tag');
   for (const t of frame.lines) assert.ok(t.y > 0 && t.y < frame.h && t.x > 0 && t.x < frame.w, t.text);
   const narrow = layout(m, 360);
@@ -338,10 +338,10 @@ test('a proxy with no nodes behind it, and a proxy that is down, are still drawn
   const l = layout(buildModel([host(1, { name: 'Door', role: 'proxy', proxy: { for: [] }, status: 'down', latencyMs: null })]), 800);
   assert.equal(l.nodes[0].kind, 'proxy');
   assert.equal(l.nodes[0].state, 'down');
-  assert.equal(l.nodes[0].label, 'Proxy Door, down, passes visitors to 0 nodes, uptime 99.5% over 90 days.');
-  assert.deepEqual([...l.nodes[0].lines.map((t) => t.text)], ['Proxy', 'Door', '✕ Down', '99.5% uptime', 'No nodes behind it on this page']);
+  assert.equal(l.nodes[0].label, 'Proxy Door, down, address h:1, passes visitors to 0 nodes, uptime 99.5% over 90 days.');
+  assert.deepEqual([...l.nodes[0].lines.map((t) => t.text)], ['Proxy', 'Door', '✕ Down', '99.5% uptime', 'No nodes behind it on this page', 'h:1']);
   const narrow = layout(buildModel([host(1, { name: 'Door', role: 'proxy', proxy: { for: [] }, status: 'down', latencyMs: null })]), 300);
-  assert.deepEqual([...narrow.nodes[0].lines.map((t) => t.text)], ['Door', '✕ Down', 'uptime 99.5% over 90 days']);
+  assert.deepEqual([...narrow.nodes[0].lines.map((t) => t.text)], ['Door', '✕ Down', 'uptime 99.5% over 90 days', 'h:1']);
 });
 
 test('summaryText says proxies, nodes, external peers and links apart', () => {
@@ -644,4 +644,117 @@ test('buildModel: a host listed twice is one node; hosts, peers, members and nam
   assert.ok(narrow.nodes.every((n) => n.label.length < 64 * 66 + 500));
   // A host key that is far too long is not a host.
   assert.equal(buildModel([host(1, { host: 'x'.repeat(300), upstreams: [{ name: 'X' }] })]).nodes.length, 0);
+});
+
+test('every box shows its address in small type under its facts, cut to fit, and in full in its label', () => {
+  const v6 = '2001:db8:85a3:0000:0000:8a2e:0370:7334';
+  const long = 'a-very-long-host-name-for-a-node.backbone.example-network.org';
+  const hosts = [
+    host(4242, { host: v6, name: 'Door', role: 'proxy', proxy: { for: [`${long}:4965`, 'h:2', 'h:3'] }, upstreams: [{ name: 'Hub', address: 'hub.example.org:4965' }] }),
+    host(4965, { host: long, name: 'Long', links: [{ to: 'h:2', dir: 'dials' }] }),
+    host(2, { name: 'Named', upstreams: [{ name: 'Bare' }, { name: 'Far', address: `[${v6}]:4965` }] }),
+    host(3, { name: null }),
+  ];
+  const m = buildModel(hosts);
+  const addr = (n) => n.lines.filter((t) => t.cls === 'nm-addr').map((t) => t.text);
+  for (const w of [1400, 1000, 640, 500, 390, 320]) {
+    for (const want of ['h:2', `${long}:4965`, 'h:3']) {
+      const l = layout(m, w, want);
+      const boxes = l.nodes.filter((n) => !n.frame);
+      apart(boxes, `${w}`);
+      for (const n of l.nodes) {
+        const ys = n.lines.map((t) => t.y);
+        assert.ok(n.lines.every((t) => t.y > 0 && t.y < n.h), `${w}: ${n.id} lines inside`);
+        // The address is the last line of a box, in its own class, under the others.
+        if (!n.frame && addr(n).length) assert.equal(n.lines.at(-1).cls, 'nm-addr');
+        for (const t of n.lines.filter((x) => x.cls === 'nm-addr')) {
+          const room = t.anchor === 'middle' ? n.w : n.w - t.x;
+          assert.ok(t.text.length * 6.8 <= room, `${w}: ${n.id} address fits: ${t.text}`);
+          if (t.text.endsWith('…')) assert.ok(t.text.length >= 4);
+        }
+        if (!n.frame) assert.ok(ys.every((y, i) => i === 0 || y > ys[i - 1]), `${w}: ${n.id} in order`);
+      }
+      const by = (id) => l.nodes.find((n) => n.id === id);
+      if (by(`${v6}:4242`)) {
+        const a = addr(by(`${v6}:4242`))[0];
+        assert.ok(a === `${v6}:4242` || (a.endsWith('…') && `${v6}:4242`.startsWith(a.slice(0, -1))), a);
+        assert.ok(by(`${v6}:4242`).label.includes(`address ${v6}:4242,`));
+      }
+      // A peer without an address shows none; one with an address shows it under "not checked".
+      if (by('ext:bare|')) assert.deepEqual([...addr(by('ext:bare|'))], []);
+      const far = l.nodes.find((n) => n.id.startsWith('ext:far|'));
+      if (far) {
+        assert.equal(far.lines.at(-2).text, 'not checked');
+        assert.ok(`[${v6}]:4965`.startsWith(addr(far)[0].replace(/…$/, '')));
+      }
+      // A node with no name shows its address as its name, and not twice.
+      if (by('h:3')) assert.deepEqual([...addr(by('h:3'))], []);
+    }
+  }
+  // The label has the full address, the list does not repeat it for a node, and a peer's is said once.
+  const node = m.nodes.find((n) => n.id === `${long}:4965`);
+  assert.equal(describe(node), 'Long: up, 3 clients, connect time 5 ms, uptime 99.5% over 90 days. Dials Named.');
+  assert.ok(layout(m, 1400).nodes.find((n) => n.id === `${long}:4965`).label.startsWith(`Long: up, address ${long}:4965, `));
+  const far = layout(m, 1400).nodes.find((n) => n.id.startsWith('ext:far|'));
+  assert.equal(far.label.split(v6).length, 2, 'the address of a peer is in its label once');
+  // An address is never part of a class.
+  for (const n of layout(m, 1400).nodes) for (const t of n.lines) assert.match(t.cls, /^nm-[a-z]+( big)?$/);
+});
+
+test('focus: a node behind two proxies shows both above it, and the words of the proxy line cross no line', () => {
+  const hosts = [rns([1, 2]), host(98, { name: 'Other door', role: 'proxy', proxy: { for: ['h:1'] } }), mock(1, 'Shared', { links: dials(2) }), mock(2, 'B')];
+  for (const w of [390, 360, 320, 280]) {
+    const l = layout(buildModel(hosts), w, 'h:1');
+    const lines = l.edges.filter((e) => e.kind === 'proxy');
+    assert.deepEqual([...lines.map((e) => e.from)].sort(), ['h:98', 'h:99'], String(w));
+    const label = l.texts.find((t) => t.text === 'passes visitors to');
+    if (w >= 360) assert.ok(label, `${w}: there is room for the words`);
+    if (!label) continue;
+    // The words run from x (or end at x) for about 6.8 pixels a character, at their baseline and the 10 pixels above it.
+    const ww = label.text.length * 6.8;
+    const words = { x: label.anchor === 'end' ? label.x - ww : label.x, y: label.y - 10, w: ww, h: 12 };
+    assert.ok(words.x >= 0 && words.x + words.w <= l.width, `${w}: the words fit`);
+    for (const e of lines) {
+      for (let i = 1; i < e.pts.length; i++) {
+        const [a, b] = [e.pts[i - 1], e.pts[i]];
+        const xs = [Math.min(a[0], b[0]), Math.max(a[0], b[0])];
+        const ys = [Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+        const hit = xs[1] >= words.x && xs[0] <= words.x + words.w && ys[1] >= words.y && ys[0] <= words.y + words.h;
+        assert.ok(!hit, `${w}: ${e.from} runs through the words`);
+      }
+    }
+    apart(l.nodes, String(w));
+  }
+});
+
+test('frames: a node behind two proxies is in the first frame, and the second says so; the row behind no proxy is labelled', () => {
+  const hosts = [rns([1, 2]), host(98, { name: 'Other door', role: 'proxy', proxy: { for: ['h:2', 'h:3'] } }), host(97, { name: 'Empty door', role: 'proxy', proxy: { for: ['h:1'] } }),
+    mock(1, 'A'), mock(2, 'B'), mock(3, 'C'), host(4, { name: 'Loose' })];
+  const l = layout(buildModel(hosts), 1000);
+  assert.equal(l.mode, 'frame');
+  const right = (id) => l.nodes.find((n) => n.id === id).lines.find((t) => t.anchor === 'end').text;
+  assert.equal(right('h:99'), 'Passes visitors to the 2 nodes inside');
+  assert.equal(right('h:98'), 'Passes visitors to the 1 node inside and 1 in another frame');
+  assert.equal(right('h:97'), 'Passes visitors to 1 node in another frame');
+  const label = l.texts.find((t) => t.text === 'Behind no proxy');
+  const loose = l.nodes.find((n) => n.id === 'h:4');
+  const frames = l.nodes.filter((n) => n.frame);
+  assert.ok(label.y < loose.y && frames.every((f) => f.y + f.h < label.y - 10), 'the label is between the last frame and the row');
+  // Without frames the row needs no label.
+  assert.equal(layout(buildModel([mock(1, 'A', { links: dials(2) }), mock(2, 'B')]), 1000).texts.length, 0);
+});
+
+test('one client is one client, also once the number is formatted', () => {
+  const m = buildModel([rns([1]), mock(1, 'A', { stats: { ok: true, stale: false, data: { interfaces: { clients: 1 } } } })]);
+  const l = layout(m, 1000);
+  assert.ok(l.nodes.find((n) => n.id === 'h:1').lines.some((t) => t.text === '1 client'));
+  assert.ok(layout(m, 390).nodes.find((n) => n.focus).lines.some((t) => /^1 client · /.test(t.text)));
+});
+
+test('pills: two nodes with one name are told apart by their proxy, or by their address', () => {
+  const m = buildModel([rns([1, 2]), host(98, { name: 'Berlin', role: 'proxy', proxy: { for: ['h:3'] } }), mock(1, 'Relay'), mock(2, 'Relay'), mock(3, 'Relay'), mock(4, 'Solo')]);
+  const names = [...layout(m, 390).pills.map((p) => p.name)];
+  assert.deepEqual(names, ['Relay (h:1)', 'Relay (h:2)', 'Relay (Berlin)', 'Solo']);
+  const behindNone = buildModel([mock(1, 'Relay', { links: dials(2) }), mock(2, 'Relay')]);
+  assert.deepEqual([...layout(behindNone, 390).pills.map((p) => p.name)], ['Relay (h:1)', 'Relay (h:2)']);
 });

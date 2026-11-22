@@ -725,6 +725,8 @@ html:has(.manage-page) { scroll-padding-top: 80px; scroll-padding-bottom: 72px; 
 .nm-name { fill: var(--text); font-weight: 600; }
 .nm-state { fill: var(--text); }
 .nm-fact { fill: var(--dim); }
+/* The address under a box's facts: small, dim and in the type of the address on a host card. */
+.nm-addr { fill: var(--dim); font-family: var(--mono); font-size: 11px; }
 .nm-node.up .nm-state { fill: var(--green); }
 .nm-node.down .nm-state { fill: var(--red); }
 .nm-node.unknown .nm-state { fill: var(--yellow); }
