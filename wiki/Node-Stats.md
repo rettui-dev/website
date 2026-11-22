@@ -269,32 +269,58 @@ The status page has a collapsible "Network map" below the banner. It is drawn in
 inline SVG from `/api/status`, so it refreshes with the page (every 15 seconds) and needs no
 other request.
 
-- **What is drawn:** the proxy (the front door) on one side, the nodes it passes visitors to in
-  the middle, and, when any node has `upstreams`, the external peers on the other side. On a
-  narrow screen the same tiers are stacked top to bottom. Without a proxy and without `upstreams`
-  there is nothing to draw, and the map is not shown.
-- **The proxy** is not drawn like a node: its box is wider and taller, has a double border in the
-  accent colour and the tag "Proxy" in text. The outer border still has the state colour, and the
-  state is still in words and a mark. Its name for screen readers and in "Show as list" starts
-  with "Proxy" (`Proxy Front door, up, passes visitors to 3 nodes, ...`). The heading counts the
-  proxies, nodes and external peers apart (`1 proxy, 3 nodes, 1 external peer, 4 links`).
+- **What is drawn:** each proxy (the front door) is a frame around the nodes it passes visitors
+  to, so no lines are needed between the proxy and its nodes. The nodes sit in a row inside the
+  frame, and the external peers they connect out to (`upstreams`) are boxes below the frame.
+  Nodes behind no proxy sit in a plain row of their own. With several proxies, their frames are
+  stacked. Without a proxy, `upstreams` and links between nodes there is nothing to draw, and the
+  map is not shown.
+- **The proxy frame** has a double border: the outer line has the proxy's state colour and the
+  inner line the accent colour. Its header names it, with the tag "Proxy", its state in words and
+  a mark, and the facts the page already shows (clients, connect time, 90 day uptime, for example
+  `7 ms · 100% uptime`). On the right it says how many nodes are inside ("Passes visitors to the 3
+  nodes inside"). Its name for screen readers and in "Show as list" starts with "Proxy"
+  (`Proxy Front door, up, passes visitors to 3 nodes, ...`). The heading counts the proxies, nodes
+  and external peers apart (`1 proxy, 3 nodes, 1 external peer, 4 links`).
 - **Nodes** show their name, their state in words and a mark (`● Up`, `✕ Down`, `? Unknown`, so it
   is not colour alone) and a short fact: the clients, when the node's stats are fresh, else the
   connect time. A node that is down shows no clients. Up nodes pulse gently unless the visitor
-  prefers reduced motion.
-- **Lines** are solid from the proxy to its nodes and dashed to external peers. A line is grey
-  when either end is down.
-- **Links between nodes** are arcs in a gutter on the right of the node column: a dot at the node
-  that dials, an arrowhead at the node that is dialled (once the link is up, traffic flows both
-  ways). A solid arrow was found in the node's own config, an outlined arrow was declared by the
-  operator, a dotted line with a bar is turned off in the dialling node's config, a line with two
-  slashes has a node that is down, and a hollow circle at each end means the direction is not
-  known. Two nodes that dial each other are one line with an arrowhead at both ends. Pointing at or
-  focusing a node makes its links thicker and fades the others. On a narrow screen the arcs are not
-  drawn: the page says the links are listed on each node's card, where "Dials", "Dialled by" and
-  "Linked with" chips name them. The text for screen readers and "Show as list" says the same
-  (`Front: up, ... Dials Back, Side (turned off). Dialled by Netspeak (declared).`). How the links
-  are found, and what is published, is in [Links between nodes](Connecting-Nodes#links-between-nodes).
+  prefers reduced motion. Boxes are 176 pixels wide and get narrower, down to 104, when a row has
+  many nodes; long names are cut short with "…".
+- **External peers** hang below the node that uses them, joined by a dashed line that crosses the
+  foot of the frame. A peer that several nodes of one row use is one box: each node's dashed line
+  turns once under the frame and ends at its own spot on the box. A peer used in two frames is
+  drawn under each of them. A dashed line is grey when its node is down.
+- **Links between nodes** are arrows in the accent colour: a dot at the node that dials, an
+  arrowhead at the node that is dialled (once the link is up, traffic flows both ways). Two nodes
+  side by side get a short arrow in the gap between them. A link that skips a node runs above the
+  row as an arc and comes down into the top of the node: shorter arcs run lower, longer ones
+  higher, and where two arcs cross, the lower one is drawn over the other with a gap around it,
+  so you can see which line goes where. A solid arrow was found in the node's own config, an
+  outlined arrow was declared by the operator, a dotted line with a bar is turned off in the
+  dialling node's config, a grey line with two slashes has a node that is down, and a hollow
+  circle at each end means the direction is not known. Two nodes that dial each other are one
+  line with an arrowhead at both ends. Pointing at or focusing a node makes its links thicker and
+  fades the others. A link the frame cannot draw (one to a proxy, or between nodes in different
+  frames) is left out, and the page then says the links are listed on each node's card, where
+  "Dials", "Dialled by" and "Linked with" chips name them. The text for screen readers and "Show
+  as list" says the same (`Front: up, ... Dials Back, Side (turned off). Dialled by Netspeak
+  (declared).`). How the links are found, and what is published, is in [Links between
+  nodes](Connecting-Nodes#links-between-nodes).
+- **One node at a time:** the whole map gives way to a view of one node when the map is narrower
+  than 640 pixels (phones), when a frame or row would hold more than 8 nodes, when the arcs above
+  a row would need more than 4 lanes, or when the boxes would not fit side by side. A row of
+  buttons above the map names every node, with a mark for its state; pick one with a click or a
+  tap, or move along the buttons with the arrow keys, Home and End. The node picked is drawn large
+  in the middle with all its facts. Its proxy is above it, joined by a solid line ("passes
+  visitors to"). The nodes that dial it are on the left ("Dialled by", with links in a direction
+  not known), the nodes it dials on the right ("Dials", with nodes it dials both ways), and its
+  external peers below ("connects out to"). On a phone the neighbours sit under the node instead:
+  in one row when they fit, else in two columns. At most 8 neighbours are drawn on each side (6
+  on a phone); the rest are counted, and "Show as list" names them all. At first the view shows
+  the first node that has links between nodes, else the first node. The node picked stays picked
+  when the page refreshes, until the page is reloaded; if it leaves the page, the first node is
+  shown again. The view is chosen again whenever the map changes size.
 - **Upstreams** are for display only. A node's `upstreams` lists the external backbone peers it
   connects out to, so the map can draw them as grey "External" boxes. The server never resolves,
   probes or fetches an upstream's address, and an upstream has no state. The same name and
@@ -304,10 +330,11 @@ other request.
   connect time and the 90 day uptime. Nothing that `require_login` or `public_details` hides
   is used, and the names and addresses in `upstreams` are public, so leave out an address you do
   not want shown.
-- **Keyboard and screen readers:** each box can be focused with Tab and has its facts as its
-  name and as a tooltip title. "Show as list" opens the same map as a list, with what each
-  node connects to. The map can be folded; whether it is open is kept only until the page is
-  reloaded.
+- **Keyboard and screen readers:** each box, and each proxy frame, can be focused with Tab and
+  has its facts as its name and as a tooltip title. In the one-node view the buttons are a tab
+  list: Tab reaches the button of the node shown, and the arrow keys move along the list. "Show
+  as list" opens the same map as a list, with what each node connects to. The map can be folded;
+  whether it is open is kept only until the page is reloaded.
 
 ## How checking works
 

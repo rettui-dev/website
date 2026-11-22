@@ -9,8 +9,10 @@ Every page and endpoint the website serves, and how the pages look and behave: t
   details" opens graphs. Under the bar of checks, a 90 day uptime bar shows one cell per day, and a
   "Recent incidents" list shows when nodes went down and for how long (see [Uptime history and
   incidents](Uptime-and-Alerts#uptime-history-and-incidents)). It refreshes itself and keeps open rows open. Below the banner a collapsible
-  "Network map" draws the proxy, the nodes behind it and the external peers they connect out to
-  (see [Network map](Node-Stats#network-map)), and which of the nodes dial which, as arrows and as
+  "Network map" draws each proxy as a frame around the nodes behind it, with the external peers
+  they connect out to below it (see [Network map](Node-Stats#network-map)). On a phone, or when
+  there are too many nodes or links to draw at once, it shows one node at a time, picked with a
+  row of buttons above the map. It shows which of the nodes dial which, as arrows and as
   "Dials" and "Dialled by" chips on the nodes' cards (see [Links between nodes](Connecting-Nodes#links-between-nodes)).
 - `/api/status` is the same data as JSON, with `uptime90` and `days` for each host (the incidents are in `/api/incidents`).
 - `/api/incidents` lists the latest incidents (up to 100) of all nodes, newest first. Only GET
@@ -106,7 +108,7 @@ Checked with axe-core (WCAG 2.2 AA and best practice) on the four pages, the sta
 the opened rows, the network map and the Details dialog, in both themes at 1200 and 375 pixels, with
 no violations. What the pages do: a "Skip to content" link first on every page, `lang="en"`, header,
 nav, main and footer landmarks, one `h1`, `aria-current="page"` in the menu, a focus ring on every
-control (the network map's nodes too), text at least 4.5:1 and control borders at least 3:1 in both
+control (the network map's nodes, frames and buttons too), text at least 4.5:1 and control borders at least 3:1 in both
 themes, touch targets of 24 pixels or more (40 on phones), no sideways scrolling at 320 pixels or at
 200% zoom, and no animation when the system asks for less motion. With no saved choice the theme
 follows the system (`prefers-color-scheme`), also when it changes while the page is open; the theme
