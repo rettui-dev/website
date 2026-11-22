@@ -20,7 +20,7 @@ const publicDir = path.join(root, 'public');
 const sandbox = { Date, Math };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(fs.readFileSync(path.join(publicDir, 'netmap.js'), 'utf8'), sandbox);
-const { buildModel, layout, describe, summaryText, listItems, wrap, clip, rowsOf } = sandbox.netmapLogic;
+const { buildModel, layout, describe, summaryText, listItems, wrap, clip } = sandbox.netmapLogic;
 
 const one = (extra) => `nodes:\n  - address: a.test:1\n${extra}`;
 const bad = (text, pattern) => assert.throws(() => loadConfig(text), (e) => e instanceof Error && pattern.test(e.message), text);
@@ -360,7 +360,7 @@ test('the page says what the proxy box looks like, and the styles keep its accen
   assert.match(css, /\.nm-node\.down \.nm-box \{ stroke: var\(--red\)/);
 });
 
-test('wrap, clip and rowsOf', () => {
+test('wrap and clip', () => {
   assert.deepEqual([...wrap('Amsterdam backbone hub', 14, 2)], ['Amsterdam', 'backbone hub']);
   assert.deepEqual([...wrap('Short', 14, 2)], ['Short']);
   assert.deepEqual([...wrap('a'.repeat(30), 10, 2)], ['aaaaaaaaaa', 'aaaaaaaaa…']);
@@ -369,9 +369,9 @@ test('wrap, clip and rowsOf', () => {
   assert.equal(clip('abcdef', 4), 'abc…');
   assert.equal(clip('abc', 4), 'abc');
   assert.equal(clip('abcdef', 0).length, 2);
-  assert.deepEqual([...rowsOf(8, 3)], [3, 3, 2]);
-  assert.deepEqual([...rowsOf(2, 5)], [2]);
-  assert.deepEqual([...rowsOf(3, 2)], [2, 1]);
+  // A width of nothing still ends: one character per line at least.
+  for (const max of [0, -3, NaN]) assert.deepEqual([...wrap('abc def', max, 2)], ['a', 'b…']);
+  assert.deepEqual([...wrap('abc', 4, 0)], ['abc']);
 });
 
 // The frame and the one-node view, against the design mocks.
@@ -606,4 +606,42 @@ test('a peer used by several nodes of a row is one box, with a line from each th
   // The same peer in two frames is drawn under each, with ids that stay apart.
   const two = layout(buildModel([rns([1]), host(98, { name: 'Other', role: 'proxy', proxy: { for: ['h:2'] } }), mock(1, 'A', { upstreams: [{ name: 'Hub' }] }), mock(2, 'B', { upstreams: [{ name: 'Hub' }] })]), 1000);
   assert.deepEqual([...two.nodes.filter((n) => n.kind === 'external').map((n) => n.id)], ['ext:hub|', 'ext:hub|#2']);
+});
+
+test('buildModel: entries that are not hosts are skipped, and an unknown state is unknown', () => {
+  const ok = host(1, { name: 'A', upstreams: [null, 5, 'x', { name: 7 }, { name: '  ' }, { name: 'Hub', address: 9 }] });
+  const m = buildModel([null, undefined, 5, 'h:9', [], { host: 7, port: 1 }, { host: 'h', port: 'x' }, { host: 'h', port: 1.5 }, { host: 'h' }, ok, host(2, { status: 'degraded' }), host(3, { status: 'external' }), host(4, { name: { toString: () => 'evil' } })]);
+  assert.deepEqual([...m.nodes.map((n) => `${n.id}=${n.kind}:${n.state}:${n.name}`)], ['h:1=node:up:A', 'h:2=node:unknown:h:2', 'h:3=node:unknown:h:3', 'h:4=node:up:h:4', 'ext:hub|=external:external:Hub']);
+  // Only a peer with a name is kept; an address that is not text is dropped.
+  assert.equal(m.nodes.find((n) => n.kind === 'external').address, null);
+  assert.equal(describe(m.nodes[1]), 'h:2: unknown, 3 clients, uptime 99.5% over 90 days.');
+  // The state that reaches a class is one the map knows.
+  for (const w of [1000, 400]) for (const n of layout(m, w).nodes) assert.ok(['up', 'down', 'unknown', 'external'].includes(n.state));
+  assert.equal(buildModel(null).empty, true);
+  assert.equal(buildModel({ length: 3 }).empty, true);
+  assert.doesNotThrow(() => buildModel([host(1, { role: 'proxy', proxy: { for: [null, 5, 'h:2'] }, uptime90: { percent90: 'x' }, latencyMs: 'slow', stats: { data: { interfaces: { clients: 'many' } } } }), host(2)]));
+  const odd = buildModel([host(1, { role: 'proxy', proxy: { for: [null, 5, 'h:2'] }, uptime90: { percent90: 'x' }, latencyMs: 'slow', stats: { ok: true, data: { interfaces: { clients: 'many' } } } }), host(2)]);
+  assert.deepEqual([odd.nodes[0].ms, odd.nodes[0].uptime, odd.nodes[0].clients, odd.nodes[0].members], [null, null, null, 1]);
+  // A port may be text of digits, as long as the key is the same.
+  assert.equal(buildModel([{ ...host(1), port: '4242', upstreams: [{ name: 'X' }] }]).nodes[0].id, 'h:4242');
+});
+
+test('buildModel: a host listed twice is one node; hosts, peers, members and names are capped', () => {
+  const twice = buildModel([host(1, { name: 'First', upstreams: [{ name: 'X' }] }), host(1, { name: 'Second' }), host(2)]);
+  assert.deepEqual([...twice.nodes.filter((n) => n.kind === 'node').map((n) => `${n.id}:${n.name}`)], ['h:1:First', 'h:2:h:2']);
+  const many = Array.from({ length: 200 }, (_, i) => host(i + 1, { name: 'n'.repeat(5000), upstreams: Array.from({ length: 50 }, (_, k) => ({ name: `P${i}-${k}`, address: 'a'.repeat(5000) })) }));
+  many.unshift(host(999, { name: 'Door', role: 'proxy', proxy: { for: Array.from({ length: 5000 }, (_, i) => `h:${i + 1}`) } }));
+  const m = buildModel(many);
+  assert.equal(m.nodes.filter((n) => n.kind !== 'external').length, 64);
+  assert.equal(m.edges.filter((e) => e.kind === 'proxy').length, 63, 'every other host is a member');
+  assert.equal(m.nodes.find((n) => n.kind === 'proxy').members, 64);
+  assert.equal(m.edges.filter((e) => e.kind === 'upstream' && e.from === 'h:1').length, 8);
+  assert.ok(m.nodes.every((n) => n.name.length <= 64 && (n.address === null || n.address.length <= 128)));
+  // Every line of the list is bounded: at most 64 names of at most 64 characters, and the words around them.
+  assert.ok(listItems(m).every((t) => t.length < 64 * 66 + 500), 'every line of the list is bounded');
+  const narrow = layout(m, 390);
+  assert.ok(narrow.pills.length <= 64);
+  assert.ok(narrow.nodes.every((n) => n.label.length < 64 * 66 + 500));
+  // A host key that is far too long is not a host.
+  assert.equal(buildModel([host(1, { host: 'x'.repeat(300), upstreams: [{ name: 'X' }] })]).nodes.length, 0);
 });

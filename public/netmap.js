@@ -48,10 +48,20 @@
   var PHONE_SIDE = 6;
   var MAX_PROXIES = 3;
   var MAX_EXTERNALS = 8;
+  var MAX_PILLS = 64;
+
+  // What the map takes from /api/status at most: the rest is left out, so a huge answer cannot make
+  // the page slow. Names are cut to MAX_NAME characters once, here, for every place that shows them.
+  var MAX_HOSTS = 64;
+  var MAX_UPSTREAMS = 8;
+  var MAX_MEMBERS = 64;
+  var MAX_NAME = 64;
+  var MAX_ADDRESS = 128;
+  var STATES = { up: true, down: true, unknown: true };
 
   // Lookups by a host key use objects with no prototype, so a key such as "toString" is only a key.
   function hostKey(h) { return h.host + ':' + h.port; }
-  function displayName(h) { return h.name || hostKey(h); }
+  function displayName(h) { return h.name || clip(hostKey(h), MAX_NAME); }
   function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
 
   function num(n) {
@@ -68,6 +78,8 @@
   // Breaks text into at most maxLines lines of at most max characters, at spaces where it can
   // (a longer word is cut); what does not fit ends in an ellipsis.
   function wrap(text, max, maxLines) {
+    max = Math.max(1, Math.floor(max) || 1);
+    maxLines = Math.max(1, Math.floor(maxLines) || 1);
     var words = [];
     String(text).split(/\s+/).filter(Boolean).forEach(function (w) {
       for (; w.length > max; w = w.slice(max)) words.push(w.slice(0, max));
@@ -92,7 +104,45 @@
     var s = h.stats;
     if (!s || s.stale || !s.data || !s.data.interfaces) return null;
     var c = s.data.interfaces.clients;
-    return typeof c === 'number' ? c : null;
+    return typeof c === 'number' && isFinite(c) ? c : null;
+  }
+
+  function isObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  function plainText(v, max) {
+    if (typeof v !== 'string') return null;
+    var t = v.trim();
+    return t ? clip(t, max) : null;
+  }
+
+  // The hosts of /api/status as the map uses them: plain objects with a host and a port, each key
+  // once, at most MAX_HOSTS; a state it does not know is unknown, and names are text, cut short.
+  // Anything else in an entry is dropped, so nothing from the network reaches a class or a label
+  // unchecked.
+  function cleanHosts(hosts) {
+    var out = [];
+    var seen = Object.create(null);
+    (Array.isArray(hosts) ? hosts : []).forEach(function (h) {
+      if (out.length >= MAX_HOSTS || !isObject(h) || typeof h.host !== 'string' || !h.host || h.host.length > 253) return;
+      var port = typeof h.port === 'number' && h.port % 1 === 0 && h.port >= 0 && h.port <= 65535 ? h.port
+        : typeof h.port === 'string' && /^\d{1,5}$/.test(h.port) ? h.port : null;
+      if (port === null) return;
+      var key = h.host + ':' + port;
+      if (seen[key]) return;
+      seen[key] = true;
+      var proxy = h.role === 'proxy';
+      var members = proxy && isObject(h.proxy) && Array.isArray(h.proxy.for)
+        ? h.proxy.for.filter(function (m) { return typeof m === 'string'; }).slice(0, MAX_MEMBERS) : null;
+      var ups = (Array.isArray(h.upstreams) ? h.upstreams : []).filter(function (u) { return isObject(u) && plainText(u.name, MAX_NAME) !== null; })
+        .slice(0, MAX_UPSTREAMS).map(function (u) { return { name: plainText(u.name, MAX_NAME), address: plainText(u.address, MAX_ADDRESS) }; });
+      out.push({
+        host: h.host, port: port, name: plainText(h.name, MAX_NAME), status: STATES[h.status] === true ? h.status : 'unknown',
+        role: proxy ? 'proxy' : 'node', proxy: members ? { for: members } : null, proxiedBy: typeof h.proxiedBy === 'string' ? h.proxiedBy : null,
+        latencyMs: typeof h.latencyMs === 'number' && isFinite(h.latencyMs) ? h.latencyMs : null,
+        uptime90: isObject(h.uptime90) && typeof h.uptime90.percent90 === 'number' && isFinite(h.uptime90.percent90) ? { percent90: h.uptime90.percent90 } : null,
+        stats: isObject(h.stats) ? h.stats : null, upstreams: ups, links: Array.isArray(h.links) ? h.links : []
+      });
+    });
+    return out;
   }
 
   // What a link says about itself, in parentheses after a node's name in the text alternatives.
@@ -183,7 +233,7 @@
   // The nodes and links of the map. Returns {nodes, edges, empty}; empty is true when there is
   // nothing to draw beyond plain nodes (no proxy, no upstream and no link between nodes).
   function buildModel(hosts) {
-    var list = Array.isArray(hosts) ? hosts : [];
+    var list = cleanHosts(hosts);
     var hasProxy = list.some(function (h) { return h.role === 'proxy'; });
     var nodes = [];
     var edges = [];
@@ -193,7 +243,7 @@
       var tier = h.role === 'proxy' ? 0 : (h.proxiedBy || hasProxy) ? 1 : 0;
       var n = {
         id: hostKey(h), kind: h.role === 'proxy' ? 'proxy' : 'node', name: displayName(h), state: h.status || 'unknown', tier: tier,
-        clients: h.status === 'down' ? null : clients(h), ms: h.latencyMs === undefined ? null : h.latencyMs,
+        clients: h.status === 'down' ? null : clients(h), ms: h.latencyMs,
         uptime: h.uptime90 && typeof h.uptime90.percent90 === 'number' ? h.uptime90.percent90 : null,
         members: h.proxy && Array.isArray(h.proxy.for) ? h.proxy.for.length : 0, address: null, usedBy: []
       };
@@ -205,11 +255,11 @@
       if (h.proxy && Array.isArray(h.proxy.for)) {
         h.proxy.for.forEach(function (m) { if (byId[m]) edges.push({ from: from.id, to: m, kind: 'proxy' }); });
       }
-      (Array.isArray(h.upstreams) ? h.upstreams : []).forEach(function (u) {
+      h.upstreams.forEach(function (u) {
         // The same peer listed by two nodes is one box.
-        var id = 'ext:' + String(u.name).toLowerCase() + '|' + (u.address || '');
+        var id = 'ext:' + u.name.toLowerCase() + '|' + (u.address || '');
         if (!byId[id]) {
-          byId[id] = { id: id, kind: 'external', name: String(u.name), state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [] };
+          byId[id] = { id: id, kind: 'external', name: u.name, state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [] };
           nodes.push(byId[id]);
           externals++;
         }
@@ -270,15 +320,6 @@
     out.push(plural(model.edges.length - between, 'link', 'links'));
     if (between) out.push(plural(between, 'link between nodes', 'links between nodes'));
     return out.join(', ');
-  }
-
-  // Splits count items over rows of at most perRow, as even as it can.
-  function rowsOf(count, perRow) {
-    var rows = Math.ceil(count / perRow);
-    var size = Math.ceil(count / rows);
-    var out = [];
-    for (var left = count; left > 0; left -= size) out.push(Math.min(size, left));
-    return out;
   }
 
   function round1(v) { return Math.round(v * 10) / 10; }
@@ -604,9 +645,10 @@
   }
 
   // The nodes that can be picked in the one-node view: the nodes, or the proxies when there are none.
+  // At most MAX_PILLS; "Show as list" has every node.
   function focusChoices(model) {
     var nodes = model.nodes.filter(function (n) { return n.kind === 'node'; });
-    return nodes.length ? nodes : model.nodes.filter(function (n) { return n.kind === 'proxy'; });
+    return (nodes.length ? nodes : model.nodes.filter(function (n) { return n.kind === 'proxy'; })).slice(0, MAX_PILLS);
   }
 
   // The node to show: the one asked for while it is still there, else the first node with links
@@ -895,7 +937,7 @@
   if (typeof document === 'undefined') {
     // Loaded by the tests: expose the pure parts only.
     globalThis.netmapLogic = {
-      buildModel: buildModel, layout: layout, describe: describe, summaryText: summaryText, listItems: listItems, wrap: wrap, clip: clip, rowsOf: rowsOf,
+      buildModel: buildModel, layout: layout, describe: describe, summaryText: summaryText, listItems: listItems, wrap: wrap, clip: clip,
       planRow: planRow, groupsOf: groupsOf, focusModel: focusModel, pickFocus: pickFocus, rpath: rpath,
       limits: { FOCUS_BELOW: FOCUS_BELOW, MAX_ROW_NODES: MAX_ROW_NODES, MAX_LANES: MAX_LANES }
     };
@@ -912,9 +954,9 @@
   var phoneNote = document.getElementById('netmap-phone-note');
   var hostsNow = null;
   var drawn = '';
-  // The node picked in the one-node view; kept over the refreshes of the page.
+  // The node picked in the one-node view, set only by the visitor; kept over the refreshes of the
+  // page, so a node that is missing from one refresh is shown again when it comes back.
   var picked = null;
-  var pickFocusNext = false;
 
   function el(name, attrs, parent) {
     var e = document.createElementNS(SVG, name);
@@ -1007,9 +1049,8 @@
 
   function pick(id) {
     picked = id;
-    pickFocusNext = true;
     drawn = '';
-    draw();
+    render(true);
   }
 
   // The row of buttons of the one-node view, a tab list: arrow keys, Home and End move along it.
@@ -1044,7 +1085,8 @@
       b.appendChild(state);
       b.addEventListener('click', function () { pick(p.id); });
       b.addEventListener('keydown', function (ev) {
-        if (!ev) return;
+        // A key with a modifier is the browser's or the screen reader's, not ours.
+        if (!ev || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
         var to = ev.key === 'ArrowRight' || ev.key === 'ArrowDown' ? (i + 1) % ids.length
           : ev.key === 'ArrowLeft' || ev.key === 'ArrowUp' ? (i - 1 + ids.length) % ids.length
             : ev.key === 'Home' ? 0 : ev.key === 'End' ? ids.length - 1 : -1;
@@ -1057,24 +1099,34 @@
     return list;
   }
 
-  function draw() {
+  function draw() { render(false); }
+
+  // Draws the map; focusPick puts the focus on the button of the node shown (after a pick).
+  function render(focusPick) {
     if (!hostsNow) return;
-    var model = buildModel(hostsNow);
-    section.hidden = model.empty;
-    if (model.empty) return;
-    var width = holder.clientWidth || 0;
-    // Closed or not laid out yet: drawn when it opens or gets a width.
-    if (width <= 0) return;
-    var lay = layout(model, width, picked);
-    if (lay.mode === 'focus') picked = lay.selected;
-    var items = listItems(model);
+    var model;
+    var lay;
+    var items;
+    try {
+      model = buildModel(hostsNow);
+      section.hidden = model.empty;
+      if (model.empty) return;
+      var width = holder.clientWidth || 0;
+      // Closed or not laid out yet: drawn when it opens or gets a width.
+      if (width <= 0) return;
+      lay = layout(model, width, picked);
+      items = listItems(model);
+    } catch (err) {
+      // The last guard: data the checks above missed leaves the map as it was drawn last.
+      if (typeof console !== 'undefined') console.error('Network map:', err);
+      return;
+    }
     var sig = JSON.stringify([lay, items]);
     if (sig === drawn) return;
     drawn = sig;
     var active = document.activeElement;
     var focusId = active && holder.contains(active) ? active.getAttribute('data-id') : null;
-    var focusPill = pickFocusNext || (active && holder.contains(active) && active.getAttribute('role') === 'tab');
-    pickFocusNext = false;
+    var focusPill = focusPick || (active && holder.contains(active) && active.getAttribute('role') === 'tab');
     var focus = lay.mode === 'focus';
     var tab = focus ? lay.pills.map(function (p) { return p.id; }).indexOf(lay.selected) : -1;
     var attrs = { 'class': 'nm-svg', viewBox: '0 0 ' + lay.width + ' ' + lay.height, width: lay.width, height: lay.height, role: 'group', 'aria-label': 'Backbone network map' };

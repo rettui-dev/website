@@ -407,12 +407,13 @@ function mapPage() {
   doc.createElement = (t) => new SvgEl(t, doc);
   for (const id of ['netmap', 'netmap-chart', 'netmap-list', 'netmap-summary', 'netmap-legend-links', 'netmap-phone-note']) doc.byId[id] = new SvgEl('div', doc);
   doc.getElementById = (id) => doc.byId[id] || null;
-  const sandbox = { Date, Math, JSON, document: doc, window: { addEventListener() {} } };
+  const errors = [];
+  const sandbox = { Date, Math, JSON, document: doc, window: { addEventListener() {} }, console: { error: (...a) => errors.push(a.map(String).join(' ')) } };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read('netmap.js'), sandbox);
   const chart = doc.byId['netmap-chart'];
   const show = (hosts, width = 1200) => { chart.clientWidth = width; sandbox.netmapView.update(hosts); return chart.children[0]; };
-  return { doc, chart, show, section: doc.byId.netmap, legend: doc.byId['netmap-legend-links'], note: doc.byId['netmap-phone-note'] };
+  return { doc, chart, show, errors, section: doc.byId.netmap, legend: doc.byId['netmap-legend-links'], note: doc.byId['netmap-phone-note'] };
 }
 
 test('draw: every marker a link refers to exists, and ids stay unique over two draws', () => {
@@ -502,11 +503,55 @@ test('draw: a narrow map is one node at a time, picked with a tab list that keep
   // The picked node leaves the page: the first node with links is shown instead.
   p.show(hosts().filter((h) => h.port !== 2), 400);
   assert.equal(focusBox().getAttribute('data-id'), 'h:1');
+  // It comes back at the next refresh: it is shown again, because only a pick changes the pick.
+  p.show(hosts(), 400);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:2');
   // Wide again: the whole map, with no tab list; narrow again: the pick is still there.
   p.show(hosts(), 1200);
   assert.equal(p.chart.children.length, 1);
   assert.equal(p.chart.children[0].getAttribute('role'), 'group');
   assert.ok(p.chart.children[0].children.some((c) => c.classes.has('frame')));
+  p.show(hosts(), 400);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:2');
+  assert.equal(pills()[1].getAttribute('aria-selected'), 'true');
+});
+
+test('draw: a key with a modifier is left to the browser, and a pick never takes the focus later', () => {
+  const p = mapPage();
+  const hosts = () => [door(), ...trio()];
+  p.show(hosts(), 400);
+  const pills = () => p.chart.children[0].children;
+  const focusBox = () => p.chart.children[1].children.find((c) => c.classes.has('focus'));
+  pills()[0].focus();
+  for (const mod of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']) {
+    let stopped = false;
+    p.doc.activeElement.listeners.keydown[0]({ key: 'ArrowRight', [mod]: true, preventDefault: () => { stopped = true; } });
+    assert.equal(stopped, false, mod);
+    assert.equal(focusBox().getAttribute('data-id'), 'h:1', mod);
+  }
+  // A pick while the map has no width yet draws nothing; the focus stays where the visitor is when it is drawn later.
+  p.chart.clientWidth = 0;
+  pills()[2].fire('click');
+  const elsewhere = { getAttribute: () => null, parent: null };
+  p.doc.activeElement = elsewhere;
+  p.show(hosts(), 400);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:3', 'the pick is kept');
+  assert.equal(p.doc.activeElement, elsewhere, 'and the focus is not moved');
+  // A refresh after a pick does not move the focus either.
+  pills()[1].fire('click');
+  p.doc.activeElement = elsewhere;
+  p.show(hosts().map((h) => ({ ...h, latencyMs: 9 })), 400);
+  assert.equal(p.doc.activeElement, elsewhere);
+});
+
+test('draw: data that breaks the map leaves the last drawing and says why in the console', () => {
+  const p = mapPage();
+  p.show([door(), ...trio()], 1200);
+  const before = p.chart.children[0];
+  const broken = new Proxy([], { get() { throw new Error('broken answer'); } });
+  assert.doesNotThrow(() => p.show(broken, 1200));
+  assert.equal(p.chart.children[0], before);
+  assert.match(p.errors.join(' '), /broken answer/);
 });
 
 test('draw: names from the network are only ever text', () => {
