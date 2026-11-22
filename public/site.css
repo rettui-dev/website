@@ -255,6 +255,8 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 .summary .num, .stats .num { color: var(--text); }
 .summary > span { white-space: nowrap; }
 .summary > span + span::before { content: "\00b7"; margin: 0 8px; }
+/* "checked 5s ago" counts up to two digits: reserve their room so the row does not rewrap as it ticks. */
+.summary time { display: inline-block; min-width: 7ch; }
 .summary .down-text { color: var(--text); }
 p.summary { display: block; }
 .warnings { margin: 4px 0 0; }
