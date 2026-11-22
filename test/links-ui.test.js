@@ -464,3 +464,57 @@ test('draw: without node links there are no markers, no legend and no note', () 
   assert.equal(p.note.hidden, true);
 });
 
+test('draw: a narrow map is one node at a time, picked with a tab list that keeps the pick over refreshes', () => {
+  const p = mapPage();
+  const hosts = () => [door(), ...trio()];
+  p.show(hosts(), 400);
+  const [tabs, svg] = p.chart.children;
+  assert.equal(tabs.getAttribute('role'), 'tablist');
+  assert.equal(svg.getAttribute('role'), 'tabpanel');
+  const pills = () => p.chart.children[0].children;
+  const state = () => pills().map((b) => `${b.getAttribute('data-id')}:${b.getAttribute('aria-selected')}:${b.getAttribute('tabindex')}`);
+  assert.deepEqual(state(), ['h:1:true:0', 'h:2:false:-1', 'h:3:false:-1']);
+  assert.ok(pills().every((b) => b.tag === 'button' && b.getAttribute('role') === 'tab' && b.getAttribute('type') === 'button'));
+  assert.equal(svg.getAttribute('aria-labelledby'), pills()[0].getAttribute('id'));
+  // The state is in the button as a mark and in words, and the name is text.
+  assert.deepEqual(pills()[0].children.map((c) => c.textContent), ['●', 'Front', ', up']);
+  const focusBox = () => p.chart.children[1].children.find((c) => c.classes.has('focus'));
+  assert.equal(focusBox().getAttribute('data-id'), 'h:1');
+  // A click picks a node; the arrow keys, Home and End move along the list and keep the focus on it.
+  pills()[2].fire('click');
+  assert.equal(focusBox().getAttribute('data-id'), 'h:3');
+  const key = (k) => { let stopped = false; p.doc.activeElement.listeners.keydown[0]({ key: k, preventDefault: () => { stopped = true; } }); return stopped; };
+  pills()[2].focus();
+  assert.equal(key('ArrowRight'), true);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:1', 'wraps around');
+  assert.equal(p.doc.activeElement.getAttribute('data-id'), 'h:1');
+  key('End');
+  assert.equal(p.doc.activeElement.getAttribute('data-id'), 'h:3');
+  key('ArrowLeft');
+  assert.equal(focusBox().getAttribute('data-id'), 'h:2');
+  assert.equal(key('a'), false, 'other keys do nothing');
+  // A refresh with new data keeps the pick, and the focus on its button.
+  const again = hosts();
+  again[2].status = 'down';
+  p.show(again, 400);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:2');
+  assert.equal(p.doc.activeElement.getAttribute('data-id'), 'h:2');
+  // The picked node leaves the page: the first node with links is shown instead.
+  p.show(hosts().filter((h) => h.port !== 2), 400);
+  assert.equal(focusBox().getAttribute('data-id'), 'h:1');
+  // Wide again: the whole map, with no tab list; narrow again: the pick is still there.
+  p.show(hosts(), 1200);
+  assert.equal(p.chart.children.length, 1);
+  assert.equal(p.chart.children[0].getAttribute('role'), 'group');
+  assert.ok(p.chart.children[0].children.some((c) => c.classes.has('frame')));
+});
+
+test('draw: names from the network are only ever text', () => {
+  const p = mapPage();
+  const evil = '<img src=x onerror=alert(1)>';
+  p.show([door(), host(1, evil, { links: [link(2)], upstreams: [{ name: evil }] }), host(2, 'B'), host(3, 'C')], 400);
+  const all = p.chart.children.flatMap((c) => [c, ...c.all()]);
+  assert.ok(all.some((e) => e.textContent.includes('<img')));
+  assert.ok(all.every((e) => e.tag !== 'img'));
+  assert.doesNotMatch(read('netmap.js'), /innerHTML|insertAdjacentHTML|outerHTML|\.style\b|setAttribute\('style'/);
+});

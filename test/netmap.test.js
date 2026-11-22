@@ -374,3 +374,236 @@ test('wrap, clip and rowsOf', () => {
   assert.deepEqual([...rowsOf(3, 2)], [2, 1]);
 });
 
+// The frame and the one-node view, against the design mocks.
+
+const { planRow, focusModel, pickFocus, limits } = sandbox.netmapLogic;
+const mock = (port, name, over = {}) => host(port, { name, proxiedBy: 'h:99', ...over });
+const dials = (...ports) => ports.map((p) => ({ to: `h:${p}`, dir: 'dials', enabled: true, source: 'detected', conflict: null }));
+const rns = (ports) => host(99, { name: 'RNS', role: 'proxy', proxy: { for: ports.map((p) => `h:${p}`) } });
+// Three nodes: Front dials Back and Side, Back dials Side, each has one external peer.
+const mock3 = () => [rns([1, 2, 3]),
+  mock(1, 'Front', { links: dials(2, 3), upstreams: [{ name: 'Ratspeak' }] }),
+  mock(2, 'Back', { links: dials(3), upstreams: [{ name: 'RNS Beleth' }] }),
+  mock(3, 'Side', { upstreams: [{ name: 'MichMesh' }] })];
+// Eight nodes in the order of the mock, with its ten links and one node down.
+const ORD = ['E', 'F', 'B', 'S', 'M', 'R', 'A', 'Sp'];
+const L8 = [['E', 'F'], ['E', 'M'], ['F', 'B'], ['F', 'S'], ['B', 'S'], ['B', 'R'], ['M', 'R'], ['R', 'A'], ['S', 'A'], ['A', 'Sp']];
+const EXT8 = { E: 'Quad4', F: 'Ratspeak', B: 'RNS Beleth', S: 'MichMesh', R: 'Amsterdam' };
+const p8 = (k) => ORD.indexOf(k) + 1;
+const mock8 = (count = 8) => [rns(Array.from({ length: count }, (_, i) => i + 1)), ...Array.from({ length: count }, (_, i) => {
+  const k = ORD[i];
+  return mock(i + 1, k ? `Node ${k}` : `Extra ${i}`, {
+    status: k === 'Sp' ? 'down' : 'up', links: k ? dials(...L8.filter(([a]) => a === k).map(([, b]) => p8(b))) : [],
+    ...(EXT8[k] ? { upstreams: [{ name: EXT8[k] }] } : {}),
+  });
+})];
+const through = (p, q, n) => {
+  const [x1, y1] = p;
+  const [x2, y2] = q;
+  const inX = (x) => x > n.x + 0.5 && x < n.x + n.w - 0.5;
+  const inY = (y) => y > n.y + 0.5 && y < n.y + n.h - 0.5;
+  if (x1 === x2) return inX(x1) && Math.max(y1, y2) > n.y + 0.5 && Math.min(y1, y2) < n.y + n.h - 0.5;
+  if (y1 === y2) return inY(y1) && Math.max(x1, x2) > n.x + 0.5 && Math.min(x1, x2) < n.x + n.w - 0.5;
+  return false;
+};
+
+test('the three node mock: a frame around the row, arcs above it, peers below it, all inside the width', () => {
+  const m = buildModel(mock3());
+  for (const w of [1100, 1000, 640]) {
+    const l = layout(m, w);
+    assert.equal(l.mode, 'frame', String(w));
+    const frame = l.nodes.find((n) => n.frame);
+    const row = l.nodes.filter((n) => n.kind === 'node');
+    const ext = l.nodes.filter((n) => n.kind === 'external');
+    assert.equal(row.length, 3);
+    assert.equal(ext.length, 3);
+    assert.ok(frame.x >= 0 && frame.x + frame.w <= l.width);
+    for (const n of row) {
+      assert.ok(n.x > frame.x && n.x + n.w < frame.x + frame.w && n.y > frame.y && n.y + n.h < frame.y + frame.h, `${w}: ${n.id} inside the frame`);
+      assert.ok(n.w <= 176 && n.w >= 104);
+      assert.equal(n.y, row[0].y, 'one row');
+    }
+    apart([...row, ...ext]);
+    // The node's peer is right under it, joined by a straight line that crosses the frame's foot.
+    for (const e of l.edges.filter((x) => x.kind === 'upstream')) {
+      const a = l.nodes.find((n) => n.id === e.from);
+      const b = l.nodes.find((n) => n.id === e.to);
+      assert.ok(b.y > frame.y + frame.h);
+      assert.equal(e.pts.length, 2, 'straight down');
+      assert.equal(e.pts[0][0], a.x + a.w / 2);
+      assert.ok(e.pts[0][1] < frame.y + frame.h && e.pts[1][1] > frame.y + frame.h);
+    }
+    const links = l.edges.filter((x) => x.kind === 'link');
+    assert.deepEqual([...links.map((e) => `${e.from}>${e.to}:${e.pts.length}`)].sort(), ['h:1>h:2:2', 'h:1>h:3:4', 'h:2>h:3:2']);
+    const arc = links.find((e) => e.pts.length === 4);
+    assert.equal(arc.lane, 0);
+    assert.ok(arc.pts[1][1] < row[0].y && arc.pts[1][1] > frame.y + 90, 'above the row, under the header');
+    for (const e of links) for (const n of row) for (let i = 1; i < e.pts.length; i++) assert.ok(!through(e.pts[i - 1], e.pts[i], n), `${e.from}>${e.to} through ${n.id}`);
+  }
+});
+
+test('the eight node mock: at most four lanes, no arc through a box, and every arc in its own lane where they overlap', () => {
+  const m = buildModel(mock8());
+  const nodes = m.nodes.filter((n) => n.kind === 'node');
+  const row = planRow(nodes, m.edges.filter((e) => e.kind === 'link'));
+  assert.equal(row.near.length + row.skips.length, 10);
+  assert.ok(row.lanes <= limits.MAX_LANES, `${row.lanes} lanes`);
+  assert.equal(row.lanes, 3);
+  for (const a of row.skips) for (const b of row.skips) {
+    if (a === b || a.lane !== b.lane) continue;
+    const [lo1, hi1] = [Math.min(a.ia, a.ib), Math.max(a.ia, a.ib)];
+    const [lo2, hi2] = [Math.min(b.ia, b.ib), Math.max(b.ia, b.ib)];
+    assert.ok(hi1 <= lo2 || hi2 <= lo1, 'arcs in one lane do not overlap');
+  }
+  const l = layout(m, 1100);
+  assert.equal(l.mode, 'frame');
+  const boxes = l.nodes.filter((n) => n.kind === 'node');
+  assert.ok(boxes.every((n) => n.w >= 104 && n.w <= 176));
+  apart(l.nodes.filter((n) => !n.frame));
+  for (const e of l.edges) for (const n of boxes) for (let i = 1; i < e.pts.length; i++) assert.ok(!through(e.pts[i - 1], e.pts[i], n), `${e.from}>${e.to} through ${n.id}`);
+  // Two arcs that meet one node from the same side meet it at different points.
+  const tops = l.edges.filter((e) => e.kind === 'link' && e.pts.length === 4).flatMap((e) => [e.pts[0], e.pts[3]].map((p) => p.join()));
+  assert.equal(new Set(tops).size, tops.length);
+  // The link to the node that is down is grey with slashes.
+  const down = l.edges.find((e) => e.to === 'h:8');
+  assert.equal(down.down, true);
+  assert.equal(down.ticks.length, 2);
+});
+
+test('the one-node view takes over below 640 pixels, above 8 nodes in a row, or above 4 lanes', () => {
+  assert.deepEqual({ ...limits }, { FOCUS_BELOW: 640, MAX_ROW_NODES: 8, MAX_LANES: 4 });
+  const m3 = buildModel(mock3());
+  assert.equal(layout(m3, 640).mode, 'frame');
+  assert.equal(layout(m3, 639).mode, 'focus');
+  assert.equal(layout(m3, 639).reason, 'narrow');
+  assert.equal(layout(buildModel(mock8(8)), 1400).mode, 'frame');
+  const nine = layout(buildModel(mock8(9)), 1400);
+  assert.equal(nine.mode, 'focus');
+  assert.equal(nine.reason, 'crowded');
+  // Nodes behind no proxy follow the same rule.
+  const loose = (n) => buildModel(Array.from({ length: n }, (_, i) => host(i + 1, { name: `N${i}`, upstreams: [{ name: `P${i}` }] })));
+  assert.equal(layout(loose(8), 1400).mode, 'frame');
+  assert.equal(layout(loose(9), 1400).reason, 'crowded');
+  // Five lanes: one node dials each of the others but its neighbour, then the next does too.
+  const fan = buildModel([rns([1, 2, 3, 4, 5, 6, 7]), ...Array.from({ length: 7 }, (_, i) => mock(i + 1, `N${i}`, { links: i === 0 ? dials(3, 4, 5, 6, 7) : i === 1 ? dials(4, 5, 6, 7) : [] }))]);
+  const lanes = planRow(fan.nodes.filter((n) => n.kind === 'node'), fan.edges.filter((e) => e.kind === 'link')).lanes;
+  assert.ok(lanes > 4, `${lanes} lanes`);
+  assert.equal(layout(fan, 1400).reason, 'lanes');
+  // Eight nodes do not fit in a row at 640: the boxes would be narrower than 104.
+  assert.equal(layout(buildModel(mock8(8)), 800).reason, 'fit');
+});
+
+test('focus model: a node dialled by two, dialling one, with one external peer', () => {
+  const m = buildModel(mock8());
+  const f = focusModel(m, 'h:6');
+  assert.equal(f.node.name, 'Node R');
+  assert.deepEqual([...f.proxies.map((p) => p.id)], ['h:99']);
+  assert.deepEqual([...f.dialledBy.map((x) => x.node.name)], ['Node B', 'Node M']);
+  assert.deepEqual([...f.dials.map((x) => x.node.name)], ['Node A']);
+  assert.deepEqual([...f.externals.map((x) => x.node.name)], ['Amsterdam']);
+  assert.equal(focusModel(m, 'h:404'), null);
+  for (const w of [1100, 390, 330, 280]) {
+    const l = layout(buildModel(mock8(9)), w, 'h:6');
+    assert.equal(l.mode, 'focus');
+    assert.equal(l.selected, 'h:6');
+    const by = Object.fromEntries(l.nodes.map((n) => [n.id, n]));
+    const mid = l.nodes.find((n) => n.focus);
+    assert.equal(mid.id, 'h:6');
+    assert.ok(by['h:99'].y + by['h:99'].h < mid.y, `${w}: the proxy is above`);
+    assert.ok(by['ext:amsterdam|'].y > mid.y + mid.h, `${w}: the peer is below`);
+    if (w >= 640) {
+      assert.ok(by['h:3'].x + by['h:3'].w <= mid.x && by['h:5'].x + by['h:5'].w <= mid.x, 'dialled by: left');
+      assert.ok(by['h:7'].x >= mid.x + mid.w, 'dials: right');
+      assert.ok(l.texts.some((t) => t.text === 'Dialled by') && l.texts.some((t) => t.text === 'Dials'));
+    } else {
+      for (const id of ['h:3', 'h:5', 'h:7']) assert.ok(by[id].y > mid.y + mid.h, `${w}: ${id} under the node`);
+    }
+    for (const n of l.nodes) assert.ok(n.x >= 0 && n.x + n.w <= l.width && n.y + n.h <= l.height, `${w}: ${n.id}`);
+    apart(l.nodes, String(w));
+    // The arrows: from the nodes that dial it to it, and from it to the node it dials.
+    const arrows = [...l.edges.filter((e) => e.kind === 'link')].map((e) => `${e.from}>${e.to}:${e.start}:${e.end}`);
+    assert.deepEqual(arrows.sort(), ['h:3>h:6:dot:arrow', 'h:5>h:6:dot:arrow', 'h:6>h:7:dot:arrow']);
+    for (const e of l.edges.filter((x) => x.kind === 'link')) {
+      const a = by[e.from];
+      const [x, y] = e.pts[0];
+      assert.ok(x >= a.x - 0.5 && x <= a.x + a.w + 0.5 && y >= a.y - 0.5 && y <= a.y + a.h + 0.5, `${w}: ${e.from} starts at its box`);
+    }
+  }
+});
+
+test('focus: the pick is kept while the node is there, and falls back to the first node with links', () => {
+  const m = buildModel(mock8(9));
+  assert.equal(pickFocus(m, 'h:4'), 'h:4');
+  assert.equal(pickFocus(m, 'h:404'), 'h:1');
+  assert.equal(pickFocus(m, null), 'h:1');
+  assert.equal(pickFocus(m, 'h:99'), 'h:1', 'the proxy is not a choice while there are nodes');
+  assert.equal(pickFocus(m, { toString: () => 'h:4' }), 'h:1');
+  const quiet = buildModel([rns([1, 2, 3]), mock(1, 'A'), mock(2, 'B', { links: dials(3) }), mock(3, 'C')]);
+  assert.equal(pickFocus(quiet, null), 'h:2');
+  assert.equal(pickFocus(buildModel([rns([1]), mock(1, 'A', { upstreams: [{ name: 'X' }] })]), null), 'h:1');
+  // A proxy alone is picked itself.
+  assert.equal(pickFocus(buildModel([host(1, { role: 'proxy', proxy: { for: [] }, upstreams: [{ name: 'X' }] })]), null), 'h:1');
+  assert.equal(pickFocus(buildModel([]), null), null);
+  const l = layout(m, 390, 'h:404');
+  assert.equal(l.selected, 'h:1');
+  assert.deepEqual([...l.pills.map((p) => p.id)], Array.from({ length: 9 }, (_, i) => `h:${i + 1}`));
+});
+
+test('focus: many neighbours and peers stay inside the width, and the rest are counted', () => {
+  const many = [rns(Array.from({ length: 20 }, (_, i) => i + 1)), ...Array.from({ length: 20 }, (_, i) => mock(i + 1, 'x'.repeat(200), {
+    links: i === 0 ? dials(...Array.from({ length: 8 }, (_, k) => k + 2)) : dials(1), upstreams: i === 0 ? Array.from({ length: 8 }, (_, k) => ({ name: `Peer ${k}` })) : undefined,
+  }))];
+  for (const w of [1400, 800, 640, 500, 390, 320]) {
+    const l = layout(buildModel(many), w, 'h:1');
+    assert.equal(l.mode, 'focus');
+    for (const n of l.nodes) assert.ok(n.x >= 0 && n.x + n.w <= l.width && n.y >= 0 && n.y + n.h <= l.height, `${w}: ${n.id}`);
+    for (const e of l.edges) for (const [x, y] of e.pts) assert.ok(x >= 0 && x <= l.width && y >= 0 && y <= l.height, `${w}: ${e.d}`);
+    apart(l.nodes, String(w));
+    assert.ok(l.texts.some((t) => /^and \d+ more, see the list$/.test(t.text)), `${w}: the rest are counted`);
+    for (const n of l.nodes) for (const t of n.lines) assert.ok(t.text.length <= 60, 'long names are clipped');
+    assert.ok(l.pills.every((p) => p.name.length <= 32));
+  }
+});
+
+test('layout survives garbage: no hosts, odd widths, and a node in two proxies is drawn once', () => {
+  for (const w of [NaN, -5, 0, undefined, 1e9]) assert.doesNotThrow(() => layout(buildModel(mock3()), w));
+  assert.equal(layout(buildModel([]), 800).nodes.length, 0);
+  const two = buildModel([rns([1, 2]), host(98, { name: 'Other', role: 'proxy', proxy: { for: ['h:2', 'h:3'] } }), mock(1, 'A'), mock(2, 'B'), mock(3, 'C')]);
+  const l = layout(two, 1000);
+  assert.equal(l.mode, 'frame');
+  assert.equal(l.nodes.filter((n) => n.frame).length, 2);
+  assert.equal(l.nodes.filter((n) => n.id === 'h:2').length, 1);
+  const [f1, f2] = l.nodes.filter((n) => n.frame);
+  assert.ok(f1.y + f1.h < f2.y, 'stacked');
+  apart(l.nodes.filter((n) => !n.frame));
+});
+
+test('a peer used by several nodes of a row is one box, with a line from each that turns under the frame', () => {
+  const shared = [rns([1, 2, 3]), mock(1, 'A', { upstreams: [{ name: 'Hub' }] }), mock(2, 'B'), mock(3, 'C', { upstreams: [{ name: 'Hub' }] })];
+  const l = layout(buildModel(shared), 1000);
+  const hub = l.nodes.filter((n) => n.id === 'ext:hub|');
+  assert.equal(hub.length, 1);
+  const frame = l.nodes.find((n) => n.frame);
+  const lines = l.edges.filter((e) => e.to === 'ext:hub|');
+  assert.equal(lines.length, 2);
+  for (const e of lines) {
+    assert.ok(e.pts.length === 4 && e.turns, 'an elbow');
+    assert.ok(e.pts[1][1] > frame.y + frame.h, 'the turn is under the frame');
+    assert.ok(e.pts[3][0] > hub[0].x && e.pts[3][0] < hub[0].x + hub[0].w);
+  }
+  assert.notEqual(lines[0].pts[3][0], lines[1].pts[3][0], 'each line has its own spot on the box');
+  // Turns in one lane never overlap.
+  const span = (e) => [Math.min(e.pts[1][0], e.pts[2][0]), Math.max(e.pts[1][0], e.pts[2][0])];
+  if (lines[0].pts[1][1] === lines[1].pts[1][1]) assert.ok(span(lines[0])[1] <= span(lines[1])[0] || span(lines[1])[1] <= span(lines[0])[0]);
+  // Three nodes sharing two peers: lines whose turns overlap take different lanes.
+  const crowd = layout(buildModel([rns([1, 2, 3, 4]), mock(1, 'A', { upstreams: [{ name: 'Hub' }, { name: 'Far' }] }), mock(2, 'B', { upstreams: [{ name: 'Hub' }] }), mock(3, 'C', { upstreams: [{ name: 'Far' }] }), mock(4, 'D', { upstreams: [{ name: 'Hub' }, { name: 'Far' }] })]), 1000);
+  const bends = crowd.edges.filter((e) => e.turns);
+  assert.ok(bends.length >= 3);
+  for (const a of bends) for (const b of bends) {
+    if (a !== b && a.pts[1][1] === b.pts[1][1]) assert.ok(span(a)[1] <= span(b)[0] || span(b)[1] <= span(a)[0], `${a.d} and ${b.d}`);
+  }
+  apart(crowd.nodes.filter((n) => !n.frame));
+  // The same peer in two frames is drawn under each, with ids that stay apart.
+  const two = layout(buildModel([rns([1]), host(98, { name: 'Other', role: 'proxy', proxy: { for: ['h:2'] } }), mock(1, 'A', { upstreams: [{ name: 'Hub' }] }), mock(2, 'B', { upstreams: [{ name: 'Hub' }] })]), 1000);
+  assert.deepEqual([...two.nodes.filter((n) => n.kind === 'external').map((n) => n.id)], ['ext:hub|', 'ext:hub|#2']);
+});
