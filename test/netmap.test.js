@@ -171,7 +171,7 @@ test('with users and require_login the map adds nothing that is locked', async (
     // What the map reads (state, clients, connect time, uptime) is public data.
     assert.equal(body.hosts[0].status, 'up');
     assert.equal(body.hosts[0].stats.data.interfaces.clients, 4);
-    assert.deepEqual(body.hosts[0].locked.sort(), ['details', 'disk', 'peers', 'storage', 'versions']);
+    assert.deepEqual(body.hosts[0].locked.sort(), ['details', 'disk', 'links', 'peers', 'storage', 'versions']);
     // The static files of the map are public too.
     assert.equal((await fetch(`${s.base}/netmap.js`)).status, 200);
   } finally {

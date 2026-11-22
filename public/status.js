@@ -430,12 +430,14 @@
 
   // ---- Login: what a visitor without one does not see (pure helpers) ----
 
-  var LOCK_WORDS = { storage: 'message store', peers: 'peered nodes', disk: 'disk', versions: 'versions' };
+  var LOCK_WORDS = { storage: 'message store', peers: 'peered nodes', disk: 'disk', versions: 'versions', links: 'links between nodes' };
 
   // The sections of a row that need a login, besides the details view; none once logged in.
   function rowLocks(h) {
-    if (!h.locked || !h.locked.length || (!h.stats && !h.group)) return [];
-    return h.locked.filter(function (k) { return Object.prototype.hasOwnProperty.call(LOCK_WORDS, k); });
+    if (!h.locked || !h.locked.length) return [];
+    var keep = h.locked.filter(function (k) { return Object.prototype.hasOwnProperty.call(LOCK_WORDS, k); });
+    // Without numbers on the row there is nothing to say about them; the links are kept from any row.
+    return h.stats || h.group ? keep : keep.filter(function (k) { return k === 'links'; });
   }
 
   var HIDDEN_HINT = 'Some details are only shown to signed-in users.';
@@ -492,7 +494,12 @@
   var openRows = {};
   var helpOpen = {};
 
-  function idOf(prefix, key) { return prefix + '-' + key.replace(/[^a-z0-9]/gi, '-'); }
+  // An id for a host key: every character that is not a letter or a digit is written as its code
+  // between hyphens, so two keys never share an id (a.b:1 and a-b:1 differ) and the id is only
+  // letters, digits and hyphens.
+  function idOf(prefix, key) {
+    return prefix + '-' + String(key).replace(/[^a-z0-9]/gi, function (c) { return '-' + c.charCodeAt(0).toString(16) + '-'; });
+  }
 
   function glyph(kind) {
     return el('span', 'glyph', kind === 'full' ? '✕ ' : '▲ ');
@@ -636,12 +643,93 @@
     return bar;
   }
 
+  // ---- Links between nodes: Dials, Dialled by, Linked with (chips on a node's card) ----
+
+  var MAX_CHIPS = 8;
+
+  // What a link says about itself, after the name in its chip.
+  function linkQualifier(l) {
+    var q = [];
+    if (l.enabled === false) q.push('turned off');
+    if (l.conflict === 'not_found') q.push('declared; not found in the node\'s config');
+    else {
+      if (l.source === 'declared' && l.dir !== 'unknown') q.push('declared');
+      if (l.conflict === 'direction') q.push('the operator declared the other direction');
+    }
+    return q.join(', ');
+  }
+
+  // The links of one node in three lists of {key, name, down, qualifier}: the nodes it dials, the
+  // nodes that dial it, and the nodes linked with it in an unknown direction. A pair that dials each
+  // other is in the first two. Links to a host not on the page are left out.
+  function linkGroups(h, hosts) {
+    var self = hostKey(h);
+    var by = Object.create(null);
+    (hosts || []).forEach(function (x) { by[hostKey(x)] = x; });
+    var out = { dials: [], dialledBy: [], linked: [] };
+    var seen = Object.create(null);
+    function add(list, otherKey, l) {
+      var o = by[otherKey];
+      if (!o || otherKey === self) return;
+      var id = list === out.linked ? 'l|' + otherKey : (list === out.dials ? 'd|' : 'b|') + otherKey;
+      if (seen[id]) return;
+      seen[id] = true;
+      list.push({ key: otherKey, name: displayName(o), down: o.status === 'down', qualifier: linkQualifier(l) });
+    }
+    (hosts || []).forEach(function (x) {
+      var xk = hostKey(x);
+      (Array.isArray(x.links) ? x.links.slice(0, MAX_CHIPS) : []).forEach(function (l) {
+        if (!l || typeof l.to !== 'string' || (l.dir !== 'dials' && l.dir !== 'unknown')) return;
+        if (xk === self) add(l.dir === 'unknown' ? out.linked : out.dials, l.to, l);
+        else if (l.to === self) add(l.dir === 'unknown' ? out.linked : out.dialledBy, xk, l);
+      });
+    });
+    return out;
+  }
+
+  // What a card's chips show, as a string that changes when they would: empty when the node has no
+  // links in either direction, so a card without chips is never rebuilt for another node's change.
+  function linksSignature(h, hosts) {
+    var g = linkGroups(h, hosts);
+    return g.dials.length || g.dialledBy.length || g.linked.length ? JSON.stringify(g) : '';
+  }
+
+  // The chips of a node's card, or null when it has no links. Each chip is a link to the other node's card.
+  function linkChips(h, hosts) {
+    var g = linkGroups(h, hosts);
+    var box = el('div', 'nl-lists');
+    [['Dials', g.dials], ['Dialled by', g.dialledBy], ['Linked with', g.linked]].forEach(function (pair) {
+      var items = pair[1];
+      if (!items.length) return;
+      var group = el('div', 'nl-group');
+      group.appendChild(el('span', 'nl-label', pair[0]));
+      var ul = el('ul', 'nl-chips');
+      ul.setAttribute('aria-label', pair[0]);
+      items.slice(0, MAX_CHIPS).forEach(function (it) {
+        var li = el('li');
+        var a = el('a', 'badge nl-chip', (it.down ? '\u2715 ' : '') + it.name + (it.qualifier ? ' \u00b7 ' + it.qualifier : ''));
+        a.setAttribute('href', '#' + idOf('host', it.key));
+        // So that the focus can be put back on the same chip when the card is built again.
+        a.setAttribute('data-role', 'link');
+        a.setAttribute('data-host', hostKey(h));
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      if (items.length > MAX_CHIPS) ul.appendChild(el('li', 'nl-more', 'and ' + (items.length - MAX_CHIPS) + ' more'));
+      group.appendChild(ul);
+      box.appendChild(group);
+    });
+    return box.firstChild ? box : null;
+  }
+
   // The collapsed row of a node: name, status, one line, warnings only when needed.
   // opts: {itself} for the numbers of a proxy shown as a member, {groupKeys} for members.
   function hostItem(h, opts) {
     opts = opts || {};
     var li = el('li', 'host' + (h.role === 'proxy' ? ' proxy' : '') + (h.proxiedBy ? ' member' : '') + (opts.itself ? ' itself' : ''));
     li.setAttribute('data-host', hostKey(h));
+    // The target of the chips on other cards; the proxy's own numbers row has none.
+    if (!opts.itself) li.id = idOf('host', hostKey(h));
     var head = el('div', 'host-head');
     var title = el('span', 'host-title');
     title.appendChild(el('span', 'host-name', opts.itself ? displayName(h) + ' itself' : displayName(h)));
@@ -670,6 +758,8 @@
       }
       li.appendChild(line);
     }
+    var chips = opts.itself ? null : linkChips(h, allHosts);
+    if (chips) li.appendChild(chips);
     if (st && !st.data) {
       var un = el('p', 'warn high');
       var g = glyph('high');
@@ -701,6 +791,7 @@
     var g = h.group;
     var li = el('li', 'host proxy group-card');
     li.setAttribute('data-host', hostKey(h));
+    li.id = idOf('host', hostKey(h));
     var head = el('div', 'host-head');
     var title = el('span', 'host-title');
     title.appendChild(el('span', 'host-name', displayName(h)));
@@ -2406,15 +2497,20 @@
     var list = document.getElementById('hosts');
     allHosts = data.hosts;
     if (globalThis.netmapView) globalThis.netmapView.update(data.hosts);
+    var linksLegend = document.getElementById('links-legend');
+    if (linksLegend) linksLegend.hidden = !data.hosts.some(function (x) { return Array.isArray(x.links) && x.links.length > 0; });
     // Keep the keyboard focus on the same button if its row is rebuilt.
     var active = document.activeElement;
     var fHost = active && list.contains(active) ? active.getAttribute('data-host') : null;
     var fRole = fHost ? active.getAttribute('data-role') : null;
+    var fHref = fRole === 'link' ? active.getAttribute('href') : null;
     var next = {};
     var items = groupHosts(data.hosts).map(function (g) {
       var key = hostKey(g.h);
       // A row whose data did not change is left alone, with its open state and focus.
-      var sig = JSON.stringify([g.h, g.members], function (k, v) {
+      // The chips of a card also depend on other nodes' links, names and states: what they show is part of its signature.
+      var chipSigs = [g.h].concat(g.members).map(function (x) { return linksSignature(x, data.hosts); });
+      var sig = JSON.stringify([g.h, g.members, chipSigs], function (k, v) {
         if (k === 'lastChecked') return undefined;
         if (k === 'fetchedAt' && !(this && this.stale)) return undefined;
         return v;
@@ -2445,9 +2541,9 @@
         list.replaceChildren.apply(list, items);
       }
       if (fHost && fRole) {
-        var btns = list.querySelectorAll('button[data-role="' + fRole + '"]');
+        var btns = list.querySelectorAll((fRole === 'link' ? 'a' : 'button') + '[data-role="' + fRole + '"]');
         for (var i = 0; i < btns.length; i++) {
-          if (btns[i].getAttribute('data-host') === fHost) { btns[i].focus(); break; }
+          if (btns[i].getAttribute('data-host') === fHost && (fHref === null || btns[i].getAttribute('href') === fHref)) { btns[i].focus(); break; }
         }
       }
     }
@@ -2503,7 +2599,7 @@
       peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerFailureText: peerFailureText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
       peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
       clampLines: clampLines, logsPath: logsPath, logLevelWord: logLevelWord, logLineParts: logLineParts, logsHosts: logsHosts, logsErrorText: logsErrorText, logsSummary: logsSummary,
-      rowLocks: rowLocks, anyHidden: anyHidden, hiddenHint: HIDDEN_HINT, detailsLocked: detailsLocked,
+      linkGroups: linkGroups, linkChips: linkChips, linkQualifier: linkQualifier, linksSignature: linksSignature, idOf: idOf, rowLocks: rowLocks, anyHidden: anyHidden, hiddenHint: HIDDEN_HINT, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };
     return;
   }

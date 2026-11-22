@@ -241,6 +241,85 @@ test('passkeys: a user handle, when sent, must be the user\'s own', async () => 
   ctx.store.close();
 });
 
+test('passkeys: sign-in options for no name have no allowCredentials, ask for user verification, a new challenge each time, and are null when passkeys are off', async () => {
+  const ctx = await setup();
+  const { options, challenge } = ctx.pk.signInOptions();
+  assert.deepEqual(options, { challenge, rpId: RP_ID, timeout: TIMEOUT_MS, userVerification: 'required' });
+  assert.equal(Object.hasOwn(options, 'allowCredentials'), false);
+  assert.equal(TIMEOUT_MS, 120_000);
+  assert.match(challenge, /^[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(ctx.pk.signInOptions().challenge, challenge);
+  // Nothing is kept here: the caller keeps the challenge.
+  assert.equal(ctx.pk.challengeCount, 0);
+  // The challenge comes from the injectable source, as the other options do.
+  const fixed = await setup({ newChallenge: () => Buffer.alloc(32, 7).toString('base64url') });
+  assert.equal(fixed.pk.signInOptions().challenge, Buffer.alloc(32, 7).toString('base64url'));
+  for (const pk of [NO_PASSKEYS, createPasskeys({ siteUrl: 'http://example.org', store: null }), createPasskeys({ siteUrl: null, store: ctx.store })]) assert.equal(pk.signInOptions(), null);
+  ctx.store.close();
+  fixed.store.close();
+});
+
+test('passkeys: ownerOf names the owner of the credential in an answer, and gives null for junk, an unknown id and passkeys that are off', async () => {
+  const ctx = await setup();
+  const { a } = await register(ctx, 'alice');
+  const { a: bobs } = await register(ctx, 'bob', { session: 's2' });
+  const { challenge } = ctx.pk.signInOptions();
+  const response = (auth, extra = {}) => auth.get({ challenge, origin: ctx.origin, rpId: ctx.rpId, ...extra });
+  assert.equal(ctx.pk.ownerOf(response(a)), 'alice');
+  assert.equal(ctx.pk.ownerOf(response(bobs)), 'bob');
+  // The JSON text of an answer is read too, as the HTTP side hands it over.
+  assert.equal(ctx.pk.ownerOf(JSON.stringify(response(a))), 'alice');
+  // ownerOf only says who the id belongs to; nothing else of the answer is checked there (verify does).
+  assert.equal(ctx.pk.ownerOf(response(a, { uv: false, origin: 'https://evil.example.org' })), 'alice');
+  assert.equal(ctx.pk.ownerOf(response(new SoftAuthenticator())), null, 'an id nobody has');
+  for (const junk of [null, undefined, 42, true, [], {}, '', 'not json', '{"a":1}', JSON.stringify([1]), { id: a.id }, { ...response(a), type: 'other' }, { ...response(a), rawId: bobs.id }, { ...response(a), id: `${a.id}=` }, { ...response(a), id: 'x'.repeat(701) }, JSON.stringify(response(a)).padEnd(9000, ' ')]) {
+    assert.equal(ctx.pk.ownerOf(junk), null, String(junk).slice(0, 40));
+  }
+  const noHandleOrSig = response(a);
+  delete noHandleOrSig.response.signature;
+  assert.equal(ctx.pk.ownerOf(noHandleOrSig), null);
+  assert.equal(NO_PASSKEYS.ownerOf(response(a)), null);
+  assert.equal(createPasskeys({ siteUrl: null, store: ctx.store }).ownerOf(response(a)), null);
+  ctx.store.close();
+});
+
+test('passkeys: with requireUserHandle an answer needs the user\'s own handle; without it, a missing handle is still allowed', async () => {
+  const ctx = await setup();
+  const { a, options } = await register(ctx, 'alice');
+  const strict = { requireUserHandle: true };
+  let s = assertion(ctx, a, 'alice', { userHandle: options.user.id });
+  assert.equal((await ctx.pk.verify('alice', s.response, s.challenge, strict)).ok, true, 'the right handle');
+  // No handle: an empty one is none either.
+  for (const userHandle of [null, '']) {
+    s = assertion(ctx, a, 'alice', { userHandle });
+    assert.deepEqual(await ctx.pk.verify('alice', s.response, s.challenge, strict), { ok: false }, `missing: ${JSON.stringify(userHandle)}`);
+    assert.equal((await ctx.pk.verify('alice', s.response, s.challenge)).ok, true, 'a second factor does not need one');
+  }
+  delete s.response.response.userHandle;
+  assert.deepEqual(await ctx.pk.verify('alice', s.response, s.challenge, strict), { ok: false });
+  // Another user's handle, a random one, a malformed one.
+  for (const userHandle of [await ctx.store.ensurePasskeyUserId('bob'), b64url(crypto.randomBytes(32)), 'not base64url!', b64url(crypto.randomBytes(200))]) {
+    s = assertion(ctx, a, 'alice', { userHandle });
+    assert.deepEqual(await ctx.pk.verify('alice', s.response, s.challenge, strict), { ok: false }, userHandle.slice(0, 20));
+  }
+  // Everything else is as before: UV, origin, counter.
+  s = assertion(ctx, a, 'alice', { userHandle: options.user.id, uv: false });
+  assert.deepEqual(await ctx.pk.verify('alice', s.response, s.challenge, strict), { ok: false });
+  s = assertion(ctx, a, 'alice', { userHandle: options.user.id, origin: 'https://evil.example.org' });
+  assert.deepEqual(await ctx.pk.verify('alice', s.response, s.challenge, strict), { ok: false });
+  // A user who has no handle yet (a record from before) cannot sign in this way.
+  await ctx.store.createUser({ name: 'carol', passwordHash: await hashPassword('a good password', undefined, fakeHasher) });
+  const old = new SoftAuthenticator();
+  await ctx.store.addPasskey('carol', { id: old.id, publicKey: old.cose.toString('base64url'), counter: 0, transports: [], name: 'Old', backupEligible: false, backedUp: false, rpId: RP_ID });
+  const kept = ctx.store.factorRecord('carol').passkeyUserId;
+  assert.ok(kept, 'addPasskey makes the handle');
+  s = assertion(ctx, old, 'carol', { userHandle: options.user.id });
+  assert.deepEqual(await ctx.pk.verify('carol', s.response, s.challenge, strict), { ok: false }, 'alice\'s handle on carol\'s passkey');
+  s = assertion(ctx, old, 'carol', { userHandle: kept });
+  assert.equal((await ctx.pk.verify('carol', s.response, s.challenge, strict)).ok, true);
+  ctx.store.close();
+});
+
 test('passkeys: the counter must go up, unless both are 0 (synced passkeys); a counter that went back is told apart', async () => {
   const ctx = await setup();
   const { a } = await register(ctx, 'alice', { counter: 10 });

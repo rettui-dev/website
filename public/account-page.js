@@ -23,6 +23,8 @@
   var CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
   // The buttons of each passkey in the list, by passkey id, so the focus can go back to one.
   var passkeyButtons = {};
+  // The note above the passkeys, as account.html words it (kept to put back).
+  var DEFAULT_PASSKEYS_NOTE = document.getElementById('passkeys-note') ? document.getElementById('passkeys-note').textContent : '';
 
   function $(id) { return document.getElementById(id); }
 
@@ -146,7 +148,7 @@
     form.noValidate = true;
     var title = el('h2', null, 'Confirm it is you');
     title.id = 'reauth-title';
-    var why = el('p', 'note login-why', 'You signed in more than 15 minutes ago. Enter your password to go on.');
+    var why = el('p', 'note login-why', 'You have not given your password in the last 15 minutes (signing in with a passkey does not count). Enter it to go on.');
     why.id = 'reauth-why';
     var err = el('p', 'login-error');
     err.id = 'reauth-error';
@@ -233,6 +235,9 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-after-password]'), function (x) { x.hidden = data.mustChangePassword === true; });
     $('pw-config').hidden = data.canChangePassword;
     $('pw-form').hidden = !data.canChangePassword;
+    // Only offered while there are passkeys to remove.
+    $('pw-remove-box').hidden = passkeyList().length === 0;
+    if (passkeyList().length === 0) $('pw-remove').checked = false;
     // For password managers: the name the new password belongs to.
     $('pw-user').value = data.name;
     var on = Boolean(data.totp && data.totp.enabled);
@@ -274,6 +279,10 @@
     var max = typeof p.max === 'number' ? p.max : 10;
     var here = p.available === true;
     var browser = canPasskey();
+    // Where passkeys can also sign in on their own, the note says so (the file's words are true without that).
+    $('passkeys-note').textContent = p.signIn === true && here
+      ? "A passkey can sign you in on its own: press 'Sign in with a passkey' and confirm on your device. It also works as the second step after your password. Passkeys made on phones, computers and password managers usually work on their own. Some security keys only work as the second step: if yours does not show up, add it again here."
+      : DEFAULT_PASSKEYS_NOTE;
     $('passkeys-unavailable').hidden = here;
     $('passkeys-unavailable').textContent = p.reason === 'no-address'
       ? "Passkeys need this site's https address in the config file (site.url, or SITE_URL)."
@@ -421,12 +430,22 @@
     if (next.value !== again.value) { setFormError('pw-error', 'The two new passwords are not the same.', fields); again.focus(); return; }
     setFormError('pw-error', '', fields);
     busy($('pw-submit'), 'Changing...', function () {
-      return confirmed('/api/account/password', { next: next.value }, { title: 'Change your password', why: 'Your new password takes the place of the current one, and you are signed out everywhere else.', action: 'Change password' }).then(function (r) {
+      var remove = !$('pw-remove-box').hidden && $('pw-remove').checked === true;
+      var sent = { next: next.value };
+      if (remove) sent.removeOtherPasskeys = true;
+      return confirmed('/api/account/password', sent, { title: 'Change your password', why: 'Your new password takes the place of the current one, and you are signed out everywhere else.', action: 'Change password' }).then(function (r) {
         if (!r) return;
         if (r.status === 200) {
           next.value = again.value = '';
-          say('Your password is changed. You are signed out everywhere else.');
-          return load();
+          // A passkey keeps signing in without the password: the visitor is told to look at the list.
+          // Said after the account is loaded again, which clears the line.
+          var keeps = data && data.passkeys && data.passkeys.signIn === true && passkeyList().length > 0 && !remove;
+          var count = r.body && typeof r.body.removedPasskeys === 'number' ? r.body.removedPasskeys : null;
+          return load().then(function () {
+            $('pw-remove').checked = false;
+            if (count !== null) say('Your password is changed. You are signed out everywhere else. ' + (count === 0 ? 'You had no other passkeys to remove.' : count === 1 ? '1 passkey was removed.' : count + ' passkeys were removed.') + (passkeyList().length === 0 ? ' You can add a passkey again below.' : ''));
+            else say('Your password is changed. You are signed out everywhere else.' + (keeps ? ' Your passkeys can still sign you in without the password. Check the list below and remove any you do not know.' : ''));
+          });
         }
         setFormError('pw-error', errorOf(r), r.body && r.body.field === 'next' ? fields : []);
         next.focus();

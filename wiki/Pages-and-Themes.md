@@ -10,7 +10,8 @@ Every page and endpoint the website serves, and how the pages look and behave: t
   "Recent incidents" list shows when nodes went down and for how long (see [Uptime history and
   incidents](Uptime-and-Alerts#uptime-history-and-incidents)). It refreshes itself and keeps open rows open. Below the banner a collapsible
   "Network map" draws the proxy, the nodes behind it and the external peers they connect out to
-  (see [Network map](Node-Stats#network-map)).
+  (see [Network map](Node-Stats#network-map)), and which of the nodes dial which, as arrows and as
+  "Dials" and "Dialled by" chips on the nodes' cards (see [Links between nodes](Connecting-Nodes#links-between-nodes)).
 - `/api/status` is the same data as JSON, with `uptime90` and `days` for each host (the incidents are in `/api/incidents`).
 - `/api/incidents` lists the latest incidents (up to 100) of all nodes, newest first. Only GET
   and HEAD are allowed.
@@ -114,6 +115,26 @@ contrast; it is not a replacement for running axe in a browser. The Account, Use
 are built the same way and are in those file checks too; run axe on `/manage` (signed in as a
 `manage` user, with a node set up, and once with a Reticulum change on probation) before a release
 that changes it.
+
+**Width.** The header and footer are 1400 pixels wide on every page, so the logo and the menu stay
+in the same place when you go from one page to another. The page text is as wide as the page needs:
+Home stays 900 pixels, and Status, Manage, Join, Downloads, Account and Users use up to 1400. Every
+layout below is only on from the width given, so on a phone, or at 400% zoom, each page is one column.
+
+- **Status.** From 1100 pixels the entry points are on the left, in two columns when there is room,
+  and the recent incidents stay in view beside them.
+- **Manage.** From 1100 pixels a list of links to the sections is on the left; the fields, the read
+  only Reticulum tables and the change form flow into columns, and the Save bar stays at the bottom
+  of the screen.
+- **Users.** The table has the whole width from 1100 pixels. Below that each user is a card, so the
+  eight columns never get cramped. "Add a user" is a card of its own under the table.
+- **Account.** From 1000 pixels the cards are in two columns, in reading order (Profile and Password,
+  then App code and Passkeys, and so on). The "your password was set by an admin" notice spans both.
+- **Downloads.** From 1000 pixels rettui and rngit-rs are side by side. The text keeps its line length.
+- **Join.** From 1100 pixels the QR code and the other entry points are in a column on the right.
+  It stays in view while you scroll, but only when the window is at least 700 pixels tall, so on a
+  short window nothing is out of reach.
+- Reading order and tab order are the page order everywhere: left column, then right, row by row.
 
 ## Link previews (Open Graph)
 

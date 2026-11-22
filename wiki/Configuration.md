@@ -21,6 +21,7 @@ All optional, set in the environment (or `environment:` in `compose.yaml`).
 | `SITE_MODE`      | `full`                            | `status` serves only the status page and its APIs (see [Status-only site](#status-only-site)). Not with `CONFIG_FILE`: use `site_mode` in the file. |
 | `SITE_URL`       | none                              | The https address the site is served at, like `https://rettui.example` (no path). Needed for the absolute links in the feed and in the Open Graph tags; without it they are left out. It is also the address passkeys are made for: without it there are no passkeys (see [Passkeys](Accounts-and-Second-Factor#passkeys)), and `http://localhost` is accepted for testing. Changing it later stops existing passkeys working. Not with `CONFIG_FILE`: use `site.url` in the file. |
 | `STATS_URLS`     | none                              | Comma separated `host:port=url` pairs: where to fetch each monitored host's node stats (see [Node stats](Node-Stats#node-stats)). |
+| `LOGIN_PASSKEY_SIGN_IN` | `true`                    | `false` turns off "Sign in with a passkey", signing in with a passkey alone, without a name and password (see [Signing in with a passkey alone](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)). It needs the site address (`SITE_URL`) like every passkey. Only `true` or `false`. Not with `CONFIG_FILE`: use `login.passkey_sign_in` in the file. |
 | `LOGIN_TRUSTED_PROXIES` | none                       | Comma separated IP addresses or networks in CIDR notation (like `172.22.0.0/16`) of the reverse proxies in front of the site (at most 16), for users in the user store without a config file: the same as `login.trusted_proxies` (see [Behind a reverse proxy](Logins#behind-a-reverse-proxy)). Not with `CONFIG_FILE`: use `login.trusted_proxies` in the file. Set without users in the user store, it is not used and the server says so at start. |
 
 A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`, or a `STATS_URLS` entry that is not an `http` or `https` URL for a monitored host) stops the
@@ -140,15 +141,20 @@ before, and nothing needs to change for an existing deployment.
         upstreams:                          # optional: external peers shown on the network map
           - name: Example hub               # 1 to 48 characters
             address: hub.example.org:4965   # optional, only shown, never checked
+        links:                              # optional: links to other nodes in this file
+          - to: Back                        # a node's name or its address
+          - to: side.rns.rettui.dev:4242
+            direction: unknown              # optional: dials (the default) or unknown
       - address: front.rns.rettui.dev:4242
 
 The file is checked when the server starts, and any mistake stops it with a message that
 never repeats a URL:
 
 - Only `nodes`, `stats_token`, `stats_token_file`, `public_details`, `public_disk_figures`, `users`,
-  `login`, `require_login` and `alerts` at the top level, and only `address`, `name`, `stats_url`,
+  `login`, `require_login`, `detect_links` and `alerts` at the top level, and only `address`, `name`, `stats_url`,
   `stats_token`, `stats_token_file`, `proxy_for`, `count_own`, `public_details`,
-  `public_disk_figures`, `require_login` and `upstreams` in a node; anything else is an error, as are repeated
+  `public_disk_figures`, `require_login`, `upstreams`, `links`, `manage_url`, `manage_secret_file` and
+  `manage_confirm_seconds` in a node; anything else is an error, as are repeated
   keys and wrong types.
 - At most 64 nodes and a file of at most 64 KiB. The same host and port rules as
   `STATUS_TARGETS` apply, and the same URL rules as `STATS_URLS` (`https`, or `http` only
@@ -159,6 +165,15 @@ never repeats a URL:
 - `upstreams` is a list of 1 to 8 maps with a `name` (1 to 48 characters, no control characters,
   each once per node) and an optional `address` (host:port); no other key is allowed. It can only be
   set in the file, on a node.
+- `links` is a list of 1 to 8 maps, each with a `to` (the name or the `host:port` address of another
+  node in the file) and an optional `direction` (`dials`, the default, or `unknown`); no other key is
+  allowed. A name that two nodes share, a `to` that is not a node, a link from a node to itself and the
+  same node twice are errors. It is for the arrows between nodes on the status page; the website also
+  finds links by itself when `detect_links` is on, see [Links between nodes](Connecting-Nodes#links-between-nodes).
+- `detect_links` is `true` or `false` (default `false`). On, the website reads the Reticulum config of
+  every node with a `manage_url` to find which node dials which, and publishes that. It needs at
+  least one user, and only managed nodes are read. What it publishes is listed in [Links between
+  nodes](Connecting-Nodes#links-between-nodes). It cannot be set with environment variables only.
 - The file is read as plain data only: no aliases or anchors that are used, no merge keys
   (`<<`), no custom tags and only one document.
 

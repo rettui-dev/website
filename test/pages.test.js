@@ -1069,6 +1069,7 @@ async function accountPage({ account = ACCOUNT, routes = {}, ask, passkey = {} }
   dom.byId('codes-box').hidden = true;
   dom.byId('totp-setup-box').hidden = true;
   dom.byId('passkey-add').textContent = 'Add a passkey';
+  dom.byId('passkeys-note').textContent = /<p id="passkeys-note" class="note">([^<]*)<\/p>/.exec(await read('account.html'))[1];
   const state = { account: structuredClone(account) };
   const log = [];
   const net = router({ 'GET /api/account': () => [200, state.account], ...routes }, log);
@@ -1195,6 +1196,77 @@ test('account page: adding a passkey confirms first, makes it in the browser, an
   assert.match(p.$('acct-status').textContent, /The passkey is added\. You are signed out everywhere else\./);
   assert.equal(p.$('passkey-name').value, '');
   assert.equal(p.$('passkey-add').disabled, false);
+});
+
+const NOTE_ALONE = "A passkey can sign you in on its own: press 'Sign in with a passkey' and confirm on your device. It also works as the second step after your password. Passkeys made on phones, computers and password managers usually work on their own. Some security keys only work as the second step: if yours does not show up, add it again here.";
+
+test('account page: the passkeys note is true with signing in on its own off, and says how to use it when on', async () => {
+  const html = await read('account.html');
+  const fromFile = /<p id="passkeys-note" class="note">([^<]*)<\/p>/.exec(html)[1];
+  // The file's words hold whichever way the site is set: they do not call a passkey only a second step.
+  assert.doesNotMatch(fromFile, /is a second step/);
+  assert.match(fromFile, /works as the second step after your password/);
+  const on = await accountPage({ account: { ...ACCOUNT, passkeys: { ...ACCOUNT.passkeys, signIn: true } } });
+  assert.equal(on.$('passkeys-note').textContent, NOTE_ALONE);
+  for (const missing of [undefined, false]) {
+    const off = await accountPage({ account: { ...ACCOUNT, passkeys: { ...ACCOUNT.passkeys, ...(missing === undefined ? {} : { signIn: false }) } } });
+    assert.equal(off.$('passkeys-note').textContent, fromFile);
+  }
+  // Without the site address nothing can sign in, so the note does not promise it.
+  const none = await accountPage({ account: { ...ACCOUNT, passkeys: { available: false, reason: 'no-address', origin: null, rpId: null, max: 10, signIn: true, list: [] } } });
+  assert.equal(none.$('passkeys-note').textContent, fromFile);
+});
+
+test('account page: after a password change the page says passkeys still sign in, when they can, and not otherwise', async () => {
+  const changed = (account) => accountPage({
+    account,
+    routes: { 'POST /api/account/password': [200, { ok: true }] },
+  });
+  const submit = async (p) => {
+    p.$('pw-next').value = 'a long new password';
+    p.$('pw-again').value = 'a long new password';
+    p.$('pw-form').fire('submit');
+    await settle();
+  };
+  const withKey = await changed({ ...ACCOUNT, canChangePassword: true, secondFactor: true, stepUpMethods: ['passkey', 'recovery'], passkeys: { ...ACCOUNT.passkeys, signIn: true, list: [KEY] } });
+  await submit(withKey);
+  assert.equal(withKey.$('acct-status').textContent, 'Your password is changed. You are signed out everywhere else. Your passkeys can still sign you in without the password. Check the list below and remove any you do not know.');
+  assert.equal(withKey.$('pw-next').value, '');
+  // No passkeys, signing in on its own off, or no site address: the old words only.
+  for (const passkeys of [{ ...ACCOUNT.passkeys, signIn: true, list: [] }, { ...ACCOUNT.passkeys, signIn: false, list: [KEY] }, { ...ACCOUNT.passkeys, list: [KEY] }]) {
+    const p = await changed({ ...ACCOUNT, canChangePassword: true, passkeys });
+    await submit(p);
+    assert.equal(p.$('acct-status').textContent, 'Your password is changed. You are signed out everywhere else.');
+  }
+});
+
+test('account page: the box "also remove my other passkeys" shows only with passkeys, is off by default, and sends the flag only when ticked', async () => {
+  const run = async (account, tick, answer) => {
+    const p = await accountPage({ account, routes: { 'POST /api/account/password': [200, answer] } });
+    if (tick) p.$('pw-remove').checked = true;
+    p.$('pw-next').value = 'a long new password';
+    p.$('pw-again').value = 'a long new password';
+    p.$('pw-form').fire('submit');
+    await settle();
+    return { p, body: JSON.parse(p.log.find((l) => l.url === '/api/account/password').body) };
+  };
+  const withKeys = { ...ACCOUNT, canChangePassword: true, passkeys: { ...ACCOUNT.passkeys, signIn: true, list: [KEY, { ...KEY, id: 'other' }] } };
+  const html = await read('account.html');
+  assert.match(html, /<input id="pw-remove" type="checkbox"/);
+  assert.doesNotMatch(/<input id="pw-remove"[^>]*checked/.exec(html)?.[0] ?? '', /checked/);
+  const off = await run(withKeys, false, { ok: true });
+  assert.equal(off.p.$('pw-remove-box').hidden, false);
+  assert.equal(off.p.$('pw-remove').checked, false);
+  assert.equal(Object.hasOwn(off.body, 'removeOtherPasskeys'), false);
+  const on = await run(withKeys, true, { ok: true, removedPasskeys: 1 });
+  assert.equal(on.body.removeOtherPasskeys, true);
+  assert.match(on.p.$('acct-status').textContent, /Your password is changed\. You are signed out everywhere else\. 1 passkey was removed\./);
+  const many = await run(withKeys, true, { ok: true, removedPasskeys: 3 });
+  assert.match(many.p.$('acct-status').textContent, /3 passkeys were removed\./);
+  // Without passkeys there is nothing to remove: the box is hidden and never sent.
+  const none = await run({ ...ACCOUNT, canChangePassword: true, passkeys: { ...ACCOUNT.passkeys, list: [] } }, true, { ok: true });
+  assert.equal(none.p.$('pw-remove-box').hidden, true);
+  assert.equal(Object.hasOwn(none.body, 'removeOtherPasskeys'), false);
 });
 
 test('account page: a later passkey has no codes and no sign out; a user with a second step confirms with it; no name is sent when none is typed', async () => {
@@ -1451,7 +1523,8 @@ test('users page: the passkey count and kinds show, and the reset says what it r
   assert.equal(labels('zed').includes('Delete zed'), false);
   assert.ok(labels('bob').includes('Delete bob'));
   assert.ok(labels('bob').includes('Reset the password of bob'));
-  assert.ok(labels('bob').includes('Change the role of bob'));
+  // The password reset dialog says the passkeys still sign the user in, and where they are removed.
+  assert.match(await read('users-page.js'), /Their passkeys still sign them in without a password\. To stop those too, use Reset two-step sign-in, which removes them\./);
   const note = row('zed').all().find((e) => /users-admin-note/.test(e.className ?? ''));
   assert.match(note.textContent, /^Admins are reset, demoted and deleted on the server: scripts\/users\.js reset-password, reset-2fa, set-role or delete\.$/);
   assert.equal(row('bob').all().some((e) => /users-admin-note/.test(e.className ?? '')), false);
@@ -1470,13 +1543,324 @@ test('every page loads passkey.js, the pages with passkey controls do not use in
   }
   // The only callers of get() and create() are click and submit handlers: a prompt needs a click in Safari.
   const sign = await read('account.js');
-  assert.equal((sign.match(/rettuiPasskey\.get\(/g) ?? []).length, 1);
+  assert.equal((sign.match(/rettuiPasskey\.get\(/g) ?? []).length, 2, 'the second step, and the passkey on its own');
   assert.match(sign, /key\.addEventListener\('click', usePasskey\)/);
+  assert.match(sign, /alone\.addEventListener\('click', usePasskeyAlone\)/);
+  assert.match(sign, /alone\.type = 'button'/);
+  assert.match(sign, /post\('\/login\/passkey\/begin', /);
+  assert.match(sign, /post\('\/login\/passkey\/finish', /);
   assert.match(sign, /key\.type = 'button'/);
   assert.match(sign, /post\('\/login\/passkey', /);
   assert.match(await read('step-up.js'), /\/api\/account\/passkeys\/challenge/);
   const page = await read('account-page.js');
   for (const p of ['/api/account/passkeys/begin', '/api/account/passkeys/finish', '/api/account/passkeys/rename', '/api/account/passkeys/remove']) assert.ok(page.includes(`'${p}'`), p);
+});
+
+// ---- the sign in dialog: "Sign in with a passkey" on its own ----
+
+const ORIGIN_OK = 'https://site.test';
+
+// The sign in dialog opened on a page, with the server saying passkeys alone are offered (session
+// gives the fields of GET /api/session). routes answer the two POSTs; get is the fake browser's
+// rettuiPasskey.get (a function giving a promise), supported what supported() says.
+async function aloneDialog({ session = { passkeySignIn: true, passkeyOrigin: ORIGIN_OK }, origin = ORIGIN_OK, begin, finish, get, supported = true, noPasskeyJs = false } = {}) {
+  const dom = makeDom();
+  for (const id of ['signin', 'signin-btn', 'signin-name']) dom.body.appendChild(Object.assign(new FakeElement(id), { hidden: id !== 'signin-btn' }));
+  const log = [];
+  const net = router(
+    {
+      'GET /api/session': [200, { enabled: true, name: null, ...session }],
+      ...(begin ? { 'POST /login/passkey/begin': begin } : {}),
+      ...(finish ? { 'POST /login/passkey/finish': finish } : {}),
+    },
+    log
+  );
+  const got = [];
+  const window = noPasskeyJs ? {} : {
+    rettuiPasskey: {
+      supported: () => supported,
+      get: (o) => (got.push(o), get ? get(o) : Promise.resolve({ id: 'cred-1', response: { signature: 'sig' } })),
+      cancelled: (e) => Boolean(e) && e.name === 'NotAllowedError',
+    },
+  };
+  const context = { window, document: dom.document, fetch: net.fetch, location: { pathname: '/', origin, assign() {} }, HTMLDialogElement: function HTMLDialogElement() {}, CustomEvent: class CustomEvent {}, URLSearchParams, JSON, Promise, Array, Object };
+  vm.runInNewContext(await read('account.js'), context);
+  await settle();
+  const $ = dom.byId;
+  $('signin-btn').fire('click');
+  const posts = () => log.filter((l) => l.method === 'POST');
+  const form = (n) => Object.fromEntries(posts()[n].body.entries());
+  return { $, log, got, window, posts, form };
+}
+
+const BEGUN = [200, { token: 'T'.repeat(43), options: { challenge: 'AQID', rpId: 'site.test', timeout: 120000, userVerification: 'required' }, expiresIn: 300 }];
+const NO_PASSKEY_USED = 'No passkey was used. If yours did not show up, sign in with your name and password, then add a passkey on your account page.';
+const NotAllowed = () => Object.assign(new Error('x'), { name: 'NotAllowedError' });
+
+test('sign in with a passkey: an "or" and a real button under the form, only when the server, the address and the browser all allow it', async () => {
+  const s = await aloneDialog({ begin: BEGUN });
+  const b = s.$('login-passkey-only');
+  assert.equal(b.tag, 'button');
+  assert.equal(b.type, 'button', 'not a submit: Enter in the password field sends the password');
+  assert.equal(b.textContent, 'Sign in with a passkey');
+  assert.equal(b.hidden, false);
+  assert.equal(b.disabled, false);
+  assert.equal(s.$('login-or').tag, 'p');
+  assert.equal(s.$('login-or').textContent, 'or');
+  assert.equal(s.$('login-or').hidden, false);
+  // It comes after the name and password actions, inside the same form.
+  const kids = s.$('login-form').children.map((c) => c.id ?? c.className);
+  assert.ok(kids.indexOf('login-passkey-only') > kids.indexOf('login-or'), kids.join());
+  assert.ok(kids.indexOf('login-or') > kids.indexOf('login-error'));
+  // Opening the dialog asks nothing of the browser.
+  assert.equal(s.got.length, 0);
+  assert.equal(s.posts().length, 0);
+
+  const hidden = {
+    'the server does not offer it': await aloneDialog({ session: {} }),
+    'the server says false': await aloneDialog({ session: { passkeySignIn: false, passkeyOrigin: ORIGIN_OK } }),
+    'a truthy word instead of true': await aloneDialog({ session: { passkeySignIn: 'yes', passkeyOrigin: ORIGIN_OK } }),
+    'no address named': await aloneDialog({ session: { passkeySignIn: true } }),
+    'this is another address': await aloneDialog({ origin: 'https://other.example.net' }),
+    'the same host over http': await aloneDialog({ origin: 'http://site.test' }),
+    'WebAuthn is missing': await aloneDialog({ supported: false }),
+    'passkey.js did not load': await aloneDialog({ noPasskeyJs: true }),
+  };
+  for (const [why, d] of Object.entries(hidden)) {
+    assert.equal(d.$('login-passkey-only').hidden, true, why);
+    assert.equal(d.$('login-or').hidden, true, why);
+    d.$('login-passkey-only').fire('click');
+    await settle();
+    assert.equal(d.posts().length, 0, `${why}: a click on it sends nothing`);
+    assert.equal(d.got.length, 0, why);
+  }
+});
+
+test('sign in with a passkey: begin, the browser prompt, finish; no name or password is sent, and the dialog closes signed in', async () => {
+  let release;
+  const wait = new Promise((r) => (release = r));
+  const s = await aloneDialog({ begin: BEGUN, finish: [200, { ok: true, name: 'bob' }], get: () => wait });
+  const b = s.$('login-passkey-only');
+  s.$('login-name').value = 'typed';
+  s.$('login-password').value = 'typed too';
+  b.fire('click');
+  // While the prompt is open: busy, said so, nothing else can start.
+  assert.equal(b.disabled, true);
+  assert.equal(b.textContent, 'Waiting for your passkey...');
+  assert.equal(s.$('login-submit').disabled, true);
+  await settle();
+  assert.deepEqual(s.got, [BEGUN[1].options]);
+  assert.equal(s.posts().length, 1);
+  release({ id: 'cred-1', response: { signature: 'sig' } });
+  await settle();
+  assert.deepEqual(s.posts().map((p) => p.url), ['/login/passkey/begin', '/login/passkey/finish']);
+  assert.equal(s.form(0).name, undefined);
+  assert.deepEqual(Object.fromEntries(s.posts()[0].body.entries()), {}, 'begin sends nothing');
+  const sent = s.form(1);
+  assert.deepEqual(Object.keys(sent).sort(), ['credential', 'token'], 'no name, no password');
+  assert.equal(sent.token, 'T'.repeat(43));
+  assert.deepEqual(JSON.parse(sent.credential), { id: 'cred-1', response: { signature: 'sig' } });
+  for (const p of s.posts()) {
+    assert.equal(p.headers['X-Rettui-Request'], '1');
+    assert.equal(p.method, 'POST');
+  }
+  assert.equal(s.window.rettuiAccount.name(), 'bob');
+  assert.equal(s.$('login').open, false);
+  assert.equal(s.$('login-password').value, '', 'the password field is emptied');
+  assert.equal(b.disabled, false);
+  assert.equal(b.textContent, 'Sign in with a passkey');
+  assert.equal(s.$('login-submit').disabled, false);
+});
+
+test('sign in with a passkey: a cancelled prompt, or none on this device, says so in the alert line, marks no field, and sends nothing', async () => {
+  const s = await aloneDialog({ begin: BEGUN, get: () => Promise.reject(NotAllowed()) });
+  // An earlier wrong password had marked the fields.
+  s.$('login-name').setAttribute('aria-invalid', 'true');
+  s.$('login-password').setAttribute('aria-invalid', 'true');
+  s.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(s.$('login-error').textContent, NO_PASSKEY_USED);
+  assert.equal(NO_PASSKEY_USED, 'No passkey was used. If yours did not show up, sign in with your name and password, then add a passkey on your account page.');
+  assert.equal(s.$('login-error').attrs.role, 'alert');
+  assert.notEqual(s.$('login-name').attrs['aria-invalid'], 'true');
+  assert.notEqual(s.$('login-password').attrs['aria-invalid'], 'true');
+  assert.equal(s.posts().length, 1, 'only begin: a cancelled prompt costs the server nothing more');
+  assert.equal(s.$('login-passkey-only').disabled, false);
+  assert.equal(s.$('login-passkey-only').textContent, 'Sign in with a passkey');
+  assert.equal(FakeElement.active.id, 'login-passkey-only', 'the focus is back on the button');
+  assert.equal(s.$('login').open, true);
+  assert.equal(s.window.rettuiAccount.name(), null);
+  // Another try starts again, and clears the old words first.
+  s.$('login-passkey-only').fire('click');
+  assert.equal(s.$('login-error').textContent, '');
+  await settle();
+  assert.equal(s.got.length, 2);
+
+  const other = await aloneDialog({ begin: BEGUN, get: () => Promise.reject(Object.assign(new Error('x'), { name: 'SecurityError' })) });
+  other.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(other.$('login-error').textContent, 'This browser could not use a passkey. Sign in with your name and password.');
+  assert.equal(FakeElement.active.id, 'login-passkey-only');
+  // A browser that throws at once is the same.
+  const thrown = await aloneDialog({ begin: BEGUN, get: () => { throw new Error('boom'); } });
+  thrown.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(thrown.$('login-passkey-only').disabled, false, 'no stuck busy state');
+});
+
+test('sign in with a passkey: the server\'s words are shown for 401, 429, 503 and 404, and an ended prompt starts cleanly on the next press', async () => {
+  const answers = [
+    [401, { error: 'That passkey did not work. Try again, or sign in with your name and password.' }],
+    [401, { error: 'That took too long, or your connection changed. Try again.', restart: true }],
+    [429, { error: 'Too many failed sign ins from here. Try again in 5 minutes.', retryAfter: 300 }],
+    [503, { error: 'Signing in is not possible right now. Try again later.' }],
+    [200, { ok: true, name: 'bob' }],
+  ];
+  const s = await aloneDialog({ begin: BEGUN, finish: () => answers.shift() });
+  const b = s.$('login-passkey-only');
+  const press = async () => {
+    b.fire('click');
+    await settle();
+  };
+  await press();
+  assert.equal(s.$('login-error').textContent, 'That passkey did not work. Try again, or sign in with your name and password.');
+  assert.equal(b.disabled, false);
+  assert.equal(FakeElement.active.id, 'login-passkey-only');
+  await press();
+  assert.equal(s.$('login-error').textContent, 'That took too long, or your connection changed. Try again.');
+  assert.equal(s.$('login-form').hidden, false, 'still the same form: nothing to go back to');
+  await press();
+  assert.equal(s.$('login-error').textContent, 'Too many failed sign ins from here. Try again in 5 minutes.');
+  await press();
+  assert.equal(s.$('login-error').textContent, 'Signing in is not possible right now. Try again later.');
+  assert.equal(s.window.rettuiAccount.name(), null);
+  // Every press is a new begin, with a new token: nothing is kept from the one that ended.
+  await press();
+  assert.equal(s.window.rettuiAccount.name(), 'bob');
+  assert.equal(s.posts().filter((p) => p.url === '/login/passkey/begin').length, 5);
+  assert.equal(s.got.length, 5);
+  for (let n = 0; n < s.posts().length; n++) assert.equal(s.log.filter((l) => l.url === '/login/passkey/finish').length, 5);
+
+  // Off on the server after the page loaded (404), and a begin that is paced (429): the words are shown, no prompt opens.
+  const off = await aloneDialog({ begin: [404, { error: 'Signing in with a passkey alone is off on this site.' }] });
+  off.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(off.$('login-error').textContent, 'Signing in with a passkey alone is off on this site.');
+  assert.equal(off.got.length, 0);
+  const paced = await aloneDialog({ begin: [429, { error: 'Too many sign ins from here right now. Try again in 2 seconds.', retryAfter: 2 }] });
+  paced.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(paced.$('login-error').textContent, 'Too many sign ins from here right now. Try again in 2 seconds.');
+  assert.equal(paced.got.length, 0);
+  assert.equal(paced.$('login-passkey-only').disabled, false);
+  // A begin answer without a prompt is not trusted.
+  const odd = await aloneDialog({ begin: [200, { ok: true }] });
+  odd.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(odd.$('login-error').textContent, 'Could not sign in. Try again.');
+  assert.equal(odd.got.length, 0);
+});
+
+test('sign in with a passkey: no network is said, at begin and at finish, and the button is usable again', async () => {
+  // No route for begin: the fake fetch rejects, as a dropped connection does.
+  const down = await aloneDialog({});
+  down.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(down.$('login-error').textContent, 'Could not reach the server. Try again.');
+  assert.equal(down.$('login-passkey-only').disabled, false);
+  assert.equal(down.$('login-passkey-only').textContent, 'Sign in with a passkey');
+  assert.equal(FakeElement.active.id, 'login-passkey-only');
+  // Begin works, finish does not.
+  const half = await aloneDialog({ begin: BEGUN });
+  half.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(half.got.length, 1);
+  assert.equal(half.$('login-error').textContent, 'Could not reach the server. Try again.');
+  assert.equal(half.$('login-passkey-only').disabled, false);
+  assert.equal(half.$('login-submit').disabled, false);
+  assert.equal(half.window.rettuiAccount.name(), null);
+});
+
+test('sign in with a passkey: when the dialog is closed while the answer is on its way, a sign in that worked shows in the page, and one that did not shows nothing', async () => {
+  const holder = {};
+  const s = await aloneDialog({ begin: BEGUN, finish: () => (holder.s.$('login').close(), [200, { ok: true, name: 'bob' }]) });
+  holder.s = s;
+  s.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(s.$('login').open, false);
+  assert.equal(s.window.rettuiAccount.name(), 'bob', 'the server signed the browser in, so the page says so');
+  assert.equal(s.$('login-passkey-only').disabled, false);
+  // A refused answer after the close: nothing changes, nothing is said.
+  const h2 = {};
+  const t = await aloneDialog({ begin: BEGUN, finish: () => (h2.t.$('login').close(), [401, { error: 'That did not work.' }]) });
+  h2.t = t;
+  t.$('login-passkey-only').fire('click');
+  await settle();
+  assert.equal(t.window.rettuiAccount.name(), null);
+  assert.equal(t.$('login-error').textContent, '');
+});
+
+test('sign in with a passkey: a double click opens one prompt, and closing the dialog while it is open ends the press, drops a late answer, and leaves nothing stuck', async () => {
+  let release;
+  const wait = new Promise((r) => (release = r));
+  const s = await aloneDialog({ begin: BEGUN, finish: [200, { ok: true, name: 'bob' }], get: () => wait });
+  const b = s.$('login-passkey-only');
+  b.fire('click');
+  b.fire('click');
+  b.fire('click');
+  await settle();
+  assert.equal(s.posts().length, 1, 'one begin');
+  assert.equal(s.got.length, 1, 'one prompt');
+  // The password form is held off while the prompt is open.
+  s.$('login-name').value = 'alice';
+  s.$('login-password').value = 'pw';
+  s.$('login-form').fire('submit');
+  await settle();
+  assert.equal(s.posts().length, 1);
+
+  // Closed (Escape, Cancel, a click outside) while the browser still asks.
+  s.$('login').close();
+  assert.equal(b.disabled, false);
+  assert.equal(b.textContent, 'Sign in with a passkey');
+  assert.equal(s.$('login-submit').disabled, false);
+  // The visitor confirms later: the answer is dropped, nobody is signed in.
+  release({ id: 'late', response: { signature: 'sig' } });
+  await settle();
+  assert.equal(s.posts().length, 1, 'no finish for a dialog that was closed');
+  assert.equal(s.window.rettuiAccount.name(), null);
+  assert.equal(s.$('login-error').textContent, '');
+  // Opened again, the password sign in works, and so does another press.
+  s.$('signin-btn').fire('click');
+  assert.equal(s.$('login').open, true);
+  assert.equal(b.disabled, false);
+  b.fire('click');
+  await settle();
+  assert.equal(s.got.length, 2);
+
+  // Closed before the server answered begin: no prompt at all.
+  const t = await aloneDialog({ begin: BEGUN, finish: [200, { ok: true, name: 'bob' }] });
+  t.$('login-passkey-only').fire('click');
+  t.$('login').close();
+  await settle();
+  assert.equal(t.got.length, 0, 'no prompt after the dialog was closed');
+  assert.equal(t.$('login-passkey-only').disabled, false);
+  assert.equal(t.window.rettuiAccount.name(), null);
+});
+
+test('sign in with a passkey: the password form still works, and a server error of it does not touch the passkey button', async () => {
+  const s = await aloneDialog({ begin: BEGUN });
+  const net = s.log;
+  s.$('login-name').value = 'alice';
+  s.$('login-password').value = 'wrong';
+  const before = net.length;
+  s.$('login-form').fire('submit');
+  await settle();
+  // The fake has no /login route: the old words for a dropped connection, and the fields marked, as before.
+  assert.equal(s.$('login-error').textContent, 'Could not reach the server. Try again.');
+  assert.equal(s.$('login-name').attrs['aria-invalid'], 'true');
+  assert.equal(net.length, before + 1);
+  assert.equal(s.$('login-passkey-only').hidden, false);
+  assert.equal(s.$('login-passkey-only').disabled, false);
 });
 
 // ---- the manage page ----
@@ -1891,24 +2275,41 @@ test('manage page: the Reticulum form offers the sections the node allows, as te
   assert.equal(byLabel('Announce cap (percent)').value, '');
   assert.equal(byLabel('Announce cap (percent)').attrs.inputmode, 'decimal');
   // Not set: a choice that keeps it so.
-  assert.deepEqual(byLabel('Ingress control').children.map((o) => [o.value, o.textContent]), [['', '(not set)'], ['yes', 'yes'], ['no', 'no']]);
+  assert.deepEqual(byLabel('Ingress control').children.map((o) => [o.value, o.textContent]), [['', '(not set, leave as is)'], ['yes', 'yes'], ['no', 'no']]);
   assert.equal(byLabel('Ingress control').value, '');
+  // The words say what leaving it does, and a value that is not one of the choices is told as it is.
+  const ingress = byLabel('Ingress control');
+  assert.match(all.find((e) => e.id === ingress.attrs['aria-describedby'].split(' ')[0]).textContent, /Pick a value to change it\. Leave this to keep it as it is\.$/);
+  const odd = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, sections: [RET_EDIT.sections[0], { path: ['interfaces', EVIL], keys: [{ key: 'mode', value: 'Weird', set: true }] }] } })] } });
+  const oddMode = retControls(odd).find((e) => e.tag === 'select' && e.children[0]?.value === '' && e.children[0].textContent.startsWith('(now: Weird'));
+  assert.equal(oddMode.children[0].textContent, '(now: Weird, leave as is)');
   // The danger button says what happens, with this node's window.
   assert.equal($('manage-ret-apply-help').textContent, "Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 2 minutes, the node puts the old config back by itself.");
-  // A shared instance, a user without two-step sign-in, or no editable section: no form, and with
-  // nothing to say, no panel.
-  for (const [what, opts] of [
-    ['shared', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, shared_instance: true } })] } }],
-    ['shared network', { routes: { [`GET ${NODE_URL}`]: [200, retState({ network: { state: 'running', shared_instance: true } })] } }],
-    ['view only', { me: { ...MANAGE, secondFactor: false }, routes: { [`GET ${NODE_URL}`]: [200, retState()] } }],
-    ['none editable', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, editable: [] } })] } }],
-    ['older node', { routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: RET })] } }],
+  // A shared instance, a user without two-step sign-in, or no editable section: no form, and one line
+  // that says why (the section is not just gone). A node that says nothing of its config has no section.
+  const sharedWhy = 'This node uses a shared Reticulum instance, so the website does not change its settings.';
+  for (const [what, opts, why] of [
+    ['shared', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, shared_instance: true } })] } }, sharedWhy],
+    ['shared network', { routes: { [`GET ${NODE_URL}`]: [200, retState({ network: { state: 'running', shared_instance: true } })] } }, sharedWhy],
+    ['view only', { me: { ...MANAGE, secondFactor: false }, routes: { [`GET ${NODE_URL}`]: [200, retState()] } }, 'You can look, but not change Reticulum settings yet. See the notice at the top.'],
+    ['none editable', { routes: { [`GET ${NODE_URL}`]: [200, retState({ reticulum: { ...RET_EDIT, editable: [] } })] } }, 'This node does not let the website change any Reticulum settings.'],
+    ['older node', { routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: RET })] } }, sharedWhy],
   ]) {
     const q = await managePage(opts);
     assert.equal(q.byId('manage-ret-form').hidden, true, what);
-    assert.equal(q.byId('manage-ret-edit').hidden, true, what);
+    assert.equal(q.byId('manage-ret-edit').hidden, false, what);
+    assert.equal(q.byId('manage-ret-why').hidden, false, what);
+    assert.equal(q.byId('manage-ret-why').textContent, why, what);
+    assert.equal(q.byId('manage-nav').hidden, false, what);
     assert.equal(retControls(q).filter((e) => e.tag === 'select' || e.tag === 'input').length, 0, what);
   }
+  // Nothing to say about Reticulum at all: no section, and no entry for it in the list of links.
+  const none = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ reticulum: null })] } });
+  assert.equal(none.byId('manage-ret-edit').hidden, true);
+  assert.equal(none.byId('nav-manage-ret-edit').hidden, true);
+  assert.equal(none.byId('nav-manage-settings').hidden, false);
+  // The form itself shows no reason line.
+  assert.equal($('manage-ret-why').hidden, true);
 });
 
 test('manage page: Apply and test sends only what changed, through a danger step-up, then follows the confirm job and loads the node once', async () => {
@@ -2210,4 +2611,317 @@ test("manage page: the node's checks of a pending change are a list in the statu
   const a = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState()], [`GET ${AUDIT_URL}`]: [200, { entries: [{ seq: 2, time: 1, id: P.id, actor: 'bob', op: 'confirm', changes: [], result: 'ok', error: null, notes: ['Checks: Hilltop TCP self_test passed; Radio online traffic'] }, { seq: 1, time: 1, id: P.id, actor: 'bob', op: 'auto_rollback', changes: [], result: 'rolled_back', error: 'Reticulum on Radio did not answer a test request', notes: [`Checks with the change: ${EVIL} self_test failed`, 'Checks after the rollback: Radio online traffic'] }], more: false }] } });
   const results = a.byId('manage-audit-rows').children.map((tr) => tr.children[4].textContent);
   assert.deepEqual(results, ['Done. Checks: Hilltop TCP self_test passed; Radio online traffic', `Rolled back: Reticulum on Radio did not answer a test request. Checks with the change: ${EVIL} self_test failed Checks after the rollback: Radio online traffic`]);
+});
+
+// ---- the manage page: layout, feedback beside the action, kept edits and waits ----
+
+test('manage page: a refusal with retryAfter keeps the pressed button off, counts down beside it, and says when it works again', async () => {
+  const stamping = { error: "The node is still making its announce stamp, so it can't test a Reticulum change yet. Nothing was changed. Try again in 3 seconds.", code: 'stamping', retryAfter: 3 };
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState()], 'POST /api/manage/reticulum': [429, stamping] } });
+  const $ = p.byId;
+  assert.equal(p.timers.length, 0, 'no timer without a wait');
+  const all = retControls(p);
+  all.find((e) => e.id === all.find((l) => l.tag === 'label' && l.textContent === 'Enabled').htmlFor).value = 'no';
+  $('manage-ret-form').fire('submit');
+  await settle();
+  // The words of the node are read out once, in the alert; the countdown is for the eyes (aria-hidden in the page).
+  assert.equal($('manage-ret-error').textContent, stamping.error);
+  assert.equal($('manage-ret-apply').disabled, true);
+  assert.equal($('manage-ret-apply-retry').textContent, 'You can try again in 3 s.');
+  assert.equal(p.timers.length, 1);
+  const html = await read('manage.html');
+  assert.match(html, /<span id="manage-ret-apply-retry" class="manage-retry" aria-hidden="true"><\/span>/);
+  await p.tick();
+  assert.equal($('manage-ret-apply-retry').textContent, 'You can try again in 2 s.');
+  assert.equal($('manage-ret-apply').disabled, true);
+  await p.tick();
+  assert.equal($('manage-ret-apply-retry').textContent, 'You can try again in 1 s.');
+  await p.tick();
+  assert.equal($('manage-ret-apply').disabled, false);
+  assert.equal($('manage-ret-apply-retry').textContent, '');
+  assert.equal($('manage-ret-error').textContent, '', 'the old refusal is gone');
+  assert.equal($('manage-status').textContent, 'You can try again now.');
+  assert.equal(p.timers.length, 0);
+  // The button works again: the same press is asked again.
+  $('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal(p.posts().filter((x) => x.url === '/api/manage/reticulum').length, 2);
+});
+
+test('manage page: a wait on Restart, Save or Roll back switches only that button off; a refusal without a wait, or a 400 that carries one, switches nothing off', async () => {
+  const p = await managePage({ routes: { 'POST /api/manage/restart': [503, { error: 'The node restarted moments ago. Try again in 2 seconds.', code: 'before_start', retryAfter: 2 }] } });
+  const $ = p.byId;
+  $('manage-restart').fire('click');
+  await settle();
+  assert.equal($('manage-restart-error').textContent, 'The node restarted moments ago. Try again in 2 seconds.');
+  assert.equal($('manage-restart').disabled, true);
+  assert.equal($('manage-restart-retry').textContent, 'You can try again in 2 s.');
+  assert.equal($('manage-save').disabled, false);
+  assert.equal($('manage-rollback').disabled, false);
+  await p.tick();
+  await p.tick();
+  assert.equal($('manage-restart').disabled, false);
+  // Save: a rate limit; while it runs, a repaint of the form (Turn off, a reload) keeps Save off.
+  let posts = 0;
+  const q = await managePage({ routes: { 'POST /api/manage/settings': () => (++posts === 1 ? [429, { error: 'The node is limiting changes right now. Try again in 1 minute.', code: 'rate_limited', retryAfter: 60 }] : [200, { ok: true, applied: [] }]) } });
+  q.fields().find((e) => e.tag === 'input' && e.value === 'Hilltop').value = 'Valley';
+  q.byId('manage-form').fire('submit');
+  await settle();
+  assert.equal(q.byId('manage-save').disabled, true);
+  assert.equal(q.byId('manage-save-retry').textContent, 'You can try again in 60 s.');
+  q.fields().find((e) => e.attrs['aria-label'] === 'Turn off Hub').fire('click');
+  await settle();
+  assert.equal(q.byId('manage-save').disabled, true, 'still waiting after the form was built again');
+  // Roll back.
+  const r = await managePage({ routes: { 'POST /api/manage/rollback': [429, { error: 'Too often. Try again in 5 seconds.', retryAfter: 5 }] } });
+  r.byId('manage-rollback').fire('click');
+  await settle();
+  assert.equal(r.byId('manage-rollback').disabled, true);
+  assert.equal(r.byId('manage-rollback-retry').textContent, 'You can try again in 5 s.');
+  // No retryAfter, or a status that is not 429 or 503: the button stays as it was.
+  for (const [status, body] of [[409, { error: 'Pending.', code: 'pending' }], [400, { error: 'Bad.', retryAfter: 9 }]]) {
+    const s = await managePage({ routes: { 'POST /api/manage/restart': [status, body] } });
+    s.byId('manage-restart').fire('click');
+    await settle();
+    assert.equal(s.byId('manage-restart').disabled, false, String(status));
+    assert.equal(s.timers.length, 0, String(status));
+  }
+});
+
+test('manage page: the form says how many settings changed, and keeps the edits when it is built again for the same node', async () => {
+  const p = await managePage();
+  const $ = p.byId;
+  assert.equal($('manage-form-dirty').textContent, 'No changes.');
+  const name = p.fields().find((e) => e.tag === 'input' && e.value === 'Hilltop');
+  name.value = 'Valley';
+  name.fire('input');
+  assert.equal($('manage-form-dirty').textContent, '1 setting changed, not saved yet.');
+  const box = p.fields().find((e) => e.tag === 'input' && e.type === 'checkbox');
+  box.checked = false;
+  box.fire('change');
+  assert.equal($('manage-form-dirty').textContent, '2 settings changed, not saved yet.');
+  name.value = 'Hilltop';
+  name.fire('input');
+  box.checked = true;
+  box.fire('change');
+  assert.equal($('manage-form-dirty').textContent, 'No changes.');
+  // Turn off builds the form again: what was typed stays, and the focus goes to the row of the service.
+  const off = await managePage({ routes: { 'POST /api/manage/settings': [200, { ok: true, applied: [] }] } });
+  off.fields().find((e) => e.tag === 'input' && e.value === 'Hilltop').value = 'Typed';
+  off.fields().find((e) => e.attrs['aria-label'] === 'Turn off Hub').fire('click');
+  await settle();
+  const again = off.fields().find((e) => e.tag === 'input' && e.id === name.id);
+  assert.equal(again.value, 'Typed');
+  assert.equal(off.byId('manage-form-dirty').textContent, '1 setting changed, not saved yet.');
+  assert.ok(FakeElement.active && FakeElement.active.tag === 'p' && FakeElement.active.textContent === 'Hub: on', 'the focus is on the row that was turned off');
+  // A save has used the edits: the form starts clean.
+  const saved = await managePage({ routes: { 'POST /api/manage/settings': [200, { ok: true, applied: [{ key: 'pn_name' }] }] } });
+  saved.fields().find((e) => e.tag === 'input' && e.value === 'Hilltop').value = 'Valley';
+  saved.byId('manage-form').fire('submit');
+  await settle();
+  assert.equal(saved.fields().some((e) => e.tag === 'input' && e.value === 'Valley'), false);
+  // The words of the dialog say what each setting becomes.
+  assert.equal(saved.asked[0].why, `Changes ${EVIL} to "Valley".`);
+});
+
+test('manage page: the Reticulum form marks a changed field with its old value in words, counts the changes, and keeps them across a reload', async () => {
+  let reads = 0;
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: () => (++reads, [200, retState()]), 'POST /api/manage/reticulum': [409, { error: 'The Reticulum configuration was changed elsewhere since the page loaded it.', code: 'stale_revision' }] } });
+  const $ = p.byId;
+  assert.equal($('manage-ret-dirty').textContent, 'No changes.');
+  const all = retControls(p);
+  const byLabel = (text) => all.find((e) => e.id === all.filter((l) => l.tag === 'label' && l.textContent === text)[0].htmlFor);
+  const rowOf = (input) => all.find((e) => e.children.includes(input));
+  const bitrate = byLabel('Bitrate (bits per second)');
+  bitrate.value = '19200';
+  bitrate.fire('input');
+  const row = rowOf(bitrate);
+  assert.equal(row.className, 'manage-field changed');
+  const was = row.children.find((c) => c.textContent.startsWith('Was:'));
+  assert.equal(was.textContent, 'Was: 9600');
+  assert.equal(was.hidden, false);
+  assert.equal($('manage-ret-dirty').textContent, '1 change not applied yet.');
+  const enabled = byLabel('Enabled');
+  enabled.value = 'no';
+  enabled.fire('change');
+  assert.equal($('manage-ret-dirty').textContent, '2 changes not applied yet.');
+  // Back to the node's value: no longer marked.
+  bitrate.value = '9600.0';
+  bitrate.fire('input');
+  assert.equal(row.className, 'manage-field');
+  assert.equal(row.children.find((c) => c.textContent.startsWith('Was:')).hidden, true, 'the old value is hidden again');
+  assert.equal($('manage-ret-dirty').textContent, '1 change not applied yet.');
+  // A stale revision loads the node again: the edit of a field whose value did not change stays.
+  $('manage-ret-form').fire('submit');
+  await settle();
+  assert.equal(reads, 2);
+  const after = retControls(p);
+  const enabledAgain = after.find((e) => e.id === after.filter((l) => l.tag === 'label' && l.textContent === 'Enabled')[0].htmlFor);
+  assert.equal(enabledAgain.value, 'no');
+  assert.equal($('manage-ret-dirty').textContent, '1 change not applied yet.');
+  // After a change that was applied, the form starts clean (the job ends with a load that keeps nothing).
+  assert.match(await read('site.css'), /\.manage-field\.changed \{ border-left: 3px solid var\(--accent\)/);
+});
+
+test('manage page: the status region is only written when its words change, and the list of checks is not built again for the same checks', async () => {
+  const P = { id: '2'.repeat(16), state: 'probation', confirm_by: Math.floor(Date.now() / 1000) + 300, changes: [], problems: [], checks: [{ interface: 'Radio', kind: 'online', result: 'traffic' }] };
+  const job = { id: P.id, state: 'probing', nodeState: 'probation', confirmBy: P.confirm_by, outcome: null, message: 'Checking.', updatedAt: 'x', checks: P.checks };
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: P, confirm: { ...job } })], [`GET ${CONFIRM_URL}`]: [200, { job }] } });
+  const $ = p.byId;
+  const writes = [];
+  for (const id of ['manage-ret-pending', 'manage-ret-status', 'manage-clock', 'manage-status', 'manage-ret-checks', 'manage-ret-left']) {
+    const e = $(id);
+    const set = Object.getOwnPropertyDescriptor(FakeElement.prototype, 'textContent').set;
+    const get = Object.getOwnPropertyDescriptor(FakeElement.prototype, 'textContent').get;
+    Object.defineProperty(e, 'textContent', { get, set(v) { writes.push(id); set.call(this, v); }, configurable: true });
+  }
+  // The first read of the job starts the countdown (that is a change); after it nothing changes.
+  await p.tick();
+  const item = $('manage-ret-checks').children[0];
+  writes.length = 0;
+  await p.tick();
+  await p.tick();
+  assert.deepEqual(writes, [], 'nothing was written: the words did not change');
+  assert.equal($('manage-ret-checks').children[0], item, 'the same list item');
+  // The countdown is outside the live region, and the page says nothing to click.
+  assert.match($('manage-ret-left').textContent, /^About [45] minutes left\.$/);
+  assert.equal($('manage-ret-auto').textContent, 'The website is testing the change. Nothing to click: it is kept if the test passes, and put back by the node if not.');
+  assert.equal($('manage-pending-line').hidden, false);
+  assert.equal($('manage-pending-text').textContent, $('manage-ret-pending').textContent);
+  assert.equal($('manage-ret-edit').className, 'acct-card on-probation');
+  const html = await read('manage.html');
+  assert.doesNotMatch(/<div id="manage-ret-live"[\s\S]*?<\/div>/.exec(html)[0], /manage-ret-left|manage-ret-auto/);
+  // A change of the words is written, once.
+  job.checks = [{ interface: 'Radio', kind: 'online', result: 'no_traffic' }];
+  await p.tick();
+  assert.deepEqual(writes, ['manage-ret-checks']);
+  assert.equal($('manage-ret-checks').children[0].textContent, 'Radio: online, no traffic yet');
+  // Without a job that is followed there is no countdown, and no timer is made for one.
+  const q = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: P })] } });
+  assert.equal(q.byId('manage-ret-left').hidden, true);
+  assert.equal(q.timers.length, 0);
+  assert.equal(q.byId('manage-ret-auto').textContent, 'Nothing to click here: the node puts the old config back by itself if the change is not kept in time.');
+});
+
+test('manage page: a disabled control has its reason beside it, and the list of links hides the sections that are not there', async () => {
+  const p = await managePage({ me: { ...MANAGE, secondFactor: false } });
+  const $ = p.byId;
+  const why = 'You can look but not change anything yet. See the notice at the top of the page.';
+  assert.equal($('manage-why').textContent, why);
+  assert.equal($('manage-why').hidden, false);
+  assert.equal($('manage-restart-why').textContent, why);
+  assert.equal($('manage-restart').attrs['aria-describedby'], 'manage-restart-why');
+  assert.equal($('manage-last-why').textContent, why);
+  assert.equal($('manage-last-why').hidden, false);
+  const html = await read('manage.html');
+  assert.match(html, /<button id="manage-save"[^>]*aria-describedby="manage-form-dirty manage-why"/);
+  assert.match(html, /<button id="manage-rollback"[^>]*aria-describedby="manage-last-why"/);
+  assert.ok(p.fields().filter((e) => e.tag === 'button').every((b) => b.attrs['aria-describedby'].endsWith('manage-why')));
+  // A user who may change things sees no reason, and every section has its link.
+  const ok = await managePage();
+  assert.equal(ok.byId('manage-why').hidden, true);
+  assert.equal(ok.byId('manage-restart-why').hidden, true);
+  assert.equal(ok.byId('manage-restart-why').textContent, '');
+  assert.equal(ok.byId('manage-nav').hidden, false);
+  for (const id of ['manage-settings', 'manage-ret', 'manage-restart-card', 'manage-last-card', 'manage-audit-card']) assert.equal(ok.byId(`nav-${id}`).hidden, false, id);
+  // The Reticulum change section is not there for this node, so its link is not either.
+  assert.equal(ok.byId('nav-manage-ret-edit').hidden, true);
+  // A node that cannot be read: its sections are gone, and so are their links and the list.
+  const down = await managePage({ routes: { [`GET ${NODE_URL}`]: [502, { error: 'The node could not be reached.', code: 'network' }] } });
+  assert.equal(down.byId('nav-manage-settings').hidden, true);
+  assert.equal(down.byId('nav-manage-restart-card').hidden, true);
+  assert.equal(down.byId('nav-manage-ret').hidden, true);
+  // A restart that waits says why beside the button: the node's rate limit, or a change on probation.
+  const later = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ restart_allowed_at: Math.floor(Date.now() / 1000) + 600 })] } });
+  assert.match(later.byId('manage-restart-why').textContent, /^The node allows the next restart at .+\.$/);
+  assert.equal(later.byId('manage-restart').disabled, true);
+  const busy = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, retState({ pending: { id: '2'.repeat(16), state: 'restarting', changes: [], problems: [] } })] } });
+  assert.equal(busy.byId('manage-restart-why').textContent, 'A Reticulum change is being tested. Restart waits until it is kept or put back.');
+  // Last change: the wording of the empty case, and of what Roll back does.
+  const none = await managePage({ routes: { [`GET ${AUDIT_URL}`]: [200, { entries: [], more: true }] } });
+  assert.equal(none.byId('manage-last').textContent, 'Nothing to roll back: there is no settings change in the latest entries. Use Older entries below to look further back.');
+  assert.equal(none.byId('manage-last-note').hidden, true);
+  assert.equal(ok.byId('manage-last-note').hidden, false);
+});
+
+test('manage page: an error is scrolled into view where it can be scrolled, focus goes to the place that changed, and the fake page without scrolling still works', async () => {
+  const p = await managePage({ routes: { 'POST /api/manage/restart': [202, { ok: true, id: 'r'.repeat(16) }], 'POST /api/manage/rollback': [200, { ok: true }] } });
+  const scrolled = [];
+  p.byId('manage-form-error').scrollIntoView = (o) => scrolled.push(o);
+  p.byId('manage-form').fire('submit');
+  await settle();
+  assert.deepEqual(plain(scrolled), [{ block: 'nearest' }]);
+  p.byId('manage-restart').fire('click');
+  await settle();
+  assert.equal(FakeElement.active, p.byId('manage-restart-h'));
+  p.byId('manage-rollback').fire('click');
+  await settle();
+  assert.equal(FakeElement.active, p.byId('manage-last-h'));
+  const html = await read('manage.html');
+  for (const id of ['manage-restart-h', 'manage-last-h', 'manage-ret-edit-h', 'manage-settings-h']) assert.match(html, new RegExp(`<h2 id="${id}"[^>]*tabindex="-1"`), id);
+});
+
+test('the manage and status pages use the width of a large screen, and keep sticky parts from hiding what has the focus', async () => {
+  const css = await read('site.css');
+  for (const name of ['manage.html', 'status.html', 'join.html', 'downloads.html', 'account.html', 'users.html']) assert.match(await read(name), /<main id="main" tabindex="-1" class="wrap wide/, name);
+  assert.match(await read('manage.html'), /<main id="main" tabindex="-1" class="wrap wide acct-page manage-page">/);
+  assert.match(css, /body:has\(> main\.wide\) \.wrap \{ max-width: 1400px;/);
+  assert.match(css, /html:has\(\.manage-page\) \{ scroll-padding-top: 80px; scroll-padding-bottom: 72px; \}/);
+  assert.match(css, /\.manage-live \{ position: sticky; top: 0;/);
+  assert.match(css, /\.manage-bar \{ position: sticky; bottom: 0;/);
+  assert.match(css, /main\.wide:has\(#hosts\) \{ display: grid; grid-template-columns: minmax\(0, 1fr\) 22rem;/);
+  // The strip holds the status and the error, as the pinned markup, and is no landmark.
+  const strip = /<div class="manage-live">([\s\S]*?)<\/div>/.exec(await read('manage.html'))[1];
+  assert.match(strip, /<p id="manage-status" class="note" role="status">/);
+  assert.match(strip, /<p id="manage-error" class="login-error" role="alert"><\/p>/);
+  // The form is a settings form with its bar: the error and Save sit together.
+  const bar = /<div class="manage-bar">([\s\S]*?)<\/form>/.exec(await read('manage.html'))[1];
+  assert.match(bar, /id="manage-form-error"[\s\S]*id="manage-save"[\s\S]*id="manage-form-dirty"/);
+  // Nothing is styled or scripted inline (the site's policy is style-src 'self', script-src 'self').
+  assert.doesNotMatch(await read('manage.html'), /\sstyle=|<script(?![^>]*\ssrc=)/);
+  assert.doesNotMatch(await read('manage-page.js'), /\.style\b|cssText|setAttribute\('style'/);
+});
+
+test('manage page: "(may be empty)" is in the label of an optional setting once, also when the node already says it', async () => {
+  const settings = [
+    { key: 'pn_name', label: 'Propagation node name', help: '', kind: 'optional', access: 'change', value: '' },
+    { key: 'hub_greeting', label: 'Hub greeting (may be empty)', help: '', kind: 'optional', access: 'change', value: '' },
+    { key: 'pn_storage', label: 'Storage', help: '', kind: 'number', access: 'change', value: '5' },
+  ];
+  const p = await managePage({ routes: { [`GET ${NODE_URL}`]: [200, nodeState({ settings })] } });
+  assert.deepEqual(p.fields().filter((e) => e.tag === 'label').map((e) => e.textContent), ['Propagation node name (may be empty)', 'Storage', 'Hub greeting (may be empty)']);
+});
+
+test('every page has the same 1400px header and footer, and the wide pages lay themselves out as designed, in files and in rules', async () => {
+  const css = await read('site.css');
+  // The frame does not move between pages: header and footer are 1400px wide whatever main is.
+  assert.match(css, /header\.top \.wrap, footer \.wrap \{ max-width: 1400px; padding-inline: clamp\(16px, 3vw, 32px\); \}/);
+  assert.match(css, /body:has\(> main\.wide\) \.wrap \{ max-width: 1400px;/);
+  // The footer block that the server rewrites is as it was.
+  for (const name of ['index.html', 'status.html', 'join.html', 'downloads.html', 'account.html', 'users.html', 'manage.html']) assert.match(await read(name), /<footer>\s*<div class="wrap">/, name);
+  // Home is not wide.
+  assert.doesNotMatch(await read('index.html'), /<main[^>]*\bwide\b/);
+  // Join: the QR and the other entry points are one side column, last in the document order, sticky only in a tall window.
+  const join = await read('join.html');
+  const side = /<div class="join-side">([\s\S]*?)\n  <\/div>\n  <noscript>/.exec(join);
+  assert.ok(side, 'the side column wraps the last two sections');
+  assert.match(side[1], /<h2>From an Android phone<\/h2>[\s\S]*<img class="qr" src="\/join-qr\.svg"[\s\S]*<h2>Other entry points<\/h2>[\s\S]*id="status-ep" role="status"/);
+  assert.doesNotMatch(join.slice(0, join.indexOf('<div class="join-side">')), /class="qr"/);
+  assert.match(css, /@media \(min-width: 1100px\) and \(min-height: 700px\) \{\s*\.join-side \{ position: sticky; top: 16px; \}/);
+  assert.match(css, /main\.wide:has\(> \.join-side\) \{ display: grid; grid-template-columns: minmax\(0, 46rem\) minmax\(18rem, 26rem\);/);
+  // Downloads: the projects side by side from 1000px.
+  assert.match(css, /@media \(min-width: 1000px\) \{\s*#projects \{ grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 34rem\), 1fr\)\);/);
+  // Account: two columns from 1000px for the cards in the signed-in part only; the alert spans both.
+  assert.match(css, /#acct:not\(\[hidden\]\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(css, /#acct > #acct-must-change \{ grid-column: 1 \/ -1;/);
+  assert.match(css, /#acct-signin \{ max-width: 32rem; \}/);
+  // Users: the card stack is on below 1100px for this page only; the global rule (700px, used by the Manage tables too) is as it was.
+  assert.match(css, /@media \(max-width: 1099px\) \{\s*\.users-page \.users-table, /);
+  assert.match(css, /@media \(max-width: 700px\) \{\s*\.users-table:not\(\.manage-ret-table\), /);
+  assert.match(css, /\.users-page td\.users-actions \{ min-width: 20rem; \}/);
+  assert.match(css, /\.users-page #users > \.acct-card > \.note \{ max-width: 70ch; \}/);
+  // One h1 size on the account pages, as on the others.
+  assert.match(css, /\.acct-page h1 \{ margin: 0 0 8px; font-size: 22px; \}/);
+  // The cells the phone layout reads still have their labels.
+  assert.match(await read('users-page.js'), /cell\(tr, 'Actions', undefined, 'users-actions'\)/);
 });

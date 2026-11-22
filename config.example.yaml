@@ -31,9 +31,15 @@
 # and "Passkeys" in wiki/Accounts-and-Second-Factor.md). Passkeys need site.url below.
 # Any users at all need the user store key, set in USERS_KEY_FILE (see "The user store key" in
 # wiki/User-Store.md); without it the server does not start.
-# What a visitor without a login does not see. With users and no rule, all of these;
-# a node can override it with its own require_login.
-# require_login: [details, storage, peers, disk, versions]
+# What a visitor without a login does not see. With users and no rule, all of these, links (the
+# links between nodes on the map and the cards) included. A list you write replaces that default
+# and so does a node's own require_login: leave out links and those visitors see them.
+# require_login: [details, storage, peers, disk, versions, links]
+# Find the links between your nodes by reading each managed node's Reticulum config (default false).
+# Needs manage_url on the nodes and at least one user. Turning it on publishes, to everyone who may
+# see links, which node dials which, and whether that interface is on (never an address or an
+# interface name). See "Links between nodes" in wiki/Connecting-Nodes.md.
+# detect_links: true
 # The Logs tab of a node's Full details (its recent log lines, fetched with the node's stats token
 # from a node started with --stats-logs; see "Node logs" in wiki/Node-Stats.md) is not one of these sections:
 # it always needs a login, whatever require_login says. To show a node's logs to everybody, set
@@ -46,6 +52,9 @@
 #   # The reverse proxy's address or network (CIDR, like 172.18.0.0/16), so failed logins are
 #   # counted per visitor, not per proxy. List only networks nothing untrusted connects from.
 #   trusted_proxies: [172.18.0.1]
+#   # Signing in with a passkey alone, without name and password ("Sign in with a passkey").
+#   # Needs site.url. Default true.
+#   passkey_sign_in: true
 # Optional: a message when a node goes down or comes back (see "Alerts" in wiki/Uptime-and-Alerts.md).
 # A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or
 # email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
@@ -126,6 +135,17 @@ nodes:
     #   - name: Example backbone hub
     #     address: hub.example.org:4965
     #   - name: Another peer
+    # Optional: links to other monitored nodes, drawn as arrows on the network map and listed on the
+    # cards (up to 8 per node). With detect_links: true the website also finds links by itself: for a
+    # node with a manage_url it reads the node's Reticulum config now and then (every 5 minutes; see
+    # "Links between nodes" in wiki/Connecting-Nodes.md). Declare a link here for a node without
+    # management, or one that config does not show. "to" is the name or the address of another node in this file; "direction" is
+    # dials (this node connects out to it, the default) or unknown. What the node's config shows wins
+    # over what is declared here. Only the other node is published: no interface name and no address.
+    # links:
+    #   - to: Back
+    #   - to: side.rns.rettui.dev:4242
+    #     direction: unknown
   - address: back.rns.rettui.dev:4242
     name: Back
     stats_url: https://back.rns.rettui.dev/stats.json

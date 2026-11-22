@@ -40,7 +40,7 @@
     </div>
   </div>
 </header>
-<main id="main" tabindex="-1" class="wrap acct-page">
+<main id="main" tabindex="-1" class="wrap wide acct-page">
   <h1>Account</h1>
   <noscript><p class="note">The account page needs JavaScript.</p></noscript>
   <p id="acct-status" class="note" role="status">Loading your account...</p>
@@ -76,6 +76,11 @@
         <p id="pw-ask" class="note">When you change it, a pop-up asks for your current password, and for your passkey or a code from your app if two-step sign-in is on.</p>
         <label for="pw-again">New password again</label>
         <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
+        <div id="pw-remove-box" class="acct-check" hidden>
+          <input id="pw-remove" type="checkbox" aria-describedby="pw-remove-help">
+          <label for="pw-remove">Also remove my other passkeys</label>
+          <p id="pw-remove-help" class="note">Every passkey except the one you use to confirm this change is removed. If you confirm with a code or a recovery code, all of them are removed. You can add them again afterwards. Tick this if you think someone else may have added a passkey.</p>
+        </div>
         <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
       </form>
     </section>
@@ -123,7 +128,7 @@
 
     <section id="acct-passkeys" class="acct-card" data-after-password aria-labelledby="acct-passkeys-h" hidden>
       <h2 id="acct-passkeys-h" tabindex="-1">Passkeys</h2>
-      <p class="note">A passkey is a second step after your password: your phone, computer or security key confirms it is you, with a fingerprint, face or PIN. There is nothing to type.</p>
+      <p id="passkeys-note" class="note">Your phone, computer or security key confirms it is you, with a fingerprint, face or PIN. There is nothing to type. A passkey works as the second step after your password.</p>
       <p id="passkeys-unavailable" class="note" hidden></p>
       <p id="passkeys-none" class="note" hidden>You have no passkeys.</p>
       <ul id="passkeys-list" class="acct-passkeys"></ul>

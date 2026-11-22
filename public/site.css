@@ -137,6 +137,9 @@ button:hover { border-color: var(--accent); }
 .wrap { width: 100%; max-width: 900px; margin: 0 auto; padding-inline: 16px; }
 
 header.top { border-bottom: 1px solid var(--border); background: var(--bg); }
+/* The header and footer are 1400px wide on every page, so the logo and the menu stay put between pages; main is as wide as its page needs. */
+header.top .wrap, footer .wrap { max-width: 1400px; padding-inline: clamp(16px, 3vw, 32px); }
+main.wrap { padding-inline: clamp(16px, 3vw, 32px); }
 header.top .wrap { display: flex; align-items: center; gap: 16px; padding-top: 12px; padding-bottom: 12px; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; margin-right: auto; }
 .brand .wordmark { display: block; height: 20px; width: auto; }
@@ -464,11 +467,14 @@ button:disabled { opacity: 0.7; cursor: progress; }
 /* The second step of the sign in shows one form, and one of its two inputs, at a time. */
 .login-form[hidden], .login-form [hidden] { display: none; }
 .login-swap { justify-self: start; }
+/* "or" and the passkey on its own, under the name and password. */
+.login-or { margin: 10px 0 0; text-align: center; color: var(--dim); font-size: 14px; }
+.login-passkey-only { min-height: 40px; padding: 4px 16px; width: 100%; }
 .signin-link { color: var(--dim); text-decoration: none; }
 .signin-link:hover, .signin-link[aria-current=page] { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 
 /* The account page */
-.acct-page h1 { margin: 0 0 8px; }
+.acct-page h1 { margin: 0 0 8px; font-size: 22px; }
 .acct-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px 16px; margin: 16px 0; }
 .acct-card[hidden], #acct[hidden], .acct-page [hidden] { display: none; }
 .acct-card h2 { margin: 0 0 8px; font-size: 17px; }
@@ -485,6 +491,10 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-form input:hover { border-color: var(--accent); }
 .acct-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
 .acct-form .note { margin: 0; }
+.acct-check { display: grid; grid-template-columns: 24px 1fr; gap: 2px 8px; align-items: center; }
+.acct-check input { width: 24px; height: 24px; min-height: 0; margin: 0; }
+.acct-check label { margin: 0; }
+.acct-check .note { grid-column: 2; }
 .acct-steps { padding-left: 20px; }
 .acct-steps li { margin: 4px 0; }
 .acct-key { overflow-wrap: anywhere; font-size: 15px; letter-spacing: 0.05em; }
@@ -524,39 +534,158 @@ button.danger:hover { border-width: 1px; text-decoration: underline; }
   padding: 6px 10px; min-height: 40px; width: 100%;
 }
 @media (max-width: 700px) {
-  .users-table, .users-table caption, .users-table tbody, .users-table tr, .users-table th, .users-table td, .users-table td.users-actions { display: block; }
-  .users-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .users-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
-  .users-table th, .users-table td { border: 0; padding: 3px 10px; }
-  .users-table td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
-  .users-table td.num { text-align: left; }
-  .users-table td::before { content: attr(data-label); color: var(--dim); }
-  .users-table th.users-name { font-size: 15px; }
-  .users-table td.users-actions::before { display: block; margin-bottom: 4px; }
+  .users-table:not(.manage-ret-table), .users-table:not(.manage-ret-table) caption, .users-table:not(.manage-ret-table) tbody, .users-table:not(.manage-ret-table) tr, .users-table:not(.manage-ret-table) th, .users-table:not(.manage-ret-table) td, .users-table:not(.manage-ret-table) td.users-actions { display: block; }
+  .users-table:not(.manage-ret-table) thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .users-table:not(.manage-ret-table) tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .users-table:not(.manage-ret-table) th, .users-table:not(.manage-ret-table) td { border: 0; padding: 3px 10px; }
+  .users-table:not(.manage-ret-table) td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+  .users-table:not(.manage-ret-table) td.num { text-align: left; }
+  .users-table:not(.manage-ret-table) td::before { content: attr(data-label); color: var(--dim); }
+  .users-table:not(.manage-ret-table) th.users-name { font-size: 15px; }
+  .users-table:not(.manage-ret-table) td.users-actions::before { display: block; margin-bottom: 4px; }
   .users-actions button { min-height: 40px; }
 }
+/* The account page on a wide screen: the cards in two columns, in reading order (a grid, so a card does not jump when a list changes). */
+#acct-signin { max-width: 32rem; }
+@media (min-width: 1000px) {
+  #acct:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; max-width: 70rem; }
+  #acct > .acct-card { margin: 0; }
+  #acct > #acct-must-change { grid-column: 1 / -1; max-width: 60rem; }
+}
+/* The users page: the table has the width of the page, and a card for each user below 1100px (eight columns do not fit before that). */
+.users-page #users > .acct-card > .note { max-width: 70ch; }
+.users-page #users > .acct-card[aria-labelledby=users-new-h] { max-width: 40rem; }
+.users-page #users-otp, .users-page #users-need-2fa { max-width: 40rem; }
+.users-admin-note { display: block; max-width: 26em; }
+@media (min-width: 1100px) {
+  .users-page td.users-actions { min-width: 20rem; }
+  /* A date or a name is not broken in two lines while there is room. */
+  .users-page td[data-label="Last sign in"], .users-page td[data-label=Created], .users-page th.users-name { white-space: nowrap; }
+}
+@media (max-width: 1099px) {
+  .users-page .users-table, .users-page .users-table caption, .users-page .users-table tbody, .users-page .users-table tr, .users-page .users-table th, .users-page .users-table td, .users-page .users-table td.users-actions { display: block; }
+  .users-page .users-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .users-page .users-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .users-page .users-table th, .users-page .users-table td { border: 0; padding: 3px 10px; }
+  .users-page .users-table td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+  .users-page .users-table td.num { text-align: left; }
+  .users-page .users-table td::before { content: attr(data-label); color: var(--dim); }
+  .users-page .users-table th.users-name { font-size: 15px; }
+  .users-page .users-table td.users-actions::before { display: block; margin-bottom: 4px; }
+  .users-page .users-actions button { min-height: 40px; }
+}
+
 /* The manage page: one node at a time, its settings in groups; long values wrap */
-.manage-pick { margin: 8px 0 0; }
-.manage-ret-section { margin: 12px 0 0; }
-.manage-ret-section h3 { margin: 0 0 4px; font-size: 16px; overflow-wrap: anywhere; }
-.manage-ret-table th, .manage-ret-table td { overflow-wrap: anywhere; }
+/* The manage and status pages use the width of a large screen (the header and footer line up with them). */
+body:has(> main.wide) .wrap { max-width: 1400px; padding-inline: clamp(16px, 3vw, 32px); }
+/* The sticky strip and the sticky save bar must not hide what has the focus, or what a link jumps to. */
+html:has(.manage-page) { scroll-padding-top: 80px; scroll-padding-bottom: 72px; }
+.manage-page section, .manage-page .manage-top { scroll-margin-top: 80px; }
+.manage-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin: 0 0 8px; }
+.manage-head h1 { font-size: 22px; }
+.manage-page .manage-head + .acct-card, .manage-page .acct-card.users-warning { margin-top: 8px; }
+/* What the page says (status and errors) stays in view, wherever on the long page the person is. */
+.manage-live { position: sticky; top: 0; z-index: 5; max-height: 30vh; overflow: auto; background: var(--bg); }
+.manage-live:has(> :not(:empty)) { padding: 8px 0 0; }
+.manage-live > p { margin: 0 0 8px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; }
+.manage-live > p:empty { display: none; }
+.manage-live > .note { border-left-color: var(--accent); color: var(--text); font-size: 14px; }
+.manage-live > .login-error { border-left-color: var(--red); }
+.manage-main { display: grid; gap: 16px; min-width: 0; align-content: start; }
+.manage-main > .acct-card, .manage-top > .acct-card, .manage-pair > .acct-card { margin: 0; }
+.manage-top { display: grid; gap: 16px; align-items: start; }
+.manage-pair { display: grid; gap: 16px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.manage-pick { margin: 0; max-width: none; }
+.manage-nav { margin: 8px 0 16px; }
+.manage-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.manage-nav a { display: flex; align-items: center; min-height: 44px; padding: 0 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--accent); text-decoration: none; }
+.manage-nav a:hover { border-color: var(--accent); }
+.manage-pending-line { color: var(--text); font-weight: 600; margin: 8px 0 0; }
+.manage-ret-section { margin: 0; padding: 8px 10px 10px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+#manage-ret-sections { display: grid; gap: 12px; align-items: start; margin-top: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); }
+.manage-ret-section h3 { margin: 0 0 4px; font-size: 15px; overflow-wrap: anywhere; }
+/* The key column is as wide as its longest key; a value is only broken inside a word when the word is longer than what is left. */
+.manage-ret-section { overflow-x: auto; }
+.manage-ret-section .users-table { margin: 0; background: transparent; }
+.manage-ret-table th, .manage-ret-table td { padding: 4px 6px; }
+.manage-ret-table th { overflow-wrap: break-word; }
+.manage-ret-table td { overflow-wrap: anywhere; }
+.manage-ret-table tbody th, .manage-ret-table thead th:first-child { width: 1%; padding-right: 12px; }
+.manage-ret-table tbody th { font-weight: 500; color: var(--dim); }
 .manage-line { margin: 0; overflow-wrap: anywhere; }
-.manage-form { max-width: 520px; }
-.manage-group { display: grid; gap: 6px; margin: 10px 0 0; }
+.manage-form { max-width: none; }
+.acct-form.manage-form { max-width: none; }
+#manage-fields { display: grid; gap: 12px; }
+.manage-group { display: grid; gap: 12px 16px; margin: 0; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); align-items: start; }
 .manage-group legend { overflow-wrap: anywhere; }
-.manage-field { display: grid; gap: 4px; margin: 4px 0; overflow-wrap: anywhere; }
+/* The Reticulum form: one card for each section, full width, its fields side by side (one row on a wide screen). */
+#manage-ret-fields { display: grid; gap: 12px; }
+#manage-ret-fields .manage-group { grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); }
+.manage-field { display: grid; gap: 4px; margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.manage-field.changed { border-left: 3px solid var(--accent); padding-left: 8px; }
+.manage-was { margin: 0; color: var(--text); font-weight: 600; }
 .manage-field.users-radio { display: flex; flex-wrap: wrap; }
 .manage-field.users-radio .note { flex-basis: 100%; }
-.manage-field input[type=checkbox] { width: 20px; height: 20px; min-height: 0; margin: 0; }
-.manage-label { margin: 6px 0 0; font-weight: 500; font-size: 14px; }
+.manage-field input[type=checkbox] { width: 24px; height: 24px; min-height: 0; margin: 0; }
+.manage-label { margin: 0; font-weight: 600; font-size: 14px; }
+.manage-label:focus-visible { outline-offset: 2px; }
 .manage-changes { padding-left: 20px; margin: 4px 0; overflow-wrap: anywhere; }
 .manage-audit td { overflow-wrap: anywhere; }
+.manage-bad { font-weight: 600; }
 .manage-field button, .manage-page .login-actions button { min-height: 40px; }
+.manage-page .login-actions { align-items: center; }
+.manage-page .login-actions .note { margin: 0; }
+.manage-retry { color: var(--text); font-size: 13px; }
+.manage-why { margin: 0 0 8px; color: var(--text); }
+/* The save bar stays at the bottom of the screen while the form is on it, so Save is always reachable. */
+.manage-bar { position: sticky; bottom: 0; z-index: 4; margin-top: 12px; padding: 8px 0; background: var(--panel); border-top: 1px solid var(--border); }
+.manage-bar .login-actions { margin-top: 0; }
+.manage-bar .login-error { margin-bottom: 8px; }
+/* A Reticulum change on probation stands out from the other cards. */
+#manage-ret-edit.on-probation { border-left: 4px solid var(--accent); }
+#manage-ret-edit.on-probation #manage-ret-pending { color: var(--text); font-weight: 600; }
+#manage-ret-checks { columns: 1; }
+@media (min-width: 700px) {
+  .manage-top { grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr); }
+  #manage-ret-checks { columns: 2; }
+  .manage-audit th.manage-time { white-space: nowrap; font-weight: 500; }
+  .manage-audit td[data-label=Who] { min-width: 6em; }
+  .manage-audit td[data-label=What] { min-width: 7em; }
+  .manage-audit td[data-label=Result] { min-width: 11em; }
+}
+@media (min-width: 1440px) {
+  #manage-ret-fields .manage-group { grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr)); }
+}
+@media (min-width: 1100px) {
+  #manage { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; align-items: start; }
+  .manage-audit td[data-label=Changes] { min-width: 20em; }
+  .manage-nav { position: sticky; top: 72px; margin: 0; }
+  .manage-nav ul { display: grid; gap: 4px; }
+  .manage-nav a { min-height: 40px; padding-block: 6px; line-height: 1.3; }
+}
+@media (max-width: 699px) {
+  .manage-nav ul { gap: 6px; }
+}
 @media (max-width: 560px) {
-  .manage-form { max-width: none; }
   .acct-codes { grid-template-columns: max-content; }
   .acct-card { padding: 10px 12px 14px; }
   .acct-form { max-width: none; }
+}
+
+/* The status page on a large screen: the entry points on the left, the incidents beside them. */
+.hosts { grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); align-items: start; }
+.hosts > .group-card { grid-column: 1 / -1; }
+.hosts > .group-card > .members { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); column-gap: 16px; }
+.netmap-chart { max-width: 1100px; margin-inline: auto; }
+@media (min-width: 1100px) {
+  main.wide:has(#hosts) { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; column-gap: 24px; align-content: start; }
+  main.wide:has(#hosts) > :not(#hosts, #incidents, dialog) { grid-column: 1 / -1; }
+  main.wide:has(#hosts) > #hosts { grid-column: 1; }
+  main.wide:has(#hosts) > #incidents { grid-column: 2; position: sticky; top: 16px; align-self: start; margin-top: 16px; }
+  main.wide:has(#hosts) > #incidents h2 { margin-top: 0; }
+}
+@media (min-width: 1400px) {
+  dialog.detail { width: min(1000px, calc(100% - 16px)); }
 }
 
 /* Network map */
@@ -616,6 +745,24 @@ pre.code code { font-size: inherit; }
 .entry-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
 .entry-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .projects { display: grid; gap: 8px; }
+/* Join on a wide screen: the text on the left, the QR code and the other entry points beside it. */
+.join-side > h2:first-child { margin-top: 28px; }
+.join-side .qr-panel { flex-direction: column; flex-wrap: nowrap; }
+.join-side .qr-panel p { flex: none; }
+@media (min-width: 1100px) {
+  main.wide:has(> .join-side) { display: grid; grid-template-columns: minmax(0, 46rem) minmax(18rem, 26rem); column-gap: 48px; justify-content: start; align-content: start; }
+  main.wide:has(> .join-side) > :not(.join-side) { grid-column: 1; }
+  main.wide:has(> .join-side) > .join-side { grid-column: 2; grid-row: 1 / span 20; align-self: start; }
+  .join-side > h2:first-child { margin-top: 0; }
+}
+/* Sticky only when the window is tall enough to leave room to read, so a short window never hides the end of the column. */
+@media (min-width: 1100px) and (min-height: 700px) {
+  .join-side { position: sticky; top: 16px; }
+}
+/* Downloads on a wide screen: the two projects side by side. */
+@media (min-width: 1000px) {
+  #projects { grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr)); gap: 16px 32px; align-items: start; }
+}
 .project h2 { margin-top: 28px; }
 .release-meta { margin-bottom: 8px; }
 .dim { color: var(--dim); }
@@ -679,4 +826,40 @@ details.more-files .files { padding-top: 4px; border-top: 1px solid var(--border
   .log-field select, .log-refresh { min-height: 40px; }
   .log-list { max-height: 55vh; }
   .log-text { flex-basis: 100%; }
+}
+
+/* Links between nodes on the network map: a line with marks at its ends (set in netmap.js). */
+.nm-edge.link { stroke: var(--dim); stroke-width: 2; }
+.nm-edge.link.down { stroke: var(--control); }
+.nm-edge.link.off { stroke-dasharray: 2 4; stroke-linecap: round; }
+/* Declared by the operator: a wide line with a narrower one in the panel colour on top, a hollow double line. */
+.nm-edge.link.outer { stroke-width: 6; }
+.nm-edge.link.inner { stroke: var(--panel); stroke-width: 3; }
+.nm-halo { stroke: var(--panel); stroke-width: 6; fill: none; }
+.nm-halo.wide { stroke-width: 10; }
+.nm-mk-fill { fill: var(--dim); stroke: none; }
+.nm-mk-open { fill: var(--panel); stroke: var(--dim); stroke-width: 1.6; }
+.nm-mk-bar { stroke: var(--dim); stroke-width: 3; fill: none; }
+.nm-mk-fill.dn { fill: var(--control); }
+.nm-mk-open.dn, .nm-mk-bar.dn { stroke: var(--control); }
+.nm-tick-halo { stroke: var(--panel); stroke-width: 6; }
+.nm-tick { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.nm-edges.has-hot .nm-link { opacity: 0.25; }
+.nm-edges.has-hot .nm-link.hot { opacity: 1; }
+.nm-edges.has-hot .nm-link.hot .nm-edge { stroke-width: 3; }
+.nm-edges.has-hot .nm-link.hot .nm-edge.outer { stroke-width: 7; }
+.nm-edges.has-hot .nm-link.hot .nm-edge.inner { stroke-width: 4; }
+
+/* Links on a host card: Dials, Dialled by, Linked with. */
+.nl-lists { display: grid; gap: 4px; margin: 8px 0; }
+.nl-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.nl-label { color: var(--dim); font-size: 13px; min-width: 5.5em; }
+.nl-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.nl-chip { min-height: 24px; display: inline-flex; align-items: center; white-space: normal; text-decoration: none; color: var(--text); background: var(--sunken); border-color: var(--control); }
+.nl-chip:hover { border-color: var(--accent); color: var(--accent); }
+.nl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nl-more { color: var(--dim); font-size: 13px; align-self: center; }
+@media (max-width: 600px) {
+  .nl-chip { min-height: 40px; padding: 0 12px; font-size: 14px; }
+  .nl-group { display: grid; gap: 4px; }
 }

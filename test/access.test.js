@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig, loadNodes } from '../lib/config.js';
-import { SECTIONS, stripGroup, stripSeries, stripStats } from '../lib/access.js';
+import { ALL_SECTIONS, SECTIONS, stripGroup, stripSeries, stripStats } from '../lib/access.js';
 
 const HASH = '$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc';
 const yaml = (top = '', node = '') => `${top}
@@ -18,9 +18,9 @@ test('users: names and hashes are read; without a rule every section is locked',
   assert.equal(c.users.length, 1);
   assert.equal(c.users[0].name, 'alice');
   assert.equal(c.users[0].phc.memory, 19456);
-  assert.deepEqual(c.defaults.requireLogin, SECTIONS);
-  assert.deepEqual(c.nodes.get('a.test:1').requireLogin, SECTIONS);
-  assert.deepEqual(c.login, { idleTimeoutMinutes: 60, maxAgeHours: 12, maxSessions: 1000, trustedProxies: [] });
+  assert.deepEqual(c.defaults.requireLogin, ALL_SECTIONS);
+  assert.deepEqual(c.nodes.get('a.test:1').requireLogin, ALL_SECTIONS);
+  assert.deepEqual(c.login, { idleTimeoutMinutes: 60, maxAgeHours: 12, maxSessions: 1000, trustedProxies: [], passkeySignIn: true });
 });
 
 test('without users nothing is locked and there is no login', () => {
@@ -78,7 +78,7 @@ test('users are validated and their hashes never repeated in an error', () => {
 
 test('login settings: defaults, ranges and trusted proxies', () => {
   const c = loadConfig(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 15\n  max_age_hours: 2\n  max_sessions: 50\n  trusted_proxies: [127.0.0.1, "::1"]`));
-  assert.deepEqual(c.login, { idleTimeoutMinutes: 15, maxAgeHours: 2, maxSessions: 50, trustedProxies: ['127.0.0.1', '::1'] });
+  assert.deepEqual(c.login, { idleTimeoutMinutes: 15, maxAgeHours: 2, maxSessions: 50, trustedProxies: ['127.0.0.1', '::1'], passkeySignIn: true });
   // Each address in one spelling, the one a peer address is compared in.
   const long = loadConfig(yaml(`${USERS}\nlogin:\n  trusted_proxies: ["0:0:0:0:0:0:0:1", "FD00:0::1", "::ffff:10.0.0.1"]`));
   assert.deepEqual(long.login.trustedProxies, ['::1', 'fd00::1', '10.0.0.1']);
@@ -156,4 +156,22 @@ test('locked peers also hide the messages exchanged with peers, and a locked dis
   assert.equal('storedBytes' in disk.propagation, false);
   assert.equal(disk.propagation.storedMessages, 11);
   assert.equal(disk.propagation.messagesSentToPeers, 21);
+});
+
+test('config: detect_links with a require_login list that leaves out links is warned about, at the top level and for a node', () => {
+  const users = `${USERS}\n    role: admin`;
+  // The default locks everything: no warning.
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true`)).linkWarnings, []);
+  // Explicit list without links: everyone sees the links.
+  const top = loadConfig(yaml(`${users}\ndetect_links: true\nrequire_login: [details, peers]`));
+  assert.equal(top.linkWarnings.length, 1);
+  assert.match(top.linkWarnings[0], /top level require_login does not list "links"/);
+  // With links, or without detect_links: none.
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true\nrequire_login: [details, links]`)).linkWarnings, []);
+  assert.deepEqual(loadConfig(yaml(`${users}\nrequire_login: [details]`)).linkWarnings, []);
+  // A node's own list.
+  const node = loadConfig(yaml(`${users}\ndetect_links: true`, '    require_login: [details]'));
+  assert.equal(node.linkWarnings.length, 1);
+  assert.match(node.linkWarnings[0], /a\.test:1/);
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true`, '    require_login: [links]')).linkWarnings, []);
 });

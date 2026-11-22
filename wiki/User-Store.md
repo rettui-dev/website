@@ -22,6 +22,8 @@ config file are never peppered**, because the server cannot rewrite that file: p
 file as before, and move admins into the store to give them the pepper (see [Moving users out of
 the config file](Managing-Users)). Their second factor, kept in the store, is encrypted like everyone's.
 
+**Signing in with a passkey alone changes nothing in the store.** It finds the user from the credential id and the user handle the store already keeps, so there is no new field and no new schema version (see [Passkeys](Accounts-and-Second-Factor#passkeys)).
+
 **What the key does not protect.**
 
 - **The pepper protects reading, not writing.** Someone who can only read `users.db` learns

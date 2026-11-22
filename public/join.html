@@ -42,7 +42,7 @@
     </div>
   </div>
 </header>
-<main id="main" tabindex="-1" class="wrap page">
+<main id="main" tabindex="-1" class="wrap wide page">
   <h1>Join the network</h1>
   <p class="lead">Reticulum has no central server. You join by adding an interface to your own Reticulum, pointed at a node that is already part of the network. The rettui entry point is a node you can connect to over TCP:</p>
   <p class="addr-row">
@@ -72,6 +72,7 @@
   <h2>Sideband, Columba and MeshChat</h2>
   <p>These apps each have a place to add a Reticulum interface. Add a TCP client interface (some apps call it TCP Client, or TCPClientInterface), type <code>rns.rettui.dev</code> as the target host and <code>4242</code> as the port, and restart the app's Reticulum if it asks you to. Where that screen is differs between apps and versions, so look in their connectivity or interface settings. An app that lets you edit the Reticulum config as text takes the block above.</p>
 
+  <div class="join-side">
   <h2>From an Android phone</h2>
   <div class="panel qr-panel">
     <img class="qr" src="/join-qr.svg" width="264" height="264" alt="QR code of the interface config for rns.rettui.dev port 4242">
@@ -86,6 +87,7 @@
     <li><code id="ep-side">side.rns.rettui.dev:4242</code> <button type="button" data-copy-from="ep-side" data-copy-status="status-ep">Copy</button></li>
   </ul>
   <p class="copied" id="status-ep" role="status"></p>
+  </div>
   <noscript><p class="note">The copy buttons need JavaScript. You can select the text and copy it yourself.</p></noscript>
 </main>
 <footer>

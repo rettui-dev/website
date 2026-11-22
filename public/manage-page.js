@@ -29,6 +29,21 @@
   var retInputs = [];
   // Following a confirm job: {timer}, or null.
   var retPoll = null;
+  // The host the inputs of the settings form belong to, so that edits are only kept for the same node.
+  var fieldsHost = null;
+  // The Turn off buttons of the settings form, by key: {button, note}.
+  var offUi = {};
+  // The "Turn off" rows' labels, by key, to give the focus back after the form is built again.
+  var offLabels = {};
+  // A wait the node asked for before the same button may be pressed again: {key, until, left, text, timer, target, errId, done}.
+  var retry = null;
+  // What the list of checks shows now, so that it is only built again when it changes.
+  var checksKey = null;
+  // Whether the node has older entries than the ones loaded.
+  var entriesMore = false;
+
+  var VIEW_ONLY_WHY = 'You can look but not change anything yet. See the notice at the top of the page.';
+  var RET_VIEW_ONLY_WHY = 'You can look, but not change Reticulum settings yet. See the notice at the top.';
 
   function $(id) { return document.getElementById(id); }
 
@@ -39,8 +54,16 @@
     return e;
   }
 
-  function say(text) { $('manage-status').textContent = text; }
-  function fail(id, text) { $(id).textContent = text || ''; }
+  // Text that a screen reader reads out as it changes is only written when it is different.
+  function put(e, text) { if (e.textContent !== text) e.textContent = text; }
+  function say(text) { put($('manage-status'), text); }
+  // An error goes in its alert, and is scrolled into view when it is not on the screen.
+  function fail(id, text) {
+    var e = $(id);
+    put(e, text || '');
+    if (text && e.scrollIntoView) e.scrollIntoView({ block: 'nearest' });
+  }
+  function focusOn(e) { if (e && e.focus) e.focus(); }
 
   function when(seconds) {
     if (typeof seconds !== 'number') return 'unknown';
@@ -68,6 +91,60 @@
 
   function errorOf(r) {
     return r && r.body && r.body.error ? r.body.error : 'Something went wrong. Try again.';
+  }
+
+  // ---- a wait the node asks for ----
+
+  function blocked(key) { return Boolean(retry && retry.key === key); }
+
+  // Shows what is left of the wait beside the button, and keeps the button off. The words are
+  // for the eyes only (aria-hidden): the refusal itself was read out once.
+  function drawRetry() {
+    if (!retry) return;
+    var t = retry.target();
+    if (!t) return;
+    t.button.disabled = true;
+    var text = 'You can try again in ' + (retry.left > 120 ? Math.ceil(retry.left / 60) + ' min' : retry.left + ' s') + '.';
+    put(t.note, text);
+  }
+
+  function endRetry(announce) {
+    var me = retry;
+    if (!me) return;
+    window.clearTimeout(me.timer);
+    retry = null;
+    var t = me.target();
+    if (t) put(t.note, '');
+    me.done();
+    // A button that was off has lost the focus: it comes back when the button works again.
+    if (t && document.activeElement === document.body) focusOn(t.button);
+    if (announce) {
+      fail(me.errId, '');
+      say('You can try again now.');
+    }
+  }
+
+  // After a refusal that says how long to wait (retryAfter, with 429 or 503): the pressed button stays
+  // off until then, with the time left beside it. One wait at a time. target() gives {button, note}.
+  function startRetry(r, key, errId, target, done) {
+    var secs = r && r.body && typeof r.body.retryAfter === 'number' && isFinite(r.body.retryAfter) ? Math.ceil(r.body.retryAfter) : 0;
+    if (secs <= 0 || (r.status !== 429 && r.status !== 503)) return false;
+    endRetry(false);
+    secs = Math.min(secs, 3600);
+    var me = { key: key, until: Date.now() + secs * 1000, left: secs, timer: null, target: target, errId: errId, done: done };
+    retry = me;
+    drawRetry();
+    (function next() {
+      me.timer = window.setTimeout(function () {
+        if (retry !== me) return;
+        // Counts down by at least one a second, and follows the clock when a busy tab was late.
+        me.left = Math.min(me.left - 1, Math.ceil((me.until - Date.now()) / 1000));
+        if (me.left <= 0) { endRetry(true); return; }
+        drawRetry();
+        next();
+      }, 1000);
+    })();
+    return true;
   }
 
   // Whether the wait after a first second factor runs: the server sends when it ends.
@@ -144,34 +221,84 @@
     return '';
   }
 
-  function paintState() {
-    $('manage-node-h').textContent = node.name === node.host ? node.host : node.name + ' (' + node.host + ')';
-    $('manage-line').textContent = statusLine(state);
-    var warn = state.clock && state.clock.warning;
-    $('manage-clock').hidden = !warn;
-    $('manage-clock').textContent = warn || '';
+  // The sections of the page, and the entry of each in the list of links.
+  var NAV = ['manage-settings', 'manage-ret', 'manage-ret-edit', 'manage-restart-card', 'manage-last-card', 'manage-audit-card'];
+
+  // The list of links lists only the sections that are there.
+  function syncNav() {
+    var any = false;
+    NAV.forEach(function (id) {
+      var gone = Boolean($(id).hidden);
+      $('nav-' + id).hidden = gone;
+      if (!gone) any = true;
+    });
+    $('manage-nav').hidden = !any;
+  }
+
+  // The edits in the forms, to put back when the forms are built again for the same node:
+  // {settings: {key: {value, was}}, ret: {id: {value, was}}}.
+  function takeEdits() {
+    if (!state || !node || fieldsHost !== node.host) return null;
+    var out = { settings: {}, ret: {} };
+    (state.settings || []).forEach(function (s) {
+      if (s.access !== 'change' || !Object.prototype.hasOwnProperty.call(inputs, s.key)) return;
+      var input = inputs[s.key];
+      var now = s.kind === 'toggle' ? (input.checked ? 'true' : 'false') : input.value;
+      var was = s.kind === 'toggle' ? (isOn(s.value) ? 'true' : 'false') : s.value;
+      if (now !== was) out.settings[s.key] = { value: now, was: was };
+    });
+    retInputs.forEach(function (x) {
+      var v = String(x.input.value);
+      if (v !== x.shown) out.ret[retId(x)] = { value: v, was: x.was };
+    });
+    return out;
+  }
+
+  function restartWhy() {
+    if (!canChange()) return VIEW_ONLY_WHY;
+    if ((state.restart && state.restart.state === 'restarting') || poll !== null) return 'Reticulum is restarting. Restart is possible again when it is back.';
+    if (state.pending) return 'A Reticulum change is being tested. Restart waits until it is kept or put back.';
+    if (typeof state.restart_allowed_at === 'number' && state.restart_allowed_at * 1000 > Date.now()) return 'The node allows the next restart at ' + when(state.restart_allowed_at) + '.';
+    return '';
+  }
+
+  function paintRestart() {
+    var why = restartWhy();
+    $('manage-restart').disabled = Boolean(why) || blocked('restart');
+    $('manage-restart').setAttribute('aria-describedby', 'manage-restart-why');
+    put($('manage-restart-why'), why);
+    $('manage-restart-why').hidden = !why;
+  }
+
+  function paintState(edits) {
+    put($('manage-node-h'), node.name === node.host ? node.host : node.name + ' (' + node.host + ')');
+    put($('manage-line'), statusLine(state));
+    var warn = (state.clock && state.clock.warning) || '';
+    if ($('manage-clock').hidden !== !warn) $('manage-clock').hidden = !warn;
+    put($('manage-clock'), warn);
     var rt = restartText(state.restart);
     $('manage-restart-state').hidden = !rt;
-    $('manage-restart-state').textContent = rt;
+    put($('manage-restart-state'), rt);
     $('manage-revision').value = state.settings_revision || '';
-    paintFields();
+    paintFields(edits && edits.settings);
     paintReticulum();
-    paintRetEdit();
-    var later = typeof state.restart_allowed_at === 'number' && state.restart_allowed_at * 1000 > Date.now();
-    // A Reticulum change on probation restarts nothing else until it is kept or rolled back.
-    var busy = Boolean(state.restart && state.restart.state === 'restarting') || poll !== null || Boolean(state.pending);
-    $('manage-restart').disabled = !canChange() || later || busy;
-    fail('manage-restart-error', later ? 'The node allows the next restart at ' + when(state.restart_allowed_at) + '.' : '');
+    paintRetEdit(edits && edits.ret);
+    paintRestart();
+    fail('manage-restart-error', '');
     $('manage-settings').hidden = false;
     $('manage-restart-card').hidden = false;
+    syncNav();
   }
 
   // One input per setting the node may change, grouped in fieldsets; a service that can only be
   // turned off is a button instead.
-  function paintFields() {
+  function paintFields(edits) {
     var box = $('manage-fields');
     box.textContent = '';
     inputs = {};
+    offUi = {};
+    offLabels = {};
+    fieldsHost = node.host;
     var groups = {};
     var order = [];
     (state.settings || []).forEach(function (s) {
@@ -186,7 +313,29 @@
       groups[name].forEach(function (s, i) { fs.appendChild(field(s, 'mf-' + g + '-' + i)); });
       box.appendChild(fs);
     });
-    $('manage-save').disabled = !canChange() || !(state.settings || []).some(function (s) { return s.access === 'change'; });
+    // An edit stays when the node's value of that setting is still the one it was made from.
+    (state.settings || []).forEach(function (s) {
+      var e = edits && edits[s.key];
+      var input = inputs[s.key];
+      if (!e || !input) return;
+      var was = s.kind === 'toggle' ? (isOn(s.value) ? 'true' : 'false') : s.value;
+      if (was !== e.was) return;
+      if (s.kind === 'toggle') input.checked = e.value === 'true';
+      else input.value = e.value;
+    });
+    var some = (state.settings || []).some(function (s) { return s.access === 'change'; });
+    $('manage-save').disabled = !canChange() || !some || blocked('save');
+    var why = !canChange() ? VIEW_ONLY_WHY : !some ? 'This node does not let the website change any of these settings.' : '';
+    put($('manage-why'), why);
+    $('manage-why').hidden = !why;
+    paintDirty();
+    drawRetry();
+  }
+
+  // How many settings of the form differ from the node's.
+  function paintDirty() {
+    var n = state ? changes().labels.length : 0;
+    put($('manage-form-dirty'), n === 0 ? 'No changes.' : n + (n === 1 ? ' setting' : ' settings') + ' changed, not saved yet.');
   }
 
   function field(s, id) {
@@ -196,16 +345,24 @@
     if (help) help.id = helpId;
     if (s.access === 'turn_off_only') {
       var on = isOn(s.value);
-      row.appendChild(el('p', 'manage-label', s.label + ': ' + (on ? 'on' : 'off')));
+      var stateLine = el('p', 'manage-label', s.label + ': ' + (on ? 'on' : 'off'));
+      // Something for the focus to go to when this row is built again after Turn off.
+      stateLine.setAttribute('tabindex', '-1');
+      offLabels[s.key] = stateLine;
+      row.appendChild(stateLine);
       if (help) row.appendChild(help);
       var b = el('button', 'danger', 'Turn off');
       b.type = 'button';
       b.setAttribute('aria-label', 'Turn off ' + s.label);
-      if (help) b.setAttribute('aria-describedby', helpId);
-      b.disabled = !on || !canChange();
+      b.setAttribute('aria-describedby', (help ? helpId + ' ' : '') + 'manage-why');
+      b.disabled = !on || !canChange() || blocked('off:' + s.key);
       b.addEventListener('click', function () { turnOff(s); });
       var actions = el('div', 'login-actions');
       actions.appendChild(b);
+      var note = el('span', 'manage-retry');
+      note.setAttribute('aria-hidden', 'true');
+      actions.appendChild(note);
+      offUi[s.key] = { button: b, note: note };
       row.appendChild(actions);
       if (!on) row.appendChild(el('p', 'note', 'Turn on in the terminal on the node.'));
       return row;
@@ -238,8 +395,11 @@
     }
     input.id = id;
     inputs[s.key] = input;
+    input.addEventListener('input', paintDirty);
+    input.addEventListener('change', paintDirty);
     input.setAttribute('aria-describedby', (help ? helpId + ' ' : '') + 'manage-form-error');
-    var label = el('label', null, s.label + (s.kind === 'optional' ? ' (may be empty)' : ''));
+    // A node that already says it in its label does not get the words twice.
+    var label = el('label', null, s.label + (s.kind === 'optional' && !/\(may be empty\)$/.test(s.label) ? ' (may be empty)' : ''));
     label.htmlFor = id;
     if (s.kind === 'toggle') { row.appendChild(input); row.appendChild(label); }
     else { row.appendChild(label); row.appendChild(input); }
@@ -251,14 +411,20 @@
   function changes() {
     var out = {};
     var list = [];
+    var said = [];
     (state.settings || []).forEach(function (s) {
       if (s.access !== 'change' || !Object.prototype.hasOwnProperty.call(inputs, s.key)) return;
       var input = inputs[s.key];
       var now = s.kind === 'toggle' ? (input.checked ? 'true' : 'false') : input.value;
       var was = s.kind === 'toggle' ? (isOn(s.value) ? 'true' : 'false') : s.value;
-      if (now !== was) { out[s.key] = now; list.push(s.label); }
+      if (now === was) return;
+      out[s.key] = now;
+      list.push(s.label);
+      // The dialog says what each setting becomes, with a long value cut.
+      var shown = s.kind === 'toggle' ? (now === 'true' ? 'on' : 'off') : now.length > 60 ? now.slice(0, 60) + '...' : now;
+      said.push(s.label + ' to "' + shown + '"');
     });
-    return { map: out, labels: list };
+    return { map: out, labels: list, said: said };
   }
 
   // ---- the node's Reticulum config, read only ----
@@ -275,13 +441,13 @@
     $('manage-ret').hidden = false;
     $('manage-ret-shared').hidden = !(r && r.shared_instance === true);
     if (!r || !Array.isArray(r.sections)) {
-      $('manage-ret-status').textContent = 'This node does not say what its Reticulum config holds.';
+      put($('manage-ret-status'), 'This node does not say what its Reticulum config holds.');
       return;
     }
     var said = [];
     if (r.sections.length === 0) said.push('The node lists no Reticulum configuration.');
     if (r.truncated === true) said.push('Part of the config is not shown.');
-    $('manage-ret-status').textContent = said.join(' ');
+    put($('manage-ret-status'), said.join(' '));
     r.sections.forEach(function (sec) {
       var path = Array.isArray(sec.path) ? sec.path : [];
       var keys = Array.isArray(sec.keys) ? sec.keys : [];
@@ -423,40 +589,85 @@
   };
 
   // The node's checks of the pending change, one line per interface and kind, while it is pending.
+  // The list is in a live region: it is built again only when its words change.
   function paintChecks() {
     var list = $('manage-ret-checks');
-    list.textContent = '';
     var checks = state.pending && Array.isArray(state.pending.checks) ? state.pending.checks : [];
+    var lines = [];
     checks.forEach(function (c) {
       var words = CHECK_TEXT[c.kind] && CHECK_TEXT[c.kind][c.result];
-      if (words) list.appendChild(el('li', null, String(c.interface) + ': ' + words));
+      if (words) lines.push({ c: c, words: words });
     });
-    list.hidden = list.children.length === 0;
+    var key = lines.map(function (l) { return String(l.c.interface) + ': ' + l.words; }).join('\n');
+    if (key !== checksKey || list.hidden !== (lines.length === 0)) {
+      checksKey = key;
+      list.textContent = '';
+      lines.forEach(function (l) {
+        var c = l.c;
+        var words = l.words;
+        list.appendChild(el('li', null, String(c.interface) + ': ' + words));
+      });
+      list.hidden = list.children.length === 0;
+    }
   }
 
+  // What is left of the probation, in words, for the eyes only (it is not in the live region).
+  function leftText(p) {
+    if (!p || p.state !== 'probation' || typeof p.confirm_by !== 'number') return '';
+    var secs = Math.round(p.confirm_by - Date.now() / 1000);
+    if (secs <= 0) return 'The time is up. The node is finishing the test.';
+    if (secs < 60) return 'Less than a minute left.';
+    var m = Math.ceil(secs / 60);
+    return 'About ' + m + (m === 1 ? ' minute' : ' minutes') + ' left.';
+  }
+
+  // The status of a Reticulum change: in the live region of its section, and as one line in the node
+  // card at the top. Every write is only made when the text changes.
   function paintRetStatus() {
-    $('manage-ret-pending').textContent = retStatusText();
+    var status = retStatusText();
+    var pendingEl = $('manage-ret-pending');
+    if (pendingEl.textContent !== status) $('manage-ret-pending').textContent = status;
     paintChecks();
+    var p = state.pending;
+    put($('manage-pending-text'), p ? status : '');
+    $('manage-pending-line').hidden = !p;
+    // The countdown runs while the page follows the job, which asks again every 3 seconds.
+    var left = retPoll ? leftText(p) : '';
+    put($('manage-ret-left'), left);
+    $('manage-ret-left').hidden = !left;
+    var mine = p && state.confirm && state.confirm.id === p.id && jobRunning(state.confirm);
+    var auto = !p ? '' : mine
+      ? 'The website is testing the change. Nothing to click: it is kept if the test passes, and put back by the node if not.'
+      : 'Nothing to click here: the node puts the old config back by itself if the change is not kept in time.';
+    put($('manage-ret-auto'), auto);
+    $('manage-ret-auto').hidden = !auto;
+    var cls = 'acct-card' + (p && p.state === 'probation' ? ' on-probation' : '');
+    if ($('manage-ret-edit').className !== cls) $('manage-ret-edit').className = cls;
   }
 
   // The Reticulum form: one fieldset per section the node lets the website change. It is there only
   // for a user who may change things, on a node without a shared instance, while nothing is pending.
-  function paintRetEdit() {
+  function paintRetEdit(edits) {
     var r = state.reticulum;
     var editable = r && Array.isArray(r.editable) ? r.editable : [];
     var shared = Boolean((r && r.shared_instance) || (state.network && state.network.shared_instance));
     var busy = Boolean(state.pending) || jobRunning(state.confirm);
     var open = canChange() && !shared && editable.length > 0 && !busy;
     var status = retStatusText();
-    $('manage-ret-edit').hidden = !open && !status;
+    // When there is no form, one line says why, instead of the section just being gone.
+    var why = !(r && Array.isArray(r.sections)) ? '' : !canChange() ? RET_VIEW_ONLY_WHY : shared ? 'This node uses a shared Reticulum instance, so the website does not change its settings.' : editable.length === 0 ? 'This node does not let the website change any Reticulum settings.' : '';
+    $('manage-ret-edit').hidden = !open && !status && !why;
     $('manage-ret-form').hidden = !open;
-    $('manage-ret-pending').textContent = status;
-    paintChecks();
-    $('manage-ret-apply-help').textContent = applyText();
+    $('manage-ret-lead').hidden = !open;
+    put($('manage-ret-why'), why);
+    $('manage-ret-why').hidden = !why;
+    paintRetStatus();
+    put($('manage-ret-apply-help'), applyText());
     $('manage-ret-revision').value = (r && r.revision) || '';
     var box = $('manage-ret-fields');
     box.textContent = '';
     retInputs = [];
+    paintRetDirty();
     if (!open) return;
     editable.forEach(function (path, g) {
       var sec = null;
@@ -469,6 +680,13 @@
       });
       box.appendChild(fs);
     });
+    // An edit stays when the node's value is still the one it was made from.
+    retInputs.forEach(function (x) {
+      var e = edits && edits[retId(x)];
+      if (e && e.was === x.was) x.input.value = e.value;
+    });
+    paintRetDirty();
+    drawRetry();
   }
 
   function option(select, value, text) {
@@ -477,16 +695,21 @@
     select.appendChild(o);
   }
 
+  function retId(x) { return x.path.join(' / ') + ' / ' + x.key; }
+
   function retField(path, sec, spec, id) {
     var row = el('div', 'manage-field');
     var was = currentOf(sec, spec.names);
     var input;
     var locked = false;
-    if (spec.rule === 'switch' || spec.rule === 'mode') {
+    var leave = false;
+    var isSelect = spec.rule === 'switch' || spec.rule === 'mode';
+    if (isSelect) {
       input = el('select');
       var now = spec.rule === 'switch' ? switchOf(was) : (was !== null && MODES.indexOf(was.toLowerCase()) >= 0 ? was.toLowerCase() : null);
       // A value that is not set, or not one of the choices, stays as it is unless one is picked.
-      if (now === null) option(input, '', was === null ? '(not set)' : '(' + was + ')');
+      leave = now === null;
+      if (leave) option(input, '', was === null ? '(not set, leave as is)' : '(now: ' + was + ', leave as is)');
       var choices = spec.rule === 'switch' ? ['yes', 'no'] : MODES;
       // Turning on, where the node does not allow it from here: only off (or as it is) is offered.
       if (OPENS[spec.key] && !enableAllowed() && now !== 'yes') {
@@ -510,13 +733,45 @@
     input.setAttribute('aria-describedby', helpId + ' manage-ret-error');
     var label = el('label', null, spec.label);
     label.htmlFor = id;
-    var help = el('p', 'note', spec.help + (was === null ? ' Not set now.' : '') + (locked ? ' ' + ENABLE_ONLY_TERMINAL : ''));
+    var extra = leave ? ' Pick a value to change it. Leave this to keep it as it is.' : !isSelect && was === null ? ' Not set now.' : '';
+    var help = el('p', 'note', spec.help + extra + (locked ? ' ' + ENABLE_ONLY_TERMINAL : ''));
     help.id = helpId;
+    // What the node has now, shown once the value is changed (text, not only a colour).
+    var wasLine = el('p', 'note manage-was', '');
+    wasLine.hidden = true;
     row.appendChild(label);
+    row.appendChild(wasLine);
     row.appendChild(input);
     row.appendChild(help);
-    retInputs.push({ path: path, key: spec.key, rule: spec.rule, was: was, input: input, label: path.join(' / ') + ' / ' + spec.label });
+    var x = { path: path, key: spec.key, rule: spec.rule, was: was, input: input, label: path.join(' / ') + ' / ' + spec.label, shown: input.value, row: row, wasLine: wasLine };
+    retInputs.push(x);
+    input.addEventListener('input', paintRetDirty);
+    input.addEventListener('change', paintRetDirty);
     return row;
+  }
+
+  // How one control stands against the node's value: 'same', 'changed', or 'blank' (a number
+  // that is set cannot be taken away from here).
+  function retStand(x) {
+    var now = String(x.input.value).trim();
+    if (now === '') return { kind: x.rule === 'number' && x.was !== null ? 'blank' : 'same', now: now };
+    var was = x.was === null ? null : x.rule === 'switch' ? switchOf(x.was) : x.rule === 'mode' ? x.was.toLowerCase() : x.was;
+    if (was !== null && (now === was || (x.rule === 'number' && Number(now) === Number(was)))) return { kind: 'same', now: now };
+    return { kind: 'changed', now: now };
+  }
+
+  // Marks the controls that differ from the node's value, with the old value in words, and counts them.
+  function paintRetDirty() {
+    var n = 0;
+    retInputs.forEach(function (x) {
+      var changed = retStand(x).kind === 'changed';
+      if (changed) n++;
+      var cls = changed ? 'manage-field changed' : 'manage-field';
+      if (x.row.className !== cls) x.row.className = cls;
+      x.wasLine.hidden = !changed;
+      if (changed) put(x.wasLine, 'Was: ' + (x.was === null ? 'not set' : x.was));
+    });
+    put($('manage-ret-dirty'), n === 0 ? 'No changes.' : n + (n === 1 ? ' change' : ' changes') + ' not applied yet.');
   }
 
   // The settings whose value on the page differs from the node's: {list, labels}, or {error}.
@@ -527,19 +782,18 @@
     var opens = [];
     for (var i = 0; i < retInputs.length; i++) {
       var x = retInputs[i];
-      var now = String(x.input.value).trim();
-      if (now === '') {
-        if (x.rule === 'number' && x.was !== null) return { error: x.label + ': a value can be changed here, but not removed. Remove it in the terminal.' };
-        continue;
-      }
-      var was = x.was === null ? null : x.rule === 'switch' ? switchOf(x.was) : x.rule === 'mode' ? x.was.toLowerCase() : x.was;
-      if (was !== null && (now === was || (x.rule === 'number' && Number(now) === Number(was)))) continue;
+      var st = retStand(x);
+      var now = st.now;
+      if (st.kind === 'blank') return { error: x.label + ': a value can be changed here, but not removed. Remove it in the terminal.' };
+      if (st.kind === 'same') continue;
       list.push({ path: x.path, key: x.key, value: now });
       labels.push(x.label + ' to ' + now);
       if (OPENS[x.key] && now === 'yes') opens.push(x.path.join(' / ') + ': ' + OPENS[x.key]);
     }
     return { list: list, labels: labels, opens: opens };
   }
+
+  function applyTarget() { return { button: $('manage-ret-apply'), note: $('manage-ret-apply-retry') }; }
 
   $('manage-ret-form').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -551,6 +805,7 @@
     var host = node.host;
     var go = $('manage-ret-apply');
     go.disabled = true;
+    var moved = false;
     var ask = {
       title: 'Apply and test on ' + node.name,
       why: applyText() + ' Changes ' + c.labels.join(', ') + '.',
@@ -571,7 +826,11 @@
         state.pending = { id: r.body.id, state: 'restarting', changes: r.body.applied || [], problems: [] };
         state.confirm = r.body.confirm || null;
         paintRetEdit();
-        $('manage-restart').disabled = true;
+        paintRestart();
+        syncNav();
+        moved = true;
+        // The form is gone: the focus goes to the heading, where the status is.
+        focusOn($('manage-ret-edit-h'));
         // The node's own words of what the change opens, now that it is made.
         var notes = Array.isArray(r.body.notes) && r.body.notes.length ? ' The node says: ' + r.body.notes.join(' ') : '';
         say('Reticulum is restarting with the change. This page shows how the test goes.' + notes);
@@ -579,9 +838,14 @@
         return;
       }
       fail('manage-ret-error', errorOf(r));
-      if (r.body && (r.body.code === 'stale_revision' || r.body.code === 'pending' || r.body.code === 'unknown_section')) return loadNode('The Reticulum configuration was loaded again.');
+      startRetry(r, 'apply', 'manage-ret-error', applyTarget, function () { go.disabled = false; });
+      if (r.body && (r.body.code === 'stale_revision' || r.body.code === 'pending' || r.body.code === 'unknown_section')) return loadNode('The Reticulum configuration was loaded again.', true);
     }).catch(function () { fail('manage-ret-error', 'Could not reach the server. Try again.'); })
-      .then(function () { go.disabled = false; });
+      .then(function () {
+        go.disabled = blocked('apply');
+        // The dialog closed on a button that was off: the focus comes back to it.
+        if (!moved && !go.disabled) focusOn(go);
+      });
   });
 
   // What the job says moves the pending change on, as the node would show it: on probation (with its
@@ -648,10 +912,17 @@
     return list.map(function (c) { return (Array.isArray(c.path) ? c.path.join(' / ') + ' / ' : '') + c.key + ': "' + c.from + '" to "' + c.to + '"'; }).join('; ');
   }
 
-  function cell(row, label, text) {
-    var td = el('td', null, text);
+  function cell(row, label, text, cls) {
+    var td = el('td', cls || null, text);
     td.setAttribute('data-label', label);
     row.appendChild(td);
+  }
+
+  // A shorter date for the list of changes, in the person's own language and time zone.
+  function whenShort(seconds) {
+    if (typeof seconds !== 'number') return 'unknown';
+    var d = new Date(seconds * 1000);
+    return isNaN(d.getTime()) ? 'unknown' : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
   }
 
   function paintAudit(more) {
@@ -659,7 +930,7 @@
     rows.textContent = '';
     entries.forEach(function (e) {
       var tr = el('tr');
-      var th = el('th', null, when(e.time));
+      var th = el('th', 'manage-time', whenShort(e.time));
       th.scope = 'row';
       tr.appendChild(th);
       cell(tr, 'Who', e.actor || '-');
@@ -667,13 +938,15 @@
       cell(tr, 'Changes', changesText(e.changes));
       // The node's notes (what it checked, for a confirm or an automatic roll back) follow the result.
       var notes = Array.isArray(e.notes) && e.notes.length ? '. ' + e.notes.join(' ') : '';
-      cell(tr, 'Result', (RESULTS[e.result] || 'Other') + (e.error ? ': ' + e.error : '') + notes);
+      // A result that went wrong is bold as well as worded.
+      cell(tr, 'Result', (RESULTS[e.result] || 'Other') + (e.error ? ': ' + e.error : '') + notes, e.result === 'ok' ? null : 'manage-bad');
       rows.appendChild(tr);
     });
     $('manage-audit-empty').hidden = entries.length > 0;
     $('manage-older').hidden = !more;
     $('manage-audit-card').hidden = false;
     paintLast();
+    syncNav();
   }
 
   // The newest settings change that went through, which can be rolled back.
@@ -691,14 +964,22 @@
     list.textContent = '';
     $('manage-last-card').hidden = false;
     if (!e) {
-      $('manage-last').textContent = 'No settings change to roll back in the latest entries.';
+      put($('manage-last'), 'Nothing to roll back: there is no settings change in the latest entries.' + (entriesMore ? ' Use Older entries below to look further back.' : ''));
       $('manage-rollback').hidden = true;
+      $('manage-last-note').hidden = true;
+      put($('manage-last-why'), '');
+      $('manage-last-why').hidden = true;
       return;
     }
-    $('manage-last').textContent = (e.op === 'rollback' ? 'A roll back' : 'A settings change') + ' by ' + (e.actor || 'someone') + ', ' + when(e.time) + ':';
+    put($('manage-last'), (e.op === 'rollback' ? 'A roll back' : 'A settings change') + ' by ' + (e.actor || 'someone') + ', ' + when(e.time) + ':');
     (e.changes || []).forEach(function (c) { list.appendChild(el('li', null, c.key + ': "' + c.from + '" to "' + c.to + '"')); });
     $('manage-rollback').hidden = false;
-    $('manage-rollback').disabled = !canChange();
+    $('manage-rollback').disabled = !canChange() || blocked('rollback');
+    $('manage-last-note').hidden = false;
+    var why = canChange() ? '' : VIEW_ONLY_WHY;
+    put($('manage-last-why'), why);
+    $('manage-last-why').hidden = !why;
+    drawRetry();
   }
 
   function loadAudit(before) {
@@ -709,34 +990,38 @@
       if (r.status !== 200) { fail('manage-error', errorOf(r)); return; }
       var got = Array.isArray(r.body.entries) ? r.body.entries : [];
       entries = before !== undefined ? entries.concat(got) : got;
-      paintAudit(r.body.more === true);
+      entriesMore = r.body.more === true;
+      paintAudit(entriesMore);
     });
   }
 
   // ---- loading ----
 
-  function loadNode(message) {
+  // keepEdits: the forms are built again with what the person typed (where the node's value is the same).
+  function loadNode(message, keepEdits) {
     var host = node.host;
     return getJson('/api/manage/node?host=' + encodeURIComponent(host)).then(function (r) {
       if (shown !== host) return;
       if (r.status === 401 && r.body.signIn) return load();
       if (r.status !== 200) {
         state = null;
-        $('manage-node-h').textContent = node.name;
-        $('manage-line').textContent = '';
+        put($('manage-node-h'), node.name);
+        put($('manage-line'), '');
         $('manage-clock').hidden = true;
         $('manage-settings').hidden = true;
         $('manage-ret').hidden = true;
         $('manage-ret-edit').hidden = true;
         $('manage-restart-card').hidden = true;
+        syncNav();
         say('');
         fail('manage-error', errorOf(r));
         return;
       }
+      var edits = keepEdits ? takeEdits() : null;
       state = r.body;
       fail('manage-error', '');
       say(message || '');
-      paintState();
+      paintState(edits);
       // A confirm job that still runs (the page was loaded meanwhile): followed until it is over.
       if (jobRunning(state.confirm) && !retPoll) startRetPoll(host);
       return loadAudit();
@@ -746,6 +1031,7 @@
   function pick(host) {
     stopPoll();
     stopRetPoll();
+    endRetry(false);
     var found = null;
     (data.nodes || []).forEach(function (n) { if (n.host === host) found = n; });
     if (!found) return;
@@ -758,6 +1044,8 @@
     $('manage-ret-status').textContent = 'Loading the Reticulum configuration...';
     $('manage-ret').hidden = false;
     $('manage-ret-edit').hidden = true;
+    $('manage-pending-line').hidden = true;
+    syncNav();
     ['manage-form-error', 'manage-restart-error', 'manage-rollback-error', 'manage-ret-error', 'manage-error'].forEach(function (id) { fail(id, ''); });
     say('Loading ' + node.name + '...');
     return loadNode();
@@ -766,6 +1054,7 @@
   function load() {
     stopPoll();
     stopRetPoll();
+    endRetry(false);
     return getJson('/api/manage').then(function (r) {
       if (r.status !== 200) {
         data = null;
@@ -799,13 +1088,17 @@
   // ---- changes ----
 
   // What the page does with the answer to a settings change or a roll back.
-  function afterChange(r, errorId, done) {
+  // keepAfter: whether what the person typed stays in the form after the change went through (a Turn off
+  // changes one thing and leaves the other edits alone; a Save or a roll back has used them).
+  function afterChange(r, errorId, done, keepAfter) {
     if (!r) return;
-    if (r.status === 200) return loadNode(done(r.body));
+    if (r.status === 200) return loadNode(done(r.body), keepAfter === true);
     fail(errorId, errorOf(r));
-    // Changed elsewhere: the form is loaded again, and the words say so.
-    if (r.body && r.body.code === 'stale_revision') return loadNode('The settings were loaded again, because they changed elsewhere.');
+    // Changed elsewhere: the form is loaded again, and the words say so. Edits stay where they still fit.
+    if (r.body && r.body.code === 'stale_revision') return loadNode('The settings were loaded again, because they changed elsewhere.', true);
   }
+
+  function saveTarget() { return { button: $('manage-save'), note: $('manage-save-retry') }; }
 
   function savedText(b) {
     var n = Array.isArray(b.applied) ? b.applied.length : 0;
@@ -824,13 +1117,18 @@
     go.disabled = true;
     confirmed('/api/manage/settings', { host: host, revision: $('manage-revision').value, changes: c.map }, {
       title: 'Save settings on ' + node.name,
-      why: 'Changes ' + c.labels.join(', ') + '.',
+      why: 'Changes ' + c.said.join(', ') + '.',
       action: 'Save'
     }).then(function (r) {
       if (shown !== host) return;
+      if (r && r.status !== 200) startRetry(r, 'save', 'manage-form-error', saveTarget, function () { go.disabled = !canChange(); });
       return afterChange(r, 'manage-form-error', savedText);
     }).catch(function () { fail('manage-form-error', 'Could not reach the server. Try again.'); })
-      .then(function () { go.disabled = !canChange(); });
+      .then(function () {
+        go.disabled = !canChange() || blocked('save');
+        // The dialog closed on a button that was off: the focus comes back to it.
+        if (!go.disabled) focusOn(go);
+      });
   });
 
   function turnOff(s) {
@@ -845,7 +1143,15 @@
       danger: true
     }).then(function (r) {
       if (shown !== host) return;
-      return afterChange(r, 'manage-form-error', function () { return s.label + ' is turned off.'; });
+      if (r && r.status !== 200) {
+        startRetry(r, 'off:' + s.key, 'manage-form-error', function () { return offUi[s.key] || null; }, function () {
+          var u = offUi[s.key];
+          if (u) u.button.disabled = !isOn(s.value) || !canChange();
+        });
+      }
+      var again = afterChange(r, 'manage-form-error', function () { return s.label + ' is turned off.'; }, true);
+      // The button that was pressed is gone with the old form: the focus goes to the same row of the new one.
+      return Promise.resolve(again).then(function () { if (r && r.status === 200) focusOn(offLabels[s.key]); });
     }).catch(function () { fail('manage-form-error', 'Could not reach the server. Try again.'); });
   }
 
@@ -859,8 +1165,12 @@
       action: 'Roll back'
     }).then(function (r) {
       if (shown !== host || !r) return;
-      if (r.status === 200) { fail('manage-rollback-error', ''); return loadNode('The change is rolled back.'); }
+      if (r.status === 200) {
+        fail('manage-rollback-error', '');
+        return loadNode('The change is rolled back.').then(function () { focusOn($('manage-last-h')); });
+      }
       fail('manage-rollback-error', errorOf(r));
+      startRetry(r, 'rollback', 'manage-rollback-error', function () { return { button: $('manage-rollback'), note: $('manage-rollback-retry') }; }, function () { $('manage-rollback').disabled = !canChange(); });
     }).catch(function () { fail('manage-rollback-error', 'Could not reach the server. Try again.'); });
   });
 
@@ -884,13 +1194,14 @@
           var rs = r.status === 200 && r.body.restart && r.body.restart.id === id ? r.body.restart : null;
           if (rs && rs.state !== 'restarting') {
             poll = null;
+            var edits = takeEdits();
             state = r.body;
-            paintState();
+            paintState(edits);
             say(rs.state === 'up' ? 'Reticulum is back: every interface that was online is online again.' : 'Reticulum restarted, but not everything came back. See the node.');
             return loadAudit();
           }
           if (r.status === 429) { poll = null; say('The page stopped asking the node, as it asked too often. Reload the page in a while.'); return; }
-          if (Date.now() - started >= POLL_LIMIT_MS) { poll = null; say('The node has not said after 2 minutes that Reticulum is back. Reload the page to check.'); if (state) paintState(); return; }
+          if (Date.now() - started >= POLL_LIMIT_MS) { poll = null; say('The node has not said after 2 minutes that Reticulum is back. Reload the page to check.'); if (state) paintState(takeEdits()); return; }
           next();
         }, function () {
           if (poll !== me) return;
@@ -912,11 +1223,16 @@
       danger: true
     }).then(function (r) {
       if (shown !== host || !r) return;
-      if (r.status !== 202) { fail('manage-restart-error', errorOf(r)); return; }
+      if (r.status !== 202) {
+        fail('manage-restart-error', errorOf(r));
+        startRetry(r, 'restart', 'manage-restart-error', function () { return { button: $('manage-restart'), note: $('manage-restart-retry') }; }, paintRestart);
+        return;
+      }
       fail('manage-restart-error', '');
       say('Reticulum is restarting. This page checks every few seconds until it is back.');
-      $('manage-restart').disabled = true;
       startPoll(host, r.body.id);
+      paintRestart();
+      focusOn($('manage-restart-h'));
     }).catch(function () { fail('manage-restart-error', 'Could not reach the server. Try again.'); });
   });
 

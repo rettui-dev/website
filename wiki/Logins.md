@@ -19,7 +19,8 @@ locked, the session settings keep their defaults, and the trusted proxies are se
       max_age_hours: 12              # and this long after the login, whatever happens
       max_sessions: 1000             # with more, a session of whoever has the most ends
       trusted_proxies: []            # see "Behind a reverse proxy"
-    require_login: [details, storage, peers, disk, versions]   # the default once there are users
+      passkey_sign_in: true          # false turns off "Sign in with a passkey" (needs site.url)
+    require_login: [details, storage, peers, disk, versions, links]   # the default once there are users
     nodes:
       - address: rns.rettui.dev:4242
         require_login: []            # a node can override the rule, like public_details
@@ -45,7 +46,9 @@ file](Managing-Users)).
 
 **What is locked.** `require_login` lists sections, at the top for every node or on a node to
 override it. Without a rule, once there are users (in the config file or in the user store), all of
-them are locked. A rule that names a section while there are no users anywhere stops the server at
+them are locked, `links` included. A list you write replaces that default: `require_login: [links]`
+alone locks the links and leaves every other section open. A node's own `require_login` replaces the
+list in the same way for that node. With `detect_links` on, the server warns at start when such a list (at the top or on a node) leaves out `links`, because the links found in the nodes' configs are then shown to everyone. A rule that names a section while there are no users anywhere stops the server at
 start, and so does a `login` section.
 
 | Section    | What a visitor without a login does not get |
@@ -55,6 +58,7 @@ start, and so does a `login` section.
 | `peers`    | its peered propagation nodes: alive and total, static and automatic, limit, auto-peering, the peered nodes it lists and their table in the Full details, and their graph; also the messages sent to, received from and offered to peers, and the peer message flow graph (these go with `storage` too) |
 | `disk`     | the disk level and share, free space, and data size; also the size of the message store (its bytes and graph), which on a propagation node is most of the data size |
 | `versions` | the rettui version a node runs, and the versions seen |
+| `links` | the arrows and chips that show which node dials which (see [Links between nodes](Connecting-Nodes#links-between-nodes)). Part of the default. A link is left out when either of its nodes has `links` locked. Links found by `detect_links` are also left out for a node with `public_details: false`. A visitor who is not signed in gets only the other node, the direction and whether the interface is on; the source and conflict notes go to signed-in users. |
 
 Up or down, the check bar and uptime, clients, peers heard, traffic, announces, interfaces and how
 long a node has been running stay public. The server takes the locked numbers out of
@@ -158,12 +162,49 @@ most, so one account signing in over and over never signs anyone else out.
   waiting. So a flood from outside never holds back a signed-in user or a known device, and
   signed-in users and known devices never hold back a sign in from outside for more than that
   one place. A 503 does not count as a failed login.
-- `/login`, `/login/code`, `/login/passkey` and `/logout` only take `application/x-www-form-urlencoded` (else 415),
-  at most 4 KiB, or 8 KiB for `/login/passkey` (else 413), with the header `X-Rettui-Request: 1`, and only from the page itself:
+- `/login`, `/login/code`, `/login/passkey`, `/login/passkey/begin`, `/login/passkey/finish` and `/logout` only take `application/x-www-form-urlencoded` (else 415),
+  at most 4 KiB, or 8 KiB for `/login/passkey` and `/login/passkey/finish` (else 413), with the header `X-Rettui-Request: 1`, and only from the page itself:
   `Sec-Fetch-Site` must be `same-origin`, or, from a browser too old to send it, `Origin` must
   name the host the request was sent to (else 403). A form on another site cannot send the
   header.
 - Passwords, hashes and device ids are never logged.
+- **Signing in with a passkey alone** (`POST /login/passkey/begin`, then `/login/passkey/finish`; see
+  [Signing in with a passkey alone](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone))
+  sends no name. `begin` gives a token and the options for the browser's passkey prompt; the token
+  is good for 5 minutes, for one answer, and only from the address that asked. At most 5 are open
+  for one address and 1000 in all. When the 1000 are used, the oldest token of the network that holds
+  the most (an IPv6 /48, or an IPv4 address) goes, so one network cannot push out the others. An
+  address may ask for 10 at once and then one every 2 seconds; a whole IPv6 /56 for 40 at once and
+  then one every half second, and a /48 for 120 at once and then one every quarter second. Past that
+  the answer is 429 with `Retry-After`. Behind a proxy that is not in `trusted_proxies`, every
+  visitor has the proxy's address, so these limits are shared by everyone, and a few visitors can
+  use them up for all; set `trusted_proxies` (see "Behind a reverse proxy"). The same goes for
+  people who share an IPv6 /48 (a mobile provider's pool, a cloud or university block): about 8
+  different /64 networks inside it that keep asking drain the 120-at-once and quarter-second
+  limit for the whole /48, and everyone in it gets 429 on `begin` until it fills up again. Signing
+  in with a password is not affected, and neither is any other network. The limit is kept at this
+  size on purpose: it is what stops one network from filling the memory for open tokens. `finish` takes the `token`
+  and the `credential` (the browser's answer as JSON text). Every answer that depends on who the
+  passkey belongs to (no such passkey, a wrong signature or user handle, no user verification, a
+  user who is gone) is the same 401 with the same words, and counts as a failed sign in for the
+  address (and for the known device, if the browser has one of the passkey's owner) only: never for
+  a user or a passkey, so nobody can hold the owner back by knowing the id of a passkey. These
+  failures add to the waits of the address in the list above, so wrong passwords and wrong passkeys
+  from one address add up. A known device has a count of its own for wrong passkeys, apart from
+  its count for wrong passwords: a sign in with a passkey clears only that one, so it never gives
+  a browser fresh tries at the password, and it leaves the waits of the address as they are, so a
+  passkey is no way to ease the count of wrong passwords.
+  Passkey sign ins that work are paced for each user: three at once, then one a minute, from
+  however many addresses. Past that the answer is 429 with `Retry-After` ("Too many passkey sign
+  ins for this user right now"). Only signing in with a passkey is held back: the password and
+  the sign ins of other users are not. A sign in with a passkey that is refused for this reason is
+  counted in `failures.log` as `passkey-sign-in-paced`. A user has at most 5 sessions made with a
+  passkey alone; a new one ends the oldest of those, never a session made with the password. The
+  browsers such sign ins leave behind (known devices whose id starts with `pk`) are at most 3 for
+  one user, push out only each other, and are never taken for a known device at the password
+  step. A user who must change their password gets the same limited session as
+  after the password. With `passkey_sign_in: false` (or without passkeys) both routes answer 404 and
+  `/api/session` does not mention it.
 
 ### Behind a reverse proxy
 
@@ -199,6 +240,11 @@ IPv4 or `/16` for IPv6 (so `fd00::/8` too) is allowed, but the server warns at s
 that starts with `WARNING:`; prefer the proxy's own subnet. IPv4 addresses are matched as
 IPv4-mapped IPv6 (`::ffff:a.b.c.d`), so an IPv6 network that holds all of `::ffff:0:0/96`, such
 as `::/64` or `::/80`, would trust every IPv4 client and is refused like `/0`.
+
+Signing in with a passkey alone works at the address in `site.url` only. A visitor who reaches the
+site by another name (the proxy's own host name, an IP address) gets no "Sign in with a passkey"
+button, and an answer that comes that way is refused and counted as a failure. As for passwords,
+wrong `trusted_proxies` make every visitor share one address for these waits.
 
 A hop in `X-Forwarded-For` with a port, `192.0.2.1:5678` or `[2001:db8::1]:443`, is read as the
 address alone; `[2001:db8::1]` without a port too. Any other hop that is not an IP address makes

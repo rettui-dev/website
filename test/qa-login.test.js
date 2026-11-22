@@ -747,7 +747,7 @@ test('qa: require_login values: unknown, duplicate, wrong case, wrong type, null
   for (const v of ['[detail]', '[Details]', '[details, details]', 'details', 'null', '{details: true}', '[1]', '[[details]]', '[null]', '"all"', '[""]']) rejects(cfg(base, `require_login: ${v}\n`), v);
   for (const v of ['[detail]', '[details, details]', 'storage', 'null']) rejects(`${base}${NODES}    require_login: ${v}\n`, `node ${v}`);
   const c = loadConfig(cfg(base));
-  assert.deepEqual(c.defaults.requireLogin, ['details', 'storage', 'peers', 'disk', 'versions']);
+  assert.deepEqual(c.defaults.requireLogin, ['details', 'storage', 'peers', 'disk', 'versions', 'links']);
   assert.deepEqual(loadConfig(cfg(base, 'require_login: []\n')).defaults.requireLogin, []);
   assert.deepEqual(loadConfig(`${base}${NODES}    require_login: []\n`).nodes.get('a.test:1').requireLogin, []);
 });

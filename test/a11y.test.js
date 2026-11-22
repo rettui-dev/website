@@ -134,6 +134,35 @@ test('the sign in and step-up dialogs: the passkey button is a button with words
   assert.doesNotMatch(await read('passkey.js'), /addEventListener|setTimeout|DOMContentLoaded/);
 });
 
+test('the "Sign in with a passkey" button: a real button with words, hidden unless offered, read-out errors, touch size, and no inline script or style', async () => {
+  const sign = await read('account.js');
+  // The accessible name is its visible words; it is a button of type button, so Enter in the password field still sends the password.
+  assert.match(sign, /var alone = el\('button', 'login-passkey-only', 'Sign in with a passkey'\);/);
+  assert.match(sign, /alone\.id = 'login-passkey-only';\s*alone\.type = 'button';/);
+  assert.doesNotMatch(sign, /login-passkey-only[^\n]*aria-label/);
+  // "or" is plain text between the two ways; the button is hidden unless the server, the address and the browser allow it.
+  assert.match(sign, /el\('p', 'login-or', 'or'\)/);
+  assert.match(sign, /or\.hidden = alone\.hidden = !passkeyAlone;/);
+  assert.match(sign, /s\.passkeySignIn === true && typeof s\.passkeyOrigin === 'string' && location\.origin === s\.passkeyOrigin/);
+  assert.match(sign, /window\.rettuiPasskey\.supported\(\) === true/);
+  // Its words go to the alert line of the dialog, which is read out, and mark no field.
+  assert.match(sign, /err\.id = 'login-error';\s*err\.setAttribute\('role', 'alert'\)/);
+  assert.match(sign, /function setPasskeyError\(text\) \{[^}]*'aria-invalid', 'false'[^}]*'aria-invalid', 'false'/);
+  // Touch size, and a visible keyboard focus from the shared style sheet.
+  const css = await read('site.css');
+  assert.match(css, /\.login-passkey-only \{[^}]*min-height: 40px/);
+  assert.match(css, /\.login-or \{/);
+  // The script builds the dialog from nodes: no markup in strings, and no inline script or style anywhere in it.
+  assert.doesNotMatch(sign, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function|\.style\b|setAttribute\('style'|cssText/);
+  for (const name of PAGES) {
+    const html = await read(name);
+    assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>/, `${name}: inline script`);
+    assert.doesNotMatch(html, /\sstyle="|<style\b|\sonclick=|\sonload=/, `${name}: inline style or handler`);
+  }
+  // The account page's passkeys note is a paragraph the script can swap, in the file's own words first.
+  assert.match(await read('account.html'), /<p id="passkeys-note" class="note">[^<]+<\/p>/);
+});
+
 test('the passkey list works at phone width: it wraps, and the buttons are large enough to touch', async () => {
   const css = await read('site.css');
   assert.match(css, /\.acct-passkey \{[^}]*overflow-wrap: anywhere/);

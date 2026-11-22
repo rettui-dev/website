@@ -40,99 +40,148 @@
     </div>
   </div>
 </header>
-<main id="main" tabindex="-1" class="wrap acct-page manage-page">
-  <h1>Manage nodes</h1>
+<main id="main" tabindex="-1" class="wrap wide acct-page manage-page">
+  <div class="manage-head">
+    <h1>Manage nodes</h1>
+    <a href="/account">Back to your account</a>
+  </div>
   <noscript><p class="note">The manage page needs JavaScript.</p></noscript>
-  <p id="manage-status" class="note" role="status">Loading the nodes...</p>
-  <p id="manage-error" class="login-error" role="alert"></p>
-  <p><a href="/account">Back to your account</a></p>
 
   <p id="manage-view-only" class="acct-card users-warning" hidden>You can look, but not change anything: turn on two-step sign-in on your <a href="/account">account page</a> first.</p>
   <p id="manage-wait" class="acct-card users-warning" hidden>Your two-step sign-in was turned on less than 24 hours ago, so you can look, but not change anything, until <span id="manage-wait-until"></span>. This keeps a stolen password from being enough to change a node.</p>
   <p id="manage-none" class="note" hidden>No node is set up to be managed from this site. Whoever runs the site adds <code>manage_url</code> and <code>manage_secret_file</code> to a node in the config file.</p>
 
+  <div class="manage-live">
+    <p id="manage-status" class="note" role="status">Loading the nodes...</p>
+    <p id="manage-error" class="login-error" role="alert"></p>
+  </div>
+
   <div id="manage" hidden>
-    <div class="acct-form manage-pick">
-      <label for="manage-node">Node</label>
-      <select id="manage-node" aria-describedby="manage-line"></select>
-    </div>
+    <nav id="manage-nav" class="manage-nav" aria-label="On this page">
+      <ul>
+        <li id="nav-manage-settings"><a href="#manage-settings">Settings</a></li>
+        <li id="nav-manage-ret"><a href="#manage-ret">Reticulum configuration</a></li>
+        <li id="nav-manage-ret-edit"><a href="#manage-ret-edit">Change the Reticulum configuration</a></li>
+        <li id="nav-manage-restart-card"><a href="#manage-restart-card">Restart Reticulum</a></li>
+        <li id="nav-manage-last-card"><a href="#manage-last-card">Last settings change</a></li>
+        <li id="nav-manage-audit-card"><a href="#manage-audit-card">Changes on this node</a></li>
+      </ul>
+    </nav>
 
-    <section id="manage-card" class="acct-card" aria-labelledby="manage-node-h">
-      <h2 id="manage-node-h" tabindex="-1">Node</h2>
-      <p id="manage-line" class="manage-line"></p>
-      <p id="manage-clock" class="users-warning" role="alert" hidden></p>
-      <p id="manage-restart-state" class="note" hidden></p>
-    </section>
+    <div class="manage-main">
+      <div class="manage-top">
+        <div class="acct-form manage-pick">
+          <label for="manage-node">Node</label>
+          <select id="manage-node" aria-describedby="manage-line"></select>
+        </div>
 
-    <section id="manage-settings" class="acct-card" aria-labelledby="manage-settings-h" hidden>
-      <h2 id="manage-settings-h" tabindex="-1">Settings</h2>
-      <p class="note">These are the settings the node lets the website change. A service can be turned off here, but only turned on again in the terminal on the node. Saving asks in a pop-up for your password and your passkey or a code from your app.</p>
-      <form id="manage-form" class="acct-form manage-form" novalidate>
-        <p id="manage-form-error" class="login-error" role="alert"></p>
-        <input id="manage-revision" type="hidden" aria-label="Settings revision" value="">
-        <div id="manage-fields"></div>
-        <div class="login-actions"><button id="manage-save" type="submit" class="primary">Save changes</button></div>
-      </form>
-    </section>
-
-    <section id="manage-ret" class="acct-card" aria-labelledby="manage-ret-h" hidden>
-      <h2 id="manage-ret-h">Reticulum configuration</h2>
-      <p class="note">What the node's Reticulum config says, read only. Secrets and anything the node does not list are shown as set or not set, never with their value.</p>
-      <p id="manage-ret-status" class="note" role="status"></p>
-      <p id="manage-ret-shared" class="note" hidden>This node uses a shared Reticulum instance. The file shown here is this node's own config; the live settings may be those of another Reticulum process.</p>
-      <div id="manage-ret-sections"></div>
-    </section>
-
-    <section id="manage-ret-edit" class="acct-card" aria-labelledby="manage-ret-edit-h" hidden>
-      <h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration</h2>
-      <p class="note">The node lets the website change a few Reticulum settings: transport, and for each interface whether it is enabled, its mode, announce cap, bitrate and ingress control. A change is tested before it is kept. Applying asks in a pop-up for your password and your passkey or a code from your app.</p>
-      <div id="manage-ret-live" role="status">
-        <p id="manage-ret-pending" class="note"></p>
-        <ul id="manage-ret-checks" class="manage-changes" aria-label="The node's checks of the change" hidden></ul>
+        <section id="manage-card" class="acct-card" aria-labelledby="manage-node-h">
+          <h2 id="manage-node-h" tabindex="-1">Node</h2>
+          <p id="manage-line" class="manage-line"></p>
+          <p id="manage-clock" class="users-warning" role="alert" hidden></p>
+          <p id="manage-restart-state" class="note" hidden></p>
+          <p id="manage-pending-line" class="note manage-pending-line" hidden><span id="manage-pending-text"></span> <a href="#manage-ret-edit">Details</a></p>
+        </section>
       </div>
-      <p id="manage-ret-error" class="login-error" role="alert"></p>
-      <form id="manage-ret-form" class="acct-form manage-form" novalidate hidden>
-        <input id="manage-ret-revision" type="hidden" aria-label="Reticulum configuration revision" value="">
-        <div id="manage-ret-fields"></div>
-        <p id="manage-ret-apply-help" class="note">Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 5 minutes, the node puts the old config back by itself.</p>
-        <div class="login-actions"><button id="manage-ret-apply" type="submit" class="danger" aria-describedby="manage-ret-apply-help">Apply and test</button></div>
-      </form>
-    </section>
 
-    <section id="manage-restart-card" class="acct-card" aria-labelledby="manage-restart-h" hidden>
-      <h2 id="manage-restart-h">Restart Reticulum</h2>
-      <p class="note">Stops and starts the node's Reticulum network. Connections drop for a moment; the management listener stays up, so this page can still reach the node. The node allows one restart every 5 minutes.</p>
-      <p id="manage-restart-error" class="login-error" role="alert"></p>
-      <div class="login-actions"><button id="manage-restart" type="button" class="danger">Restart Reticulum</button></div>
-    </section>
+      <section id="manage-settings" class="acct-card" aria-labelledby="manage-settings-h" hidden>
+        <h2 id="manage-settings-h" tabindex="-1">Settings</h2>
+        <p class="note">These are the settings this node lets the website change.</p>
+        <p class="note">A service can be turned off here, but only turned on again in the terminal on the node.</p>
+        <p id="manage-why" class="note manage-why" hidden></p>
+        <form id="manage-form" class="acct-form manage-form" novalidate>
+          <input id="manage-revision" type="hidden" aria-label="Settings revision" value="">
+          <div id="manage-fields"></div>
+          <div class="manage-bar">
+            <p id="manage-form-error" class="login-error" role="alert"></p>
+            <div class="login-actions">
+              <button id="manage-save" type="submit" class="primary" aria-describedby="manage-form-dirty manage-why">Save changes</button>
+              <span id="manage-save-retry" class="manage-retry" aria-hidden="true"></span>
+              <p id="manage-form-dirty" class="note">No changes.</p>
+            </div>
+          </div>
+          <p class="note">Saving asks for your password and a passkey or code.</p>
+        </form>
+      </section>
 
-    <section id="manage-last-card" class="acct-card" aria-labelledby="manage-last-h" hidden>
-      <h2 id="manage-last-h">Last change</h2>
-      <p id="manage-last"></p>
-      <ul id="manage-last-list" class="manage-changes"></ul>
-      <p id="manage-rollback-error" class="login-error" role="alert"></p>
-      <div class="login-actions"><button id="manage-rollback" type="button" hidden>Roll back</button></div>
-    </section>
+      <section id="manage-ret" class="acct-card" aria-labelledby="manage-ret-h" hidden>
+        <h2 id="manage-ret-h">Reticulum configuration</h2>
+        <p class="note">What the node's Reticulum config says, read only. Secrets and anything the node does not list are shown as set or not set, never with their value.</p>
+        <p id="manage-ret-status" class="note" role="status"></p>
+        <p id="manage-ret-shared" class="note" hidden>This node uses a shared Reticulum instance. The file shown here is this node's own config; the live settings may be those of another Reticulum process.</p>
+        <div id="manage-ret-sections"></div>
+      </section>
 
-    <section id="manage-audit-card" class="acct-card" aria-labelledby="manage-audit-h" hidden>
-      <h2 id="manage-audit-h">Changes on this node</h2>
-      <p class="note">The node keeps this list, with the old and new values. Newest first.</p>
-      <table class="users-table manage-audit">
-        <caption class="sr-only">What was changed on this node, by whom, and how it went</caption>
-        <thead>
-          <tr>
-            <th scope="col">Time</th>
-            <th scope="col">Who</th>
-            <th scope="col">What</th>
-            <th scope="col">Changes</th>
-            <th scope="col">Result</th>
-          </tr>
-        </thead>
-        <tbody id="manage-audit-rows"></tbody>
-      </table>
-      <p id="manage-audit-empty" class="note" hidden>Nothing was changed yet.</p>
-      <div class="login-actions"><button id="manage-older" type="button" hidden>Older entries</button></div>
-    </section>
+      <section id="manage-ret-edit" class="acct-card" aria-labelledby="manage-ret-edit-h" hidden>
+        <h2 id="manage-ret-edit-h" tabindex="-1">Change the Reticulum configuration</h2>
+        <p class="note">The node lets the website change a few Reticulum settings: transport, and for each interface whether it is enabled, its mode, announce cap, bitrate and ingress control. A change is tested before it is kept. Applying asks in a pop-up for your password and your passkey or a code from your app.</p>
+        <p id="manage-ret-lead" class="note">Each field starts with the node's current value. Change only what you want. Fields you leave as they are stay as they are.</p>
+        <p id="manage-ret-why" class="note manage-why" hidden></p>
+        <div id="manage-ret-live" role="status">
+          <p id="manage-ret-pending" class="note"></p>
+          <ul id="manage-ret-checks" class="manage-changes" aria-label="The node's checks of the change" hidden></ul>
+        </div>
+        <p id="manage-ret-left" class="note" hidden></p>
+        <p id="manage-ret-auto" class="note" hidden></p>
+        <p id="manage-ret-error" class="login-error" role="alert"></p>
+        <form id="manage-ret-form" class="acct-form manage-form" novalidate hidden>
+          <input id="manage-ret-revision" type="hidden" aria-label="Reticulum configuration revision" value="">
+          <div id="manage-ret-fields"></div>
+          <p id="manage-ret-apply-help" class="note">Reticulum restarts. The website then checks that it can still reach this node and keeps the change. If it can't within 5 minutes, the node puts the old config back by itself.</p>
+          <div class="login-actions">
+            <button id="manage-ret-apply" type="submit" class="danger" aria-describedby="manage-ret-apply-help">Apply and test</button>
+            <span id="manage-ret-apply-retry" class="manage-retry" aria-hidden="true"></span>
+            <span id="manage-ret-dirty" class="note">No changes.</span>
+          </div>
+        </form>
+      </section>
+
+      <div class="manage-pair">
+        <section id="manage-restart-card" class="acct-card" aria-labelledby="manage-restart-h" hidden>
+          <h2 id="manage-restart-h" tabindex="-1">Restart Reticulum</h2>
+          <p class="note">Stops and starts the node's Reticulum network. Connections drop for a moment; the management listener stays up, so this page can still reach the node. The node allows one restart every 5 minutes.</p>
+          <p id="manage-restart-error" class="login-error" role="alert"></p>
+          <p id="manage-restart-why" class="note manage-why" hidden></p>
+          <div class="login-actions">
+            <button id="manage-restart" type="button" class="danger">Restart Reticulum</button>
+            <span id="manage-restart-retry" class="manage-retry" aria-hidden="true"></span>
+          </div>
+        </section>
+
+        <section id="manage-last-card" class="acct-card" aria-labelledby="manage-last-h" hidden>
+          <h2 id="manage-last-h" tabindex="-1">Last settings change</h2>
+          <p id="manage-last"></p>
+          <ul id="manage-last-list" class="manage-changes"></ul>
+          <p id="manage-last-note" class="note" hidden>This sets the old values back. Reticulum changes are not rolled back from here: the node puts them back by itself if the test fails.</p>
+          <p id="manage-rollback-error" class="login-error" role="alert"></p>
+          <p id="manage-last-why" class="note manage-why" hidden></p>
+          <div class="login-actions">
+            <button id="manage-rollback" type="button" aria-describedby="manage-last-why" hidden>Roll back this change</button>
+            <span id="manage-rollback-retry" class="manage-retry" aria-hidden="true"></span>
+          </div>
+        </section>
+      </div>
+
+      <section id="manage-audit-card" class="acct-card" aria-labelledby="manage-audit-h" hidden>
+        <h2 id="manage-audit-h">Changes on this node</h2>
+        <p class="note">The node keeps this list, with the old and new values. Newest first.</p>
+        <table class="users-table manage-audit">
+          <caption class="sr-only">What was changed on this node, by whom, and how it went</caption>
+          <thead>
+            <tr>
+              <th scope="col">Time</th>
+              <th scope="col">Who</th>
+              <th scope="col">What</th>
+              <th scope="col">Changes</th>
+              <th scope="col">Result</th>
+            </tr>
+          </thead>
+          <tbody id="manage-audit-rows"></tbody>
+        </table>
+        <p id="manage-audit-empty" class="note" hidden>Nothing was changed yet.</p>
+        <div class="login-actions"><button id="manage-older" type="button" hidden>Older entries</button></div>
+      </section>
+    </div>
   </div>
 </main>
 <footer>

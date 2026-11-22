@@ -46,7 +46,7 @@ built from the same anonymous view, with only the fields below copied. With user
 it never depends on the cookie: it reads none, sets none and always shows the anonymous view.
 `require_login` sections are left out (`propagation` and `disk` are then `null`, or lose
 those counters), and `public_disk_figures` decides whether `disk` has byte figures. It never has
-tokens, peer lists, hashes, versions, upstreams, stats URLs or paths. A node with no stats URL, or
+tokens, peer lists, hashes, versions, upstreams, links between nodes, stats URLs or paths. A node with no stats URL, or
 whose stats are old, has `null` for its numbers. With 64 nodes it is about 55 KB.
 
 `GET /api/public/stats`:

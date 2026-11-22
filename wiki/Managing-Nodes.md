@@ -11,14 +11,31 @@ node decides what can be changed: the page shows the settings it lists, and noth
 identities, adding or removing interfaces, programs the node runs and any other Reticulum setting
 are not among them.
 
-**What the page shows.** A list to pick the node; then, for that node:
+**What the page shows.** On a wide screen the page uses up to 1400 px: a list of links to its
+sections on the left (it hides the links of sections that are not there), the cards on the right. On
+a tablet the links are a row above the cards, and on a phone everything is one column. A strip at
+the top of the screen stays in view while you scroll and shows what the page says (saved, restarting,
+a refusal), so you see the result where you are. A list to pick the node; then, for that node:
 
 - a status line: the rettui version, whether Reticulum is running and how many interfaces are
   online, and whether the node's clock agrees with the website's. From one minute off it says
   "This node's clock is N minutes off from the website's, so signed requests can't be trusted; fix
-  the node's time." From five minutes off the node refuses every request with the same words.
-- the node's Reticulum configuration, read only: one table per section (for example
-  `interfaces / Hilltop TCP`) with each key and its value. The node decides what is shown; keys it
+  the node's time." From five minutes off the node refuses every request with the same words. While
+  a Reticulum change is on probation, the card also says so, with a "Details" link.
+- the settings form, grouped, with the help text of each setting and its current value; the fields
+  of a group sit side by side on a wide screen. A line under the group heading counts "N settings
+  changed, not saved yet". **Save changes** sends only the settings you changed, and stays at the
+  bottom of the screen while the form is on it, with the error of a refusal next to it. The pop-up
+  names each setting and the value it becomes. If someone changed the settings meanwhile (in
+  the terminal, or another user), the node refuses, the page loads the form again and says so;
+  what you typed stays in the fields whose value on the node did not change. Services the website
+  may only turn off (propagation node, node, hub, Git host and its pages) have a **Turn off**
+  button, greyed out while the service is off, with "Turn on in the terminal on the node". The
+  website can never turn a service on. A control that is greyed out has its reason in words beside it
+  (you can only look, the node's restart limit, a change being tested).
+- the node's Reticulum configuration, read only: one small table per section (for example
+  `interfaces / Hilltop TCP`) with each key and its value, side by side on a wide screen. The node
+  decides what is shown; keys it
   holds back read "set (hidden)" or "not set". The website applies the same list itself: only
   type, enabled, mode, announce_cap, bitrate, ingress_control, enable_transport, share_instance,
   listen and target host and port, reachable_on and discoverable show a value, and an interface
@@ -27,28 +44,34 @@ are not among them.
   settings may be another process's). There is nothing to edit. The website keeps at most 128
   sections of 64 keys, with texts cut at 256 characters, and says "Part of the config is not
   shown." when anything was cut. An older node that sends no Reticulum config gets a line saying so.
-- **Change the Reticulum configuration** (see "Reticulum changes on probation" below): for the
-  sections the node offers, `enable_transport` under `[reticulum]`, and per interface `enabled`,
-  `mode`, `announce_cap`, `bitrate` and `ingress_control`, with their current values. **Apply and
-  test** sends only what you changed. A status line says how the change goes: restarting, on
-  probation until a time, rolling back, kept, or rolled back with the node's reason.
-- the settings form, grouped, with the help text of each setting and its current value. **Save
-  changes** sends only the settings you changed. If someone changed the settings meanwhile (in
-  the terminal, or another user), the node refuses, the page loads the form again and says so.
-- services the website may only turn off (propagation node, node, hub, Git host and its pages):
-  a **Turn off** button, greyed out while the service is off, with "Turn on in the terminal on
-  the node". The website can never turn a service on.
+- **Change the Reticulum configuration** (see "Reticulum changes on probation" below), right after
+  the read only view: for the sections the node offers, `enable_transport` under `[reticulum]`, and
+  per interface `enabled`, `mode`, `announce_cap`, `bitrate` and `ingress_control`, each starting
+  with its current value. A field you change gets a bar at its side and "Was: <old value>", and
+  a count says "N changes not applied yet". A choice for a value that is not set reads "(not set,
+  leave as is)": leave it to keep things as they are. **Apply and test** sends only what you
+  changed. When there is no form (a shared Reticulum instance, a node that offers nothing to
+  change, or you can only look) the section says so in one line. A status line says how the change
+  goes: restarting, on probation until a time, rolling back, kept, or rolled back with the node's
+  reason. While the page follows a test it also says how long is left, and that there is nothing to
+  click: the website keeps the change if the test passes, and the node puts the old config back if not.
 - **Restart Reticulum**: the node restarts its network (on a shared `rnsd` it only reconnects).
   The page then asks the node every 3 seconds, for up to 2 minutes, whether every interface that
   was online is online again, and says how it went. The node allows one restart every 5 minutes.
-- the last settings change, with a **Roll back** button. A roll back sets the values back through
-  the same rules, so it cannot turn a service back on; the node refuses one when a setting of it was
-  changed again since.
+- the last settings change, with a **Roll back this change** button. A roll back sets the values
+  back through the same rules, so it cannot turn a service back on; the node refuses one when a
+  setting of it was changed again since. It does not roll back Reticulum changes: the node does
+  that by itself when a test fails.
 - the node's own list of changes, newest first, with who made them, the old and new values and how
-  it went; **Older entries** loads more.
+  it went (a result that went wrong is in bold); **Older entries** loads more.
+
+When the node refuses with a wait (the announce stamp, its rate limit, a restart a moment ago), the
+button you pressed stays off, with "You can try again in N s." beside it, and the page says "You can
+try again now." when the wait is over. The wait is what the node said, at most an hour.
 
 Everything a node sends is shown as text. On a phone the list of changes becomes one card per
-change, and every control can be reached with the keyboard.
+change, and every control can be reached with the keyboard; the strip at the top and the Save bar
+never cover the control you are on.
 
 **Set it up.**
 
@@ -157,6 +180,13 @@ dropped). A file that is there but cannot be read, or is of another version, is 
 start to `second-factor-holds.json.unreadable-<time>` and said once; the waits then start empty. If
 it cannot be moved, it is never written over, and the waits are kept in memory until the server
 stops.
+
+A node that is still making its announce stamp refuses a Reticulum change with 429 and
+`code: "stamping"` (and `retry_after` in seconds, at most 60; the website keeps it between 1 and 60
+and uses 60 for anything else). Reticulum needs that proof of work before the node can answer the test
+that follows a change. Nothing was changed and no change allowance was used. The page says "The node
+is still making its announce stamp, so it can't test a Reticulum change yet. Nothing was changed. Try
+again in N seconds." The website does not retry by itself: the Apply button is off for the wait, with the time left beside it; press it again after. On a new node the stamp can take a few minutes (the node stops waiting for it after 30 at most). A new node needs this only once.
 
 What the node refuses is said in fixed sentences (it changed elsewhere, it is busy, the clock is
 off, it could not be reached, its answer was not signed). For a change, an answer without a valid

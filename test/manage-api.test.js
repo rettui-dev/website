@@ -663,6 +663,7 @@ test("what a node refuses becomes a fixed sentence; only invalid_value and not_a
       [{ ok: true, status: 400, body: { error: 'no_change', message: 'NODE WORDS' } }, 400, /Nothing was changed/, { code: 'no_change' }],
       [{ ok: true, status: 409, body: { error: 'busy', message: 'NODE WORDS' } }, 409, /busy/, { code: 'busy' }],
       [{ ok: true, status: 429, body: { error: 'rate_limited', retry_after: 42, message: 'NODE WORDS' } }, 429, /limiting changes.*42 seconds/, { code: 'rate_limited', retryAfter: 42 }],
+      [{ ok: true, status: 429, body: { error: 'stamping', retry_after: 42, message: 'NODE WORDS' } }, 429, /^The node is still making its announce stamp, so it can't test a Reticulum change yet\. Nothing was changed\. Try again in 42 seconds\.$/, { code: 'stamping', retryAfter: 42 }],
       [{ ok: true, status: 504, body: { error: 'timeout', message: 'NODE WORDS' } }, 504, /did not finish in time/, { code: 'timeout' }],
       [{ ok: true, status: 418, body: { error: 'teapot', message: 'NODE WORDS' } }, 502, /answered with an error/, { code: 'node-error' }],
       [{ ok: true, status: 500, body: {} }, 502, /answered with an error/, { code: 'node-error' }],
@@ -1293,6 +1294,7 @@ test('what a node refuses of a Reticulum change becomes a fixed sentence, with i
       [{ ok: true, status: 409, body: { error: 'restarting', message: 'NODE WORDS' } }, 409, /restarting on this node already/],
       [{ ok: true, status: 409, body: { error: 'busy', message: 'NODE WORDS' } }, 409, /busy/],
       [{ ok: true, status: 429, body: { error: 'rate_limited', retry_after: 240, message: 'NODE WORDS' } }, 429, /limiting changes.*4 minutes/, { retryAfter: 240 }],
+      [{ ok: true, status: 429, body: { error: 'stamping', retry_after: 60, message: 'NODE WORDS' } }, 429, /announce stamp.*Nothing was changed\. Try again in 60 seconds/, { code: 'stamping', retryAfter: 60 }],
       [{ ok: true, status: 500, body: { error: 'failed', message: 'NODE WORDS' } }, 502, /^The node could not save the change, so nothing was changed\.$/, { code: 'failed' }],
     ];
     for (const [answer, status, words, extra = {}] of cases) {
@@ -1635,4 +1637,42 @@ test("the node's checks of a pending change and the notes of its audit entries a
   assert.deepEqual(notes(['a\u2028b\u202e', 7, '', null, 'n'.repeat(500)]), ['ab', 'n'.repeat(300)]);
   assert.equal(notes(Array.from({ length: 40 }, () => 'x')).length, 16);
   for (const v of [undefined, null, 5, { a: 1 }]) assert.deepEqual(notes(v), [], JSON.stringify(v));
+});
+
+test('a stamping refusal is worded and bounded like rate_limited: a missing, huge or junk retry_after', async () => {
+  client = fakeClient();
+  const s = await setup();
+  try {
+    const b = await logIn(s, 'bob', BOB);
+    const code = await withTotp(s, b, BOB);
+    const send = () => api(s, '/api/manage/settings', { host: HOST, revision: REV, changes: { pn_name: 'x' }, password: BOB, code: code() }, b);
+    const cases = [
+      [undefined, 60],
+      [null, 60],
+      ['soon', 60],
+      [-5, 60],
+      [0, 60],
+      [1.5, 60],
+      [99_999, 60],
+      [61, 60],
+      [3600, 60],
+      [1, 1],
+      [30, 30],
+      [60, 60],
+    ];
+    for (const [retry, sec] of cases) {
+      const body = { error: 'stamping', message: 'NODE WORDS' };
+      if (retry !== undefined) body.retry_after = retry;
+      client.answer = () => ({ ok: true, status: 429, body });
+      const r = await send();
+      assert.equal(r.status, 429, String(retry));
+      assert.equal(r.json().code, 'stamping');
+      assert.equal(r.json().retryAfter, sec, String(retry));
+      assert.equal(r.headers['retry-after'], String(sec), String(retry));
+      assert.match(r.json().error, /announce stamp.*Nothing was changed\. Try again in /);
+      assert.doesNotMatch(r.text, /NODE WORDS/);
+    }
+  } finally {
+    await s.close();
+  }
 });

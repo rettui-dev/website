@@ -4,7 +4,9 @@
 // is back on it as soon as the dialog closes. A user with two-step sign-in gets a second step in the
 // same dialog: a passkey (a button the visitor presses, POST /login/passkey; browsers want a click
 // before they show a passkey prompt), the code from their app, or a recovery code (POST /login/code).
-// The server says which of them this user has. Signed in, the name in
+// The server says which of them this user has. A visitor with a passkey that works on its own can also
+// press "Sign in with a passkey" instead of typing a name and password (POST /login/passkey/begin, the
+// browser's passkey prompt, then POST /login/passkey/finish); no name is sent at all. Signed in, the name in
 // the header links to the account page. The status page asks for the dialog too
 // (window.rettuiAccount.open) and reloads its numbers when the viewer changes.
 (function () {
@@ -29,6 +31,10 @@
   var methods = ['totp', 'recovery'];
   var passkeyOptions = null;
   var passkeyNote = '';
+  // Whether the dialog offers a passkey on its own (the server allows it, this is the address passkeys
+  // were made for, and the browser has WebAuthn), and the run of the press that is under way, if any.
+  var passkeyAlone = false;
+  var aloneRun = null;
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -81,6 +87,13 @@
     var bad = text ? 'true' : 'false';
     document.getElementById('login-name').setAttribute('aria-invalid', bad);
     document.getElementById('login-password').setAttribute('aria-invalid', bad);
+  }
+
+  // A word about the passkey button, in the same line as the password errors, but about no field.
+  function setPasskeyError(text) {
+    document.getElementById('login-error').textContent = text;
+    document.getElementById('login-name').setAttribute('aria-invalid', 'false');
+    document.getElementById('login-password').setAttribute('aria-invalid', 'false');
   }
 
   function setCodeError(text) {
@@ -180,6 +193,15 @@
       if (then) then();
       else refocus(back);
     });
+  }
+
+  // A sign in that finished after the dialog was closed: the same as signedIn, without the dialog.
+  function lateSignIn(body) {
+    if (mustChange(body.mustChangePassword)) return Promise.resolve();
+    name = typeof body.name === 'string' ? body.name : null;
+    paint();
+    live.textContent = 'Signed in as ' + name + '.';
+    return changed();
   }
 
   function submit(e) {
@@ -331,6 +353,67 @@
       });
   }
 
+  var NO_PASSKEY_USED = 'No passkey was used. If yours did not show up, sign in with your name and password, then add a passkey on your account page.';
+
+  // Gives the dialog back: the buttons as they were, and the press no longer under way.
+  function endAlone(run) {
+    if (aloneRun !== run) return;
+    aloneRun = null;
+    busy = false;
+    var button = document.getElementById('login-passkey-only');
+    button.disabled = false;
+    button.textContent = 'Sign in with a passkey';
+    document.getElementById('login-submit').disabled = false;
+  }
+
+  // "Sign in with a passkey": the server gives a prompt (no user is named), the browser asks for a
+  // passkey, and the answer goes back. The press is a click, as browsers want. Every press starts from
+  // the beginning, so an expired prompt needs nothing but another press. If the dialog is closed while
+  // the browser still asks, the press is over at once and a late answer is dropped.
+  function usePasskeyAlone() {
+    if (busy || !passkeyAlone) return;
+    var button = document.getElementById('login-passkey-only');
+    var run = { dead: false };
+    aloneRun = run;
+    busy = true;
+    button.disabled = true;
+    button.textContent = 'Waiting for your passkey...';
+    document.getElementById('login-submit').disabled = true;
+    setPasskeyError('');
+    var ok = false;
+    var shown = function (text) { if (!run.dead) setPasskeyError(text); };
+    var offline = function () { shown('Could not reach the server. Try again.'); };
+    post('/login/passkey/begin', {})
+      .then(function (b) {
+        if (run.dead) return null;
+        if (b.status !== 200 || !b.body || typeof b.body.token !== 'string' || !b.body.options || typeof b.body.options !== 'object') {
+          shown(b.body && b.body.error ? b.body.error : 'Could not sign in. Try again.');
+          return null;
+        }
+        return new Promise(function (resolve) { resolve(window.rettuiPasskey.get(b.body.options)); }).then(function (credential) {
+          if (run.dead) return null;
+          return post('/login/passkey/finish', { token: b.body.token, credential: JSON.stringify(credential) }).then(function (r) {
+            // The dialog was closed while this was on its way and the server signed the browser in
+            // all the same: the page shows it, so that nobody is signed in without knowing.
+            if (run.dead) return r.status === 200 && r.body && r.body.ok ? lateSignIn(r.body) : null;
+            if (r.status === 200 && r.body.ok) {
+              ok = true;
+              return signedIn(r.body);
+            }
+            shown(r.body && r.body.error ? r.body.error : 'Could not sign in. Try again.');
+            return null;
+          }, offline);
+        }, function (err) {
+          shown(window.rettuiPasskey.cancelled(err) ? NO_PASSKEY_USED : 'This browser could not use a passkey. Sign in with your name and password.');
+        });
+      }, offline)
+      .then(function () {
+        var still = !run.dead;
+        endAlone(run);
+        if (!ok && still && dlg.open) button.focus();
+      });
+  }
+
   function signOut() {
     post('/logout', {})
       .then(function () {
@@ -388,6 +471,17 @@
     actions.appendChild(go);
     actions.appendChild(cancel);
     form.appendChild(actions);
+    // A passkey on its own, with no name or password. A real button, not a submit: Enter in the
+    // password field still sends the password, and Safari wants a click before it shows a prompt.
+    var or = el('p', 'login-or', 'or');
+    var alone = el('button', 'login-passkey-only', 'Sign in with a passkey');
+    alone.id = 'login-passkey-only';
+    alone.type = 'button';
+    or.hidden = alone.hidden = !passkeyAlone;
+    or.id = 'login-or';
+    alone.addEventListener('click', usePasskeyAlone);
+    form.appendChild(or);
+    form.appendChild(alone);
     dlg.appendChild(form);
     dlg.appendChild(buildCodeForm());
     document.body.appendChild(dlg);
@@ -395,6 +489,12 @@
     cancel.addEventListener('click', function () { dlg.close(); });
     dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
     dlg.addEventListener('close', function () {
+      if (aloneRun) {
+        // Closed while the browser asks: this press is over, and whatever it gives is dropped.
+        var run = aloneRun;
+        run.dead = true;
+        endAlone(run);
+      }
       showStep(false);
       var back = opener;
       opener = null;
@@ -530,6 +630,8 @@
       enabled = true;
       name = typeof s.name === 'string' ? s.name : null;
       if (mustChange(s.mustChangePassword)) return;
+      passkeyAlone = s.passkeySignIn === true && typeof s.passkeyOrigin === 'string' && location.origin === s.passkeyOrigin
+        && Boolean(window.rettuiPasskey) && window.rettuiPasskey.supported() === true;
       build();
       paint();
       document.dispatchEvent(new CustomEvent('rettui:account'));

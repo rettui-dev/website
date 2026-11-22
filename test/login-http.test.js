@@ -149,7 +149,7 @@ test('by default a visitor without a login sees no locked number anywhere', asyn
     for (const x of SECRET) assert.equal(r.text.includes(x), false, x);
     const body = r.json();
     assert.deepEqual(body.viewer, { name: null });
-    assert.deepEqual(body.hosts.map((h) => h.locked), [['details', 'storage', 'peers', 'disk', 'versions'], ['details', 'storage', 'peers', 'disk', 'versions'], ['details', 'storage', 'peers', 'disk', 'versions']]);
+    assert.deepEqual(body.hosts.map((h) => h.locked), [['details', 'storage', 'peers', 'disk', 'versions', 'links'], ['details', 'storage', 'peers', 'disk', 'versions', 'links'], ['details', 'storage', 'peers', 'disk', 'versions', 'links']]);
     // What stays public: up or down, uptime, clients and peers heard, for nodes and the group.
     const a = body.hosts[1];
     assert.equal(a.status, 'up');

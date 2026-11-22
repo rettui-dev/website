@@ -181,6 +181,44 @@ test('loadNodes: LOGIN_TRUSTED_PROXIES sets the trusted proxies without a config
   await assert.rejects(loadNodes({ CONFIG_FILE: file, LOGIN_TRUSTED_PROXIES: '10.0.0.1' }), /login\.trusted_proxies/);
 });
 
+test('login.passkey_sign_in: on by default, true or false in the file, and nothing else', () => {
+  const nodes = 'nodes:\n  - address: a.test:1\n';
+  assert.equal(loadConfig(nodes).login.passkeySignIn, true);
+  assert.equal(loadConfig(`${nodes}login:\n  max_sessions: 10\n`, { storeUsers: true }).login.passkeySignIn, true);
+  assert.equal(loadConfig(`${nodes}login:\n  passkey_sign_in: true\n`, { storeUsers: true }).login.passkeySignIn, true);
+  const off = loadConfig(`${nodes}login:\n  passkey_sign_in: false\n  max_sessions: 10\n`, { storeUsers: true }).login;
+  assert.equal(off.passkeySignIn, false);
+  assert.equal(off.maxSessions, 10);
+  // Only a real true or false: YAML would read "no", 0 and "false" as other things.
+  for (const bad of ['"false"', '"true"', 'no', '0', '1', 'null', '[]', '{}', '""']) {
+    assert.throws(() => loadConfig(`${nodes}login:\n  passkey_sign_in: ${bad}\n`, { storeUsers: true }), /login\.passkey_sign_in must be true or false/, bad);
+  }
+  // Another spelling of the key is an unknown key, not a switch.
+  assert.throws(() => loadConfig(`${nodes}login:\n  passkeySignIn: false\n`, { storeUsers: true }), /login has an unknown key "passkeySignIn"/);
+});
+
+test('loadNodes: LOGIN_PASSKEY_SIGN_IN is true or false without a config file, and conflicts with CONFIG_FILE', async () => {
+  assert.equal((await loadNodes({})).login.passkeySignIn, true);
+  assert.equal((await loadNodes({ LOGIN_PASSKEY_SIGN_IN: 'true' })).login.passkeySignIn, true);
+  const off = await loadNodes({ LOGIN_PASSKEY_SIGN_IN: 'false', LOGIN_TRUSTED_PROXIES: '10.0.0.1' }, { storeUsers: true });
+  assert.equal(off.login.passkeySignIn, false);
+  assert.deepEqual(off.login.trustedProxies, ['10.0.0.1']);
+  assert.equal(off.login.maxSessions, 1000);
+  await assert.rejects(loadNodes({ LOGIN_PASSKEY_SIGN_IN: '' }), /LOGIN_PASSKEY_SIGN_IN is empty/);
+  for (const bad of ['yes', 'no', '1', '0', 'TRUE', 'False', ' true']) await assert.rejects(loadNodes({ LOGIN_PASSKEY_SIGN_IN: bad }), /LOGIN_PASSKEY_SIGN_IN must be true or false/, bad);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
+  const file = path.join(dir, 'c.yaml');
+  await fs.writeFile(file, ok);
+  for (const value of ['false', 'true', '']) await assert.rejects(loadNodes({ CONFIG_FILE: file, LOGIN_PASSKEY_SIGN_IN: value }), /CONFIG_FILE replaces .*LOGIN_PASSKEY_SIGN_IN.*login\.passkey_sign_in/, JSON.stringify(value));
+  assert.equal((await loadNodes({ CONFIG_FILE: file })).login.passkeySignIn, true);
+});
+
+test('config.example.yaml documents login.passkey_sign_in', async () => {
+  const text = await fs.readFile(path.join(root, 'config.example.yaml'), 'utf8');
+  assert.match(text, /^#   passkey_sign_in: true$/m);
+  assert.match(text, /Sign in with a passkey/);
+});
+
 test('loadNodes: CONFIG_FILE replaces the variables and setting both is an error', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'website-'));
   const file = path.join(dir, 'c.yaml');

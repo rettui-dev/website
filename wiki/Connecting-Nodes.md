@@ -149,6 +149,38 @@ Sign in, then open `/manage`, or use the "Manage nodes" link on your Account pag
 
 Pick the node from the list. A working link shows the node's version, whether Reticulum is running and how many interfaces are online, and whether its clock agrees with the website's. What you can change, and the safeguards around it, are in [Managing Nodes](Managing-Nodes).
 
+## Links between nodes
+
+The status page draws which monitored node dials which: arrows on the network map and "Dials", "Dialled by" and "Linked with" chips on the cards.
+
+**Found by the website (`detect_links`).** This is off until you set `detect_links: true` at the top of the config file, and it needs at least one user, so that there is a sign-in to keep the links behind. When it is on, for every node with a `manage_url`, the website reads the node's redacted Reticulum config (the read-only view the Manage page shows) every 5 minutes, one signed `GET` of the node's state, as the actor `status-links`. That is 12 reads an hour for a node, apart from the 120 reads an hour each user has on the Manage page and far below what the node accepts. It never happens for a page view: visitors only get the last result from memory. A client interface (one with a `target_host` and a `target_port`) whose target is another monitored node means "this node dials that node". The target is matched in this order, host without regard to case and port as a number:
+
+1. the host and port are the other node's `address`;
+2. the host is the host of the other node's `manage_url` (the port may differ);
+3. the host is the host of the other node's `stats_url`, but only when that host is not the address host of any monitored node (a shared host does not tell the nodes apart).
+
+With the WireGuard setup of [WireGuard for nodes](WireGuard-for-Nodes), Front has an interface to `10.77.2.1` port 4243, and Back's `manage_url` is `http://10.77.2.1:8750`. The ports differ, so step 2 matches on the host alone and the page shows "Front dials Back". A target that matches no monitored node is dropped on the server, a node never links to itself, and a host that matches more than one node is not guessed: it is dropped (start the server with `LINKS_DEBUG=1` to log that, without addresses). An interface is on when its `enabled` or `interface_enabled` is true (`true`, `yes`, `on` or `1`), the same rule Reticulum uses, and off when neither key is true; an interface with neither key is off. The node's redacted view shows only `yes`, `no`, `true`, `false`, `on` and `off`, so a value of `1` or `0` is shown as not known. An interface that is off shows as "turned off".
+
+A detected link is the dialling node's own claim: it says that node is set to connect to that address, not that the connection works or that the node at that address agrees.
+
+A node that cannot be read (down, wrong secret, an older node without the Reticulum view, a shared Reticulum instance) gives no detected links; the last good result is kept for 15 minutes and then dropped. Reading never delays the checks, the Manage page or anyone's changes. After a failed read the website waits longer before it tries again (2, then 4, up to 6 intervals), and it writes one line to the log when a node's links cannot be read and one when they can be again, with the node's name and an error code, never an address. The reads use the user name `status-links`, which no user can be given. A link is left out of the page when either of its nodes has `links` locked. A detected link is also left out for visitors who are not signed in when either of its nodes has `public_details: false`: the one that dials and the one that is dialled. Visitors who are not signed in get each link's node and direction only, not whether the node's own config says the interface is on, and not where the link came from; signed-in users get all of it. When `detect_links` is on and a `require_login` list (at the top level or for a node) leaves out `links`, the website warns at start: the list replaces the default, so those links are shown to everyone.
+
+**Declared by you.** For a node without `manage_url`, or a link its config does not show, add `links` to the node in the config file:
+
+```yaml
+nodes:
+  - address: front.rns.rettui.dev:4242
+    name: Front
+    links:
+      - to: Back
+      - to: side.rns.rettui.dev:4242
+        direction: unknown
+```
+
+`to` is the name or the address of another node in the file. `direction` is `dials` (the default: this node connects out to it) or `unknown`, which is drawn as a line with a hollow circle at each end and worded "linked with". If both are there for the same node, the node's config wins: the links it dials are shown as found, and a declared link that its complete config does not show is drawn as declared, with "declared; not found in the node's config". A node's config only speaks for the links that node dials: if Back is declared to dial Hostile and Hostile's config says it dials Back, both are shown, each on the card of the node that dials.
+
+**What is published.** `/api/status` gives each node a `links` list with, for each link, only the other node's `host:port` (as it already names nodes), `dir` (`dials` or `unknown`), `enabled` (`true`, `false` or `null` when not known), `source` (`detected` or `declared`) and `conflict` (`null`, `direction` or `not_found`), at most 8 per node. Interface names, target hosts, WireGuard addresses and manage or stats URLs never leave the server, and the [public API](Public-Data-and-Stats-API) does not have links. Visitors who are not signed in get only `to`, `dir` and `enabled`; `source` and `conflict` are for signed-in users. `links` is part of the default `require_login`, so once there are users the links are for signed-in users only, until you write a `require_login` list without `links`. **Turning on `detect_links` publishes which of your nodes dials which, and whether that interface is on, to everyone who may see links.** The node configs behind it were set up for management, not for publication, so look at the result before you open the links to everyone (see [Logins](Logins#logins)).
+
 ## Troubleshooting
 
 These assume the WireGuard layout from [WireGuard for Nodes](WireGuard-for-Nodes), with its example addresses: the node's server address is `10.77.1.1` and the website host's address in that network is `10.77.1.2`. Work down the list: each step rules out the one before it.
@@ -185,5 +217,7 @@ These assume the WireGuard layout from [WireGuard for Nodes](WireGuard-for-Nodes
 **`/manage` answers 404.** The signed-in user does not have the role `manage` or `admin`, nobody is signed in, or the user still has to change a password an admin set. A viewer gets 404 on purpose.
 
 **Changes are refused with a 403.** The user has not turned on two-step sign-in, or it is less than 24 hours since they turned on their first one. See step 4.
+
+**A Reticulum change is refused with "The node is still making its announce stamp".** A new node makes a proof of work (the announce stamp) that Reticulum needs before it can answer the test that follows a change. Nothing was changed. The website does not retry by itself. Wait, then press Apply again. On a new node this can take a few minutes (the node stops waiting after 30 at most), and a new node needs it only once.
 
 **The Manage page says the node's clock is off, or every request is refused.** The website and the node disagree by more than the allowed time. From one minute off the page warns. From five minutes off the node refuses every request. Fix the time on whichever host is wrong, for example with `timedatectl set-ntp true`.

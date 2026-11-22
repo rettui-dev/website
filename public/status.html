@@ -43,7 +43,7 @@
     </div>
   </div>
 </header>
-<main id="main" tabindex="-1" class="wrap">
+<main id="main" tabindex="-1" class="wrap wide">
   <div id="banner" class="banner unknown">
     <h1 id="banner-title">Checking...</h1>
     <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
@@ -57,12 +57,14 @@
   <details id="netmap" class="netmap" open hidden>
     <summary>Network map <span id="netmap-summary" class="netmap-count"></span></summary>
     <div id="netmap-chart" class="netmap-chart"></div>
-    <p class="note netmap-note">The wide box with a double border and the tag Proxy is the proxy, the front door; the other boxes are nodes. Solid lines go from the proxy to the nodes it passes visitors to. Dashed lines go to external backbone peers that a node connects out to; those are listed by the operator and are not checked. A line is grey when either end is down.</p>
+    <p class="note netmap-note">The wide box with a double border and the tag Proxy is the proxy, the front door; the other boxes are nodes. Solid lines go from the proxy to the nodes it passes visitors to. Dashed lines go to external backbone peers that a node connects out to; those are listed by the operator and are not checked. A line is grey when either end is down.<span id="netmap-legend-links" hidden> Arrows between nodes: the node at the dot dials the node at the arrowhead; once the link is up, traffic flows both ways. A solid arrow was found in the node's config. An outlined arrow was declared by the operator. A dotted line with a bar is turned off in the dialling node's config. A line with two slashes has a node that is down. A line with a hollow circle at each end is linked in a direction we do not know.</span></p>
+    <p id="netmap-phone-note" class="note" hidden>Links between nodes are listed on each node's card.</p>
     <details class="netmap-listbox">
       <summary>Show as list</summary>
       <ul id="netmap-list" class="netmap-list"></ul>
     </details>
   </details>
+  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. A node counts as down after two failed checks in a row. The 90 day bar has one cell per day (UTC). Use More on a row for details, or Full details for graphs.<span id="links-legend" hidden> "Dials" lists the nodes this node connects out to; "Dialled by" lists the nodes that connect in; once a link is up, traffic flows both ways. "Declared" means the operator listed the link. "Turned off" means the dialling node has that interface switched off.</span></p>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
   <section id="incidents" class="incidents" aria-labelledby="incidents-title">
     <h2 id="incidents-title">Recent incidents</h2>
@@ -70,7 +72,6 @@
     <ul id="incident-list" class="incident-list" hidden></ul>
     <p id="incidents-more" class="note" hidden></p>
   </section>
-  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. A node counts as down after two failed checks in a row. The 90 day bar has one cell per day (UTC). Use More on a row for details, or Full details for graphs.</p>
   <dialog id="detail" class="detail" aria-labelledby="detail-title">
     <div class="detail-top">
       <div class="detail-head">

@@ -7,9 +7,12 @@ import path from 'node:path';
 import { Keyring } from '../lib/keys.js';
 import { Busy, CODE_MAX_WAIT_MS, CODE_USER_FREE, DEVICE_AUDIT_MS, DEVICE_BURST, DEVICE_INTERVAL_MS, MAX_QUEUED_HASHES, NAME_BACKLOG, NAME_BURST, NAME_INTERVAL_MS, NET48_FREE, NET56_FREE, NameBucket, Sessions, Throttle, clientIp, cookieValue, createLogin, deviceHash, hashGate, ipKey, isFormType, netKeys, newDeviceId, normalIp, proxyMatcher, sameOrigin, untrustedProxy, viaHttps, waitText } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
-import { LOGIN_WRITE_MS, MAX_DEVICES, UserStore } from '../lib/users.js';
+import { LOGIN_WRITE_MS, MAX_DEVICES, MAX_PASSKEY_DEVICES, UserStore } from '../lib/users.js';
 import { ACTION_WINDOW_MS, REAUTHS_PER_SESSION, REAUTHS_PER_USER } from '../lib/account.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
+import { DEVICE_USER_CEILING, LOGIN_DEFAULTS, MAX_PASSKEY_SESSIONS_PER_USER, PASSKEY_AUDIT_MS, PASSKEY_SIGNIN_BURST, PASSKEY_SIGNIN_INTERVAL_MS, SIGNIN_BEGIN_BURST, SIGNIN_BEGIN_INTERVAL_MS, SIGNIN_CHALLENGES_MAX, SIGNIN_CHALLENGES_PER_ADDRESS, SIGNIN_NET48_BURST, SIGNIN_NET56_BURST, SIGNIN_NET56_INTERVAL_MS } from '../lib/login.js';
+import { CHALLENGE_MS, NO_PASSKEYS, createPasskeys } from '../lib/passkeys.js';
+import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 
 const MIN = 60_000;
 
@@ -1224,4 +1227,771 @@ test('a user changed by another program is signed out and it is audited; other u
   await settle(() => lines.filter(([e]) => e === 'user-changed-elsewhere').length === 2);
   assert.deepEqual(lines.filter(([e]) => e === 'user-changed-elsewhere').at(-1), ['user-changed-elsewhere', { user: 'bob', what: ['deleted'] }]);
   store.close();
+});
+
+// ---- signing in with a passkey alone ----
+
+const PK_ORIGIN = 'https://status.example.org';
+const PK_RP = 'status.example.org';
+const PK_NOW = 1_800_000_000_000;
+
+// A login over an in-memory store with bob and carol, passkeys at PK_ORIGIN (siteUrl null: none),
+// and an audit and a failures log that only collect what they are given.
+async function passkeyLogin({ siteUrl = PK_ORIGIN, settings = {}, names = ['bob', 'carol'] } = {}) {
+  const clock = { t: PK_NOW };
+  const now = () => clock.t;
+  const store = new UserStore({ now, warn: () => {} });
+  for (const name of names) await store.createUser({ name, role: 'viewer', passwordHash: await hashPassword('a good password', undefined, fakeHasher) });
+  const passkeys = siteUrl ? createPasskeys({ siteUrl, store, now }) : NO_PASSKEYS;
+  const events = [];
+  const notes = [];
+  const logs = [];
+  const audit = { write: async (event, fields) => void events.push([event, fields]), flush: async () => {} };
+  const failures = { note: (event, key, fields) => void notes.push([event, key, fields]), flushDue: async () => {}, flush: async () => {}, start() {}, stop() {}, size: 0 };
+  const l = createLogin({ users: [], store, hasher: fakeHasher, now, audit, failures, passkeys, settings: { ...LOGIN_DEFAULTS, ...settings }, sleep: async () => {}, log: (m) => logs.push(m) });
+  return { l, store, passkeys, clock, events, notes, logs };
+}
+
+// Adds a passkey for a user the way the account page does; the authenticator and the user handle.
+async function enroll(ctx, name, opts = {}, passkeys = ctx.passkeys) {
+  const a = new SoftAuthenticator(opts);
+  const sessionId = `session-${name}-${a.id}`;
+  const epoch = ctx.l.epochOf(name);
+  const o = await passkeys.registrationOptions(name, { sessionId, epoch });
+  await passkeys.finishRegistration(name, a.create({ challenge: o.challenge, origin: passkeys.origin, rpId: passkeys.rpId }), { sessionId, epoch });
+  return { a, handle: o.user.id };
+}
+
+// What the browser answers to a prompt of startPasskeySignIn.
+const pkAnswer = (a, started, handle, extra = {}) => a.get({ challenge: started.options.challenge, origin: PK_ORIGIN, rpId: PK_RP, userHandle: handle, ...extra });
+const INVALID = { ok: false, reason: 'invalid' };
+
+test('passkey sign in: start gives a token and options with no user and no allowCredentials, for this address only', async () => {
+  const ctx = await passkeyLogin();
+  assert.equal(ctx.l.passkeySignIn, true);
+  const r = ctx.l.startPasskeySignIn('192.0.2.1');
+  assert.match(r.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(Object.keys(r).sort(), ['expiresIn', 'options', 'token']);
+  assert.equal(r.expiresIn, 300);
+  assert.equal(r.expiresIn * 1000, CHALLENGE_MS);
+  assert.deepEqual(r.options, { challenge: r.options.challenge, rpId: PK_RP, timeout: 120_000, userVerification: 'required' });
+  assert.match(r.options.challenge, /^[A-Za-z0-9_-]{43}$/);
+  const again = ctx.l.startPasskeySignIn('192.0.2.1');
+  assert.notEqual(again.token, r.token);
+  assert.notEqual(again.options.challenge, r.options.challenge);
+  // The token is not the challenge, and what is kept names no user.
+  assert.notEqual(r.token, r.options.challenge);
+  assert.deepEqual(Object.keys(ctx.l.signInChallenges.get(r.token)).sort(), ['addressKey', 'challenge', 'created', 'netKey']);
+  assert.equal(ctx.l.signInChallenges.get(r.token).addressKey, ipKey('192.0.2.1'));
+});
+
+test('passkey sign in: a right passkey gives {name, epoch, device}, and the token is good once', async () => {
+  const ctx = await passkeyLogin({ names: ['Bob', 'carol'] });
+  const { a, handle } = await enroll(ctx, 'Bob', { counter: 5 });
+  const started = ctx.l.startPasskeySignIn('192.0.2.1');
+  const credential = pkAnswer(a, started, handle);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(started.token, credential, '192.0.2.1', {}), { ok: true, name: 'Bob', epoch: 0, device: null, ref: ctx.store.passkeyById('Bob', a.id).ref });
+  assert.equal(ctx.store.passkeyById('Bob', a.id).counter, 6);
+  assert.equal(ctx.store.passkeyById('Bob', a.id).lastUsed, new Date(PK_NOW).toISOString());
+  assert.equal(ctx.l.signInChallenges.size, 0);
+  // The same answer again, with the same token or a new one made for it: not a sign in.
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(started.token, credential, '192.0.2.1', {}), { ok: false, reason: 'expired' });
+  const second = ctx.l.startPasskeySignIn('192.0.2.1');
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(second.token, credential, '192.0.2.1', {}), INVALID);
+  // The result is what signIn takes.
+  const r = await ctx.l.finishPasskeySignIn(ctx.l.startPasskeySignIn('192.0.2.1').token, '{}', '192.0.2.1');
+  assert.equal(r.ok, false);
+  const fresh = ctx.l.startPasskeySignIn('192.0.2.1');
+  const done = await ctx.l.finishPasskeySignIn(fresh.token, pkAnswer(a, fresh, handle), '192.0.2.1', { deviceId: null });
+  const session = await ctx.l.signIn(done.name, { epoch: done.epoch, device: done.device, deviceId: null, ip: '192.0.2.1', via: 'passkey' });
+  assert.ok(session);
+  assert.equal(ctx.l.sessions.get(session.id).name, 'Bob');
+  // The audit line of the new device says how the user signed in, and nothing else is written.
+  assert.deepEqual(ctx.events, [['device-added', { user: 'Bob', address: '192.0.2.1', with: 'passkey' }]]);
+});
+
+test('passkey sign in: every failure that depends on the user is the same answer, and counts for the address only', async () => {
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  const carol = await enroll(ctx, 'carol');
+  // A passkey made for another address of the same store: it cannot sign in here.
+  const elsewhere = createPasskeys({ siteUrl: 'https://other.example.net', store: ctx.store, now: () => ctx.clock.t });
+  const other = await enroll(ctx, 'bob', {}, elsewhere);
+  const stranger = new SoftAuthenticator();
+  const sha = (text) => crypto.createHash('sha256').update(text).digest();
+  const cases = {
+    'unknown credential': (st) => pkAnswer(stranger, st, bob.handle),
+    'another key under the id': (st) => pkAnswer(new SoftAuthenticator({ id: bob.a.rawId }), st, bob.handle),
+    'user verification off': (st) => pkAnswer(bob.a, st, bob.handle, { uv: false }),
+    'user presence off': (st) => pkAnswer(bob.a, st, bob.handle, { up: false }),
+    'wrong origin': (st) => pkAnswer(bob.a, st, bob.handle, { origin: 'https://evil.example.org' }),
+    'wrong rpId hash': (st) => pkAnswer(bob.a, st, bob.handle, { rpIdHash: sha('evil.example.org') }),
+    'cross origin frame': (st) => pkAnswer(bob.a, st, bob.handle, { crossOrigin: true }),
+    'top origin': (st) => pkAnswer(bob.a, st, bob.handle, { extra: { topOrigin: 'https://evil.example.org' } }),
+    'wrong type': (st) => pkAnswer(bob.a, st, bob.handle, { type: 'webauthn.create' }),
+    'the handle of another user': (st) => pkAnswer(bob.a, st, carol.handle),
+    'a random handle': (st) => pkAnswer(bob.a, st, crypto.randomBytes(32).toString('base64url')),
+    'no handle': (st) => pkAnswer(bob.a, st, null),
+    'an empty handle': (st) => pkAnswer(bob.a, st, ''),
+    'a passkey made for another rpId': (st) => pkAnswer(other.a, st, other.handle),
+    'another challenge': (st) => pkAnswer(bob.a, { options: { challenge: ctx.l.startPasskeySignIn('203.0.113.250').options.challenge } }, bob.handle),
+    'nothing': () => '{}',
+    'not JSON': () => '{',
+    'a list': () => [],
+  };
+  let i = 0;
+  for (const [what, make] of Object.entries(cases)) {
+    // One address for each, so that the waits of one case do not reach the next.
+    const ip = `192.0.2.${++i}`;
+    const st = ctx.l.startPasskeySignIn(ip);
+    const credential = make(st);
+    assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, credential, ip, {}), INVALID, what);
+    assert.equal(ctx.l.addresses.count(ipKey(ip)), 1, `${what} counts for the address`);
+  }
+  // A user who is gone: the passkey is not found at all.
+  const gone = ctx.l.startPasskeySignIn('198.51.100.1');
+  const answer = pkAnswer(carol.a, gone, carol.handle);
+  await ctx.store.deleteUser('carol', { force: true });
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(gone.token, answer, '198.51.100.1', {}), INVALID, 'a deleted user');
+  // Never against the user, the name or the credential.
+  for (const th of [ctx.l.accounts, ctx.l.codes, ctx.l.codeUsers, ctx.l.devices, ctx.l.reauths]) assert.equal(th.size, 0);
+  assert.equal(ctx.l.names.size, 0);
+  assert.equal(ctx.l.deviceTurns.size, 0);
+  // The failures log has the address only: no user, no credential id, no handle.
+  assert.equal(ctx.notes.length, Object.keys(cases).length + 1);
+  for (const [event, key, fields] of ctx.notes) {
+    assert.equal(event, 'passkey-sign-in-failures');
+    assert.match(key, /^ip:/);
+    assert.deepEqual(Object.keys(fields), ['address']);
+  }
+  const text = JSON.stringify([ctx.notes, ctx.events]);
+  for (const secret of [bob.a.id, carol.a.id, other.a.id, bob.handle, carol.handle, other.handle]) assert.equal(text.includes(secret), false);
+  assert.deepEqual(ctx.events, []);
+  // A passkey that works still works after all of that, from another address.
+  const ok = ctx.l.startPasskeySignIn('203.0.113.1');
+  assert.equal((await ctx.l.finishPasskeySignIn(ok.token, pkAnswer(bob.a, ok, bob.handle), '203.0.113.1', {})).ok, true);
+  // And the failures of the user's own address did not hold them back: it is the address that waits.
+  assert.equal(ctx.l.codeUsers.count('user:bob'), 0);
+});
+
+test('passkey sign in: a failure for a passkey of a user does not hold that user back from anywhere else', async () => {
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  // Someone who learned the credential id fails over and over from their own address.
+  const bad = new SoftAuthenticator({ id: bob.a.rawId });
+  for (let n = 0; n < 40; n++) {
+    ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+    const st = ctx.l.startPasskeySignIn('203.0.113.9');
+    const r = await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bad, st, bob.handle), '203.0.113.9', {});
+    assert.ok(r.reason === 'invalid' || r.reason === 'throttled', r.reason);
+  }
+  assert.equal(ctx.l.addresses.wait(ipKey('203.0.113.9')) > 0 || ctx.l.addresses.count(ipKey('203.0.113.9')) > 20, true);
+  // The owner signs in with the passkey from elsewhere, and with the password too.
+  const st = ctx.l.startPasskeySignIn('192.0.2.77');
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), '192.0.2.77', {})).ok, true);
+  assert.equal((await ctx.l.attempt('bob', 'a good password', '192.0.2.78')).secondFactor, true);
+});
+
+test('passkey sign in: a token is good for the address it was made for, for CHALLENGE_MS, and for one answer', async () => {
+  const ctx = await passkeyLogin();
+  const { a, handle } = await enroll(ctx, 'bob');
+  const expired = { ok: false, reason: 'expired' };
+  // Another address: expired, and the token is gone for the right one too.
+  let st = ctx.l.startPasskeySignIn('192.0.2.1');
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '192.0.2.2', {}), expired);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '192.0.2.1', {}), expired);
+  // The same /64 is the same address; the same IPv4 address in its mapped form too.
+  st = ctx.l.startPasskeySignIn('2001:db8:1:2:aaaa::1');
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '2001:db8:1:2:bbbb::9', {})).ok, true);
+  // CHALLENGE_MS: one millisecond short is in time, the whole time is not.
+  st = ctx.l.startPasskeySignIn('192.0.2.1');
+  ctx.clock.t += CHALLENGE_MS - 1;
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '192.0.2.1', {})).ok, true);
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn('192.0.2.1');
+  ctx.clock.t += CHALLENGE_MS;
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '192.0.2.1', {}), expired);
+  assert.equal(ctx.l.signInChallenges.size, 0, 'taken out whatever the result');
+  // A clock that went back is not a token that is young.
+  st = ctx.l.startPasskeySignIn('192.0.2.1');
+  ctx.clock.t -= 60_000;
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), '192.0.2.1', {}), expired);
+  ctx.clock.t += 60_000;
+  // Not tokens at all.
+  for (const token of [undefined, null, '', 'x', 42, {}, [], 'A'.repeat(43), `${st.token}x`, st.token.slice(1)]) {
+    assert.deepEqual(await ctx.l.finishPasskeySignIn(token, pkAnswer(a, st, handle), '192.0.2.1', {}), expired, String(token));
+  }
+  // Expired answers are not failures: nothing counts for the address.
+  assert.equal(ctx.l.addresses.count(ipKey('192.0.2.1')), 0);
+  assert.equal(ctx.notes.length, 0);
+});
+
+test('passkey sign in: a change to the user while the check runs ends in expired, never a sign in', async () => {
+  const ip = '192.0.2.1';
+  const changes = {
+    'a role change or a password reset (endUser)': (ctx) => ctx.l.endUser('bob'),
+    'a passkey removed': (ctx) => {
+      ctx.store.removePasskey('bob', ctx.store.passkeys('bob')[0].ref);
+      ctx.l.endUser('bob');
+    },
+    'a user deleted': (ctx) => {
+      ctx.store.deleteUser('bob', { force: true });
+      ctx.l.endUser('bob');
+    },
+    'the second factor reset': (ctx) => {
+      ctx.store.resetSecondFactor('bob');
+      ctx.l.endUser('bob');
+    },
+    'a change made by another program': (ctx) => ctx.store.onExternalChange('bob', ['role']),
+  };
+  for (const [what, change] of Object.entries(changes)) {
+    const ctx = await passkeyLogin();
+    const { a, handle } = await enroll(ctx, 'bob');
+    const st = ctx.l.startPasskeySignIn(ip);
+    // Started, not awaited: the check is under way when the change comes.
+    const running = ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), ip, {});
+    change(ctx);
+    assert.deepEqual(await running, { ok: false, reason: 'expired' }, what);
+    assert.equal(ctx.l.sessions.size, 0, what);
+    // Not a failure of the address either: the user changed, the answer was not wrong.
+    assert.equal(ctx.l.addresses.count(ipKey(ip)), 0, what);
+    assert.equal(ctx.notes.length, 0, what);
+    assert.equal(ctx.l.epochOf('bob'), 1, what);
+  }
+  // Ended after the check, while the used passkey was being saved: signIn itself refuses it.
+  const ctx = await passkeyLogin();
+  const { a, handle } = await enroll(ctx, 'bob');
+  const st = ctx.l.startPasskeySignIn(ip);
+  const done = await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), ip, {});
+  assert.equal(done.ok, true);
+  ctx.l.endUser('bob');
+  assert.equal(await ctx.l.signIn(done.name, { epoch: done.epoch, device: done.device, ip, via: 'passkey' }), null);
+  assert.equal(ctx.l.sessions.size, 0);
+});
+
+test('passkey sign in: a counter that went back is refused, and is an audit line with the label of the passkey and the step', async () => {
+  const ctx = await passkeyLogin();
+  const { a, handle } = await enroll(ctx, 'bob', { counter: 10 });
+  const ip = '192.0.2.1';
+  let st = ctx.l.startPasskeySignIn(ip);
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle), ip, {})).ok, true);
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn(ip);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle, { counter: 4 }), ip, {}), INVALID);
+  assert.deepEqual(ctx.events, [['passkey-counter-error', { user: 'bob', passkey: 'Passkey 1', address: ip, step: 'sign-in' }]]);
+  assert.equal(ctx.store.passkeyById('bob', a.id).counter, 11, 'the counter stays');
+  assert.equal(ctx.l.addresses.count(ipKey(ip)), 1);
+  assert.equal(JSON.stringify(ctx.events).includes(a.id), false);
+  assert.equal(JSON.stringify(ctx.events).includes(handle), false);
+  // Synced passkeys always send 0, which is fine.
+  const synced = await enroll(ctx, 'carol', { counter: 0, backupEligible: true, backedUp: true });
+  for (let n = 0; n < 3; n++) {
+    ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+    const s2 = ctx.l.startPasskeySignIn('192.0.2.2');
+    assert.equal((await ctx.l.finishPasskeySignIn(s2.token, pkAnswer(synced.a, s2, synced.handle), '192.0.2.2', {})).ok, true);
+  }
+  assert.equal(ctx.events.length, 1);
+});
+
+test('passkey sign in: 500 counter errors write one audit line a day for the user and passkey, and the rest are failures.log notes', async () => {
+  const ctx = await passkeyLogin();
+  const { a, handle } = await enroll(ctx, 'bob', { counter: 10 });
+  const other = await enroll(ctx, 'carol', { counter: 10 });
+  for (let n = 0; n < 500; n++) {
+    const ip = `198.51.${Math.floor(n / 250)}.${(n % 250) + 1}`;
+    ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+    const st = ctx.l.startPasskeySignIn(ip);
+    assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(a, st, handle, { counter: 4 }), ip, {}), INVALID);
+  }
+  const lines = () => ctx.events.filter(([e]) => e === 'passkey-counter-error');
+  assert.equal(lines().length, 1);
+  assert.equal(ctx.notes.filter(([e]) => e === 'passkey-counter-error').length, 499);
+  // Another passkey has its own line, and the first one is a line again after a day.
+  const st = ctx.l.startPasskeySignIn('203.0.113.9');
+  await ctx.l.finishPasskeySignIn(st.token, pkAnswer(other.a, st, other.handle, { counter: 4 }), '203.0.113.9', {});
+  assert.equal(lines().length, 2);
+  ctx.clock.t += PASSKEY_AUDIT_MS;
+  const st2 = ctx.l.startPasskeySignIn('203.0.113.10');
+  await ctx.l.finishPasskeySignIn(st2.token, pkAnswer(a, st2, handle, { counter: 4 }), '203.0.113.10', {});
+  assert.equal(lines().length, 3);
+});
+
+test('passkey sign in: the waits of the address come before the check; a known device of the passkey\'s owner is held back by its own wait only', async () => {
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  const carol = await enroll(ctx, 'carol');
+  const ip = '203.0.113.5';
+  const device = newDeviceId();
+  await ctx.store.addDevice('bob', deviceHash(device));
+  const others = newDeviceId();
+  await ctx.store.addDevice('carol', deviceHash(others));
+  for (let n = 0; n < 30; n++) ctx.l.addresses.fail(ipKey(ip));
+  // Throttled without the passkey being looked at: its counter does not move, and the token is used up.
+  let st = ctx.l.startPasskeySignIn(ip);
+  const answer = pkAnswer(bob.a, st, bob.handle);
+  const r = await ctx.l.finishPasskeySignIn(st.token, answer, ip, {});
+  assert.equal(r.reason, 'throttled');
+  assert.ok(r.retryAfterMs > 0);
+  assert.equal(ctx.store.passkeyById('bob', bob.a.id).lastUsed, null);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, answer, ip, {}), { ok: false, reason: 'expired' });
+  const before = ctx.l.addresses.count(ipKey(ip));
+  assert.equal(ctx.notes.length, 0, 'a throttled try is not a failure');
+  // Someone else's device, or a made up one, does not help.
+  for (const deviceId of [others, newDeviceId(), 'junk', null]) {
+    ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+    st = ctx.l.startPasskeySignIn(ip);
+    assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), ip, { deviceId })).reason, 'throttled', String(deviceId));
+  }
+  assert.equal(ctx.l.addresses.count(ipKey(ip)), before);
+  // Bob's own device gets past the address, and the answer names it.
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn(ip);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), ip, { deviceId: device }), { ok: true, name: 'bob', epoch: 0, device: deviceHash(device), ref: ctx.store.passkeyById('bob', bob.a.id).ref });
+  // A wrong answer with the device counts for the device (and the address), not the user.
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn(ip);
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle, { uv: false }), ip, { deviceId: device }), INVALID);
+  assert.equal(ctx.l.pkDevices.count(`pkdevice:${deviceHash(device)}`), 1);
+  assert.equal(ctx.l.devices.count(`device:${deviceHash(device)}`), 0, 'the wait of the device for passwords is not touched');
+  assert.equal(ctx.l.codeUsers.size, 0);
+  // Enough of them and the device waits, though the address would not.
+  const ip2 = '198.51.100.40';
+  for (let n = 0; n < 12; n++) ctx.l.pkDevices.fail(`pkdevice:${deviceHash(device)}`);
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn(ip2);
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), ip2, { deviceId: device })).reason, 'throttled');
+  // Carol's passkey is not held back by that, nor by the wait of bob's device.
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn(ip2);
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(carol.a, st, carol.handle), ip2, { deviceId: device })).ok, true);
+  // A right passkey is not held back by the user's wrong codes either.
+  for (let n = 0; n < 60; n++) ctx.l.codeUsers.fail('user:carol');
+  assert.ok(ctx.l.codeUsers.wait('user:carol') > 0);
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  st = ctx.l.startPasskeySignIn('192.0.2.200');
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(carol.a, st, carol.handle), '192.0.2.200', {})).ok, true);
+});
+
+test('passkey sign in: starting is paced per address, with a burst and no backlog; and the open tokens are capped, the oldest going first', async () => {
+  const ctx = await passkeyLogin();
+  const ip = '192.0.2.1';
+  const tokens = [];
+  for (let n = 0; n < SIGNIN_BEGIN_BURST; n++) tokens.push(ctx.l.startPasskeySignIn(ip).token);
+  const paced = ctx.l.startPasskeySignIn(ip);
+  assert.equal(paced.ok, false);
+  assert.equal(paced.reason, 'paced');
+  assert.ok(paced.retryAfterMs > 0 && paced.retryAfterMs <= SIGNIN_BEGIN_INTERVAL_MS, String(paced.retryAfterMs));
+  assert.equal(Object.hasOwn(paced, 'token'), false);
+  // Per address: the first five of ten are gone, the last five are there.
+  assert.deepEqual([...ctx.l.signInChallenges.keys()], tokens.slice(-SIGNIN_CHALLENGES_PER_ADDRESS));
+  assert.equal(SIGNIN_CHALLENGES_PER_ADDRESS, 5);
+  // Another address, and another IPv6 /64, have their own pace and their own five.
+  assert.ok(ctx.l.startPasskeySignIn('192.0.2.2').token);
+  assert.ok(ctx.l.startPasskeySignIn('2001:db8::1').token);
+  assert.equal(ctx.l.startPasskeySignIn('2001:db8::2').ok, undefined, 'the same /64 shares its pace');
+  assert.equal(ctx.l.signInChallenges.size, SIGNIN_CHALLENGES_PER_ADDRESS + 3);
+  // One more turn each interval.
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS;
+  assert.ok(ctx.l.startPasskeySignIn(ip).token);
+  assert.equal(ctx.l.startPasskeySignIn(ip).reason, 'paced');
+  // Open tokens in all: the oldest go, whoever they are for.
+  const many = await passkeyLogin();
+  const first = many.l.startPasskeySignIn('10.0.0.1');
+  const all = [];
+  for (let n = 1; n < SIGNIN_CHALLENGES_MAX + 20; n++) all.push(many.l.startPasskeySignIn(`10.${(n >> 8) & 255}.${n & 255}.2`));
+  assert.ok(all.every((r) => typeof r.token === 'string'));
+  assert.equal(many.l.signInChallenges.size, SIGNIN_CHALLENGES_MAX);
+  assert.equal(many.l.signInChallenges.has(first.token), false, 'the oldest went first');
+  assert.equal(many.l.signInChallenges.has(all.at(-1).token), true);
+  assert.equal(many.l.signInChallenges.has(all[0].token), false);
+  // Old ones are swept by the next start, not kept for ever.
+  many.clock.t += CHALLENGE_MS;
+  many.l.startPasskeySignIn('192.0.2.1');
+  assert.equal(many.l.signInChallenges.size, 1);
+});
+
+test('passkey sign in: off gives null and unavailable; so do passkeys that are off, and a store that cannot be read, which also clears the tokens', async () => {
+  const off = await passkeyLogin({ settings: { passkeySignIn: false } });
+  const { a, handle } = await enroll(off, 'bob');
+  assert.equal(off.l.passkeySignIn, false);
+  assert.equal(off.l.startPasskeySignIn('192.0.2.1'), null);
+  const fake = { options: { challenge: 'x' } };
+  assert.deepEqual(await off.l.finishPasskeySignIn('A'.repeat(43), pkAnswer(a, fake, handle), '192.0.2.1', {}), { ok: false, reason: 'unavailable' });
+  assert.equal(off.l.signInChallenges.size, 0);
+  // A settings object without the field (older callers) is on.
+  assert.equal((await passkeyLogin({ settings: { passkeySignIn: undefined } })).l.passkeySignIn, true);
+  // No passkeys at this site: off, whatever the switch says.
+  const none = await passkeyLogin({ siteUrl: null });
+  assert.equal(none.l.passkeySignIn, false);
+  assert.equal(none.l.startPasskeySignIn('192.0.2.1'), null);
+  assert.deepEqual(await none.l.finishPasskeySignIn('A'.repeat(43), {}, '192.0.2.1', {}), { ok: false, reason: 'unavailable' });
+
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  const ip = '192.0.2.1';
+  const before = ctx.l.startPasskeySignIn(ip);
+  const answer = pkAnswer(bob.a, before, bob.handle);
+  const err = new Error('cannot be read');
+  ctx.store.unreadable = err;
+  ctx.store.onUnreadable(err);
+  assert.equal(ctx.l.signInChallenges.size, 0);
+  assert.deepEqual(ctx.l.startPasskeySignIn(ip), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(await ctx.l.finishPasskeySignIn(before.token, answer, ip, {}), { ok: false, reason: 'unavailable' });
+  assert.equal(ctx.l.addresses.count(ipKey(ip)), 0);
+  // Lost while the check ran: expired, and no sign in.
+  ctx.store.unreadable = null;
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS * 2;
+  const st = ctx.l.startPasskeySignIn(ip);
+  const running = ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), ip, {});
+  ctx.store.unreadable = err;
+  assert.deepEqual(await running, { ok: false, reason: 'expired' });
+  ctx.store.unreadable = null;
+  ctx.clock.t += SIGNIN_BEGIN_INTERVAL_MS * 2;
+  const back = ctx.l.startPasskeySignIn(ip);
+  assert.equal((await ctx.l.finishPasskeySignIn(back.token, pkAnswer(bob.a, back, bob.handle), ip, {})).ok, true);
+});
+
+test('passkey sign in: a device made by a passkey alone is not a known device for password tries, and a password sign in there gets a device of its own', async () => {
+  const ctx = await passkeyLogin();
+  const ip = '203.0.113.9';
+  const epoch = ctx.l.epochOf('bob');
+  const made = await ctx.l.signIn('bob', { epoch, ip, via: 'passkey' });
+  assert.match(made.deviceId, /^pk[A-Za-z0-9_-]{20}$/);
+  assert.equal(ctx.store.hasDevice('bob', deviceHash(made.deviceId)), true);
+  assert.equal(ctx.l.sessions.map.get(made.id).via, 'passkey');
+  assert.equal(ctx.l.sessions.map.get(made.id).authAt, -Infinity);
+  // Wrong passwords with that device count as a stranger's: for the address and the name, not the device.
+  for (let n = 0; n < 3; n++) assert.equal((await ctx.l.attempt('bob', 'not it', ip, { device: made.deviceId })).reason, 'invalid');
+  assert.equal(ctx.l.devices.count(`device:${deviceHash(made.deviceId)}`), 0);
+  assert.equal(ctx.l.addresses.count(ipKey(ip)), 3);
+  // The right password there is no device either: the sign in that follows makes a new one.
+  const r = await ctx.l.attempt('bob', 'a good password', ip, { device: made.deviceId });
+  assert.equal(r.ok, true);
+  assert.equal(r.device, null);
+  const again = await ctx.l.signIn('bob', { epoch, device: r.device, deviceId: made.deviceId, ip });
+  assert.doesNotMatch(again.deviceId, /^pk/);
+  assert.equal(ctx.l.sessions.map.get(again.id).via, 'password');
+  assert.notEqual(again.deviceId, made.deviceId);
+  // A passkey sign in on its own device reuses it.
+  const reused = await ctx.l.signIn('bob', { epoch, device: deviceHash(made.deviceId), deviceId: made.deviceId, ip, via: 'passkey' });
+  assert.equal(reused.deviceId, made.deviceId);
+});
+
+test('known devices: the wrong passwords of all of a user\'s known devices together are held back past a ceiling, and a stranger cannot use it to lock the user out', async () => {
+  const ctx = await passkeyLogin();
+  const device = newDeviceId();
+  await ctx.store.addDevice('bob', deviceHash(device));
+  // A user has at most a few known devices, each held back by its own waits; the ceiling is for all
+  // of them together. Wrong passwords from addresses that hold no known device never count for it.
+  for (let n = 0; n < 3; n++) assert.equal((await ctx.l.attempt('bob', 'not it', `198.51.100.${n}`, { device: 'x'.repeat(22) })).reason, 'invalid');
+  assert.equal(ctx.l.deviceUsers.count('devuser:user:bob'), 0);
+  // Measured: the guesses a known device gets before and after the ceiling is reached, from fresh addresses.
+  let guesses = 0;
+  for (let n = 0; n < DEVICE_USER_CEILING; n++) ctx.l.deviceUsers.fail('devuser:user:bob');
+  const before = await ctx.l.attempt('bob', 'not it', '203.0.113.1', { device });
+  assert.equal(before.reason, 'invalid');
+  assert.equal(ctx.l.deviceUsers.count('devuser:user:bob'), DEVICE_USER_CEILING + 1);
+  ctx.l.devices.clear(`device:${deviceHash(device)}`);
+  for (let n = 0; n < 5; n++) {
+    const r = await ctx.l.attempt('bob', 'not it', `203.0.113.${10 + n}`, { device });
+    if (r.reason === 'invalid') guesses++;
+    else assert.equal(r.reason, 'throttled');
+  }
+  assert.equal(guesses, 0, 'past the ceiling the known device is held back');
+  // The right password from the known device waits too, but a new address, a stranger and the owner elsewhere do not.
+  assert.equal((await ctx.l.attempt('bob', 'a good password', '203.0.113.50', { device })).reason, 'throttled');
+  assert.equal((await ctx.l.attempt('bob', 'a good password', '198.51.100.200', {})).ok, true);
+});
+
+test('passkey sign in: it clears the passkey wait of the device only, and leaves the waits of the address, the name and the device for passwords as they are', async () => {
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  const ip = '203.0.113.20';
+  const device = newDeviceId();
+  await ctx.store.addDevice('bob', deviceHash(device));
+  for (let n = 0; n < 8; n++) ctx.l.addresses.fail(ipKey(ip));
+  ctx.l.devices.fail(`device:${deviceHash(device)}`);
+  ctx.l.pkDevices.fail(`pkdevice:${deviceHash(device)}`);
+  ctx.l.accounts.fail(`user:bob|${ipKey(ip)}`);
+  const st = ctx.l.startPasskeySignIn(ip);
+  assert.equal((await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle), ip, { deviceId: device })).ok, true);
+  assert.equal(ctx.l.addresses.count(ipKey(ip)), 8);
+  assert.equal(ctx.l.accounts.count(`user:bob|${ipKey(ip)}`), 1);
+  assert.equal(ctx.l.pkDevices.count(`pkdevice:${deviceHash(device)}`), 0, 'the passkey wait of the device is cleared');
+  assert.equal(ctx.l.devices.count(`device:${deviceHash(device)}`), 1, 'the wait of the device for passwords is not');
+});
+
+test('passkey sign in: begins are paced for a whole /56 and a whole /48, with larger bursts, and a refused one gives back the turns taken before it', async () => {
+  const ctx = await passkeyLogin();
+  const l = ctx.l;
+  // Many /64s of one /56: each has turns of its own, the /56 runs out after its burst.
+  let ok = 0;
+  let denied = null;
+  for (let n = 0; n < SIGNIN_NET56_BURST + 5; n++) {
+    const r = l.startPasskeySignIn(`2001:db8:1:ab${n.toString(16).padStart(2, '0')}::1`);
+    if (r.token) ok++;
+    else denied ??= r;
+  }
+  assert.equal(ok, SIGNIN_NET56_BURST);
+  assert.equal(denied.reason, 'paced');
+  assert.ok(denied.retryAfterMs > 0 && denied.retryAfterMs <= SIGNIN_NET56_INTERVAL_MS);
+  // The refused address kept its own turn (it can begin after the wait with its full burst).
+  const refused = '2001:db8:1:abff::1';
+  assert.equal(l.signInTurns.take(ipKey(refused)).ok, true);
+  // Another /56 of the same /48 still works; the /48 runs out after its burst, over all its /56s.
+  let total = SIGNIN_NET56_BURST;
+  let stopped = null;
+  for (let block = 0; block < 6 && !stopped; block++) {
+    for (let n = 0; n < SIGNIN_NET56_BURST && !stopped; n++) {
+      if (block === 0) continue;
+      const r = l.startPasskeySignIn(`2001:db8:1:${(0xb0 + block).toString(16)}${n.toString(16).padStart(2, '0')}::1`);
+      if (r.token) total++;
+      else stopped = r;
+    }
+  }
+  assert.equal(total, SIGNIN_NET48_BURST);
+  assert.equal(stopped.reason, 'paced');
+  // Past the wait, begins work again, and an address of another network was never held back.
+  assert.ok(l.startPasskeySignIn('2001:db8:2::1').token);
+  ctx.clock.t += 10_000;
+  assert.ok(l.startPasskeySignIn('2001:db8:1:ab01::9').token);
+});
+
+test('passkey sign in: with the token map full, the oldest token of the network that holds the most goes, not the oldest of all', async () => {
+  const ctx = await passkeyLogin();
+  const l = ctx.l;
+  for (let n = 0; n < SIGNIN_CHALLENGES_MAX; n++) {
+    const net = n < 100 ? 'other' : 'flood';
+    l.signInChallenges.set(`t${n}`, { challenge: 'c', addressKey: `a${n}`, netKey: net, created: ctx.clock.t });
+  }
+  const r = l.startPasskeySignIn('192.0.2.77');
+  assert.ok(r.token);
+  assert.equal(l.signInChallenges.size, SIGNIN_CHALLENGES_MAX);
+  // The oldest of all (t0, of the small network) is still there; the oldest of the flood went.
+  assert.equal(l.signInChallenges.has('t0'), true);
+  assert.equal(l.signInChallenges.has('t100'), false);
+});
+
+// ---- a planted passkey cannot push the owner out (sessions, devices, pacing, the audit log) ----
+
+test('sessions: passkey sessions have a cap of their own and push out only each other, whatever the sign ins', () => {
+  let t = 0;
+  const s = new Sessions({ idleMs: 10 * MIN, maxAgeMs: 30 * MIN, max: 1000, now: () => t });
+  const mine = [];
+  for (let i = 0; i < 20; i++) {
+    t += 1;
+    mine.push(s.create('bob'));
+  }
+  for (let i = 0; i < 25; i++) {
+    t += 1;
+    s.create('Bob', { via: 'passkey' });
+  }
+  assert.equal(s.list('bob').filter((x) => !mine.includes(x.id)).length, MAX_PASSKEY_SESSIONS_PER_USER, 'at most five passkey sessions');
+  assert.ok(mine.every((id) => s.get(id)), 'not one session made with the password ended');
+  // A password sign in past the cap pushes out the user's least used one, as before.
+  s.create('bob');
+  assert.equal(s.get(mine[0]), null);
+});
+
+test('sessions: with the cap of all sessions reached, a passkey sign in ends a passkey session of its user, or someone else\'s, never its user\'s password session', () => {
+  let t = 0;
+  const s = new Sessions({ idleMs: 10 * MIN, maxAgeMs: 30 * MIN, max: 6, now: () => t });
+  const pw = [s.create('bob'), s.create('bob'), s.create('bob'), s.create('bob')];
+  s.create('carol');
+  s.create('carol');
+  for (let i = 0; i < 10; i++) {
+    t += 1;
+    s.create('bob', { via: 'passkey' });
+  }
+  assert.ok(pw.every((id) => s.get(id)), 'bob\'s password sessions all stay');
+  assert.equal(s.size, 6);
+  // Bob has the most; with no passkey session of his own to push out, one of carol's goes (not his).
+  const only = new Sessions({ idleMs: 10 * MIN, maxAgeMs: 30 * MIN, max: 4, now: () => t });
+  const bobs = [only.create('bob'), only.create('bob'), only.create('bob')];
+  const carol = only.create('carol');
+  only.create('bob', { via: 'passkey' });
+  assert.ok(bobs.every((id) => only.get(id)));
+  assert.equal(only.get(carol), null);
+});
+
+test('passkey sign in: 25 sign ins by passkey do not end a session made with the password', async () => {
+  const ctx = await passkeyLogin();
+  const epoch = ctx.l.epochOf('bob');
+  const first = await ctx.l.signIn('bob', { epoch, ip: '203.0.113.1' });
+  const others = [];
+  for (let i = 0; i < 19; i++) others.push(await ctx.l.signIn('bob', { epoch, ip: '203.0.113.1' }));
+  for (let i = 0; i < 25; i++) {
+    ctx.clock.t += 1;
+    assert.ok(await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey' }));
+  }
+  assert.ok(ctx.l.sessions.get(first.id), 'the first session of the password is still there');
+  assert.ok(others.every((x) => ctx.l.sessions.get(x.id)));
+  assert.equal(ctx.l.sessions.list('bob').length, 20 + MAX_PASSKEY_SESSIONS_PER_USER);
+});
+
+test('passkey sign in: 15 sign ins without a device cookie do not make the user forget a device made with the password', async () => {
+  const ctx = await passkeyLogin();
+  const epoch = ctx.l.epochOf('bob');
+  const made = [];
+  for (let i = 0; i < 8; i++) {
+    const id = newDeviceId();
+    await ctx.store.addDevice('bob', deviceHash(id));
+    made.push(deviceHash(id));
+    ctx.clock.t += 1000;
+  }
+  for (let i = 0; i < 15; i++) {
+    ctx.clock.t += 1000;
+    const r = await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey' });
+    assert.match(r.deviceId, /^pk/);
+    assert.ok(made.every((h) => ctx.store.hasDevice('bob', h)), `after sign in ${i + 1}`);
+  }
+  const pk = ctx.store.devices('bob').filter((d) => !made.includes(d.hash));
+  assert.equal(pk.length, 2, 'only what room is left: 8 + 2 of the 10');
+  // With the list full of devices made with the password, a new passkey device is not kept at all.
+  for (const h of [newDeviceId(), newDeviceId()]) await ctx.store.addDevice('bob', deviceHash(h));
+  const none = await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey' });
+  assert.ok(none.id);
+  assert.equal(ctx.store.devices('bob').length, MAX_DEVICES);
+  assert.ok(made.every((h) => ctx.store.hasDevice('bob', h)));
+});
+
+test('passkey sign in: at most three devices made by a passkey, pushing out each other; a password device pushes those out first', async () => {
+  const ctx = await passkeyLogin();
+  const epoch = ctx.l.epochOf('bob');
+  const ids = [];
+  for (let i = 0; i < 6; i++) {
+    ctx.clock.t += 1000;
+    ids.push((await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey' })).deviceId);
+  }
+  assert.equal(ctx.store.devices('bob').length, MAX_PASSKEY_DEVICES);
+  assert.deepEqual(ids.slice(3).map((id) => ctx.store.hasDevice('bob', deviceHash(id))), [true, true, true]);
+  assert.deepEqual(ids.slice(0, 3).map((id) => ctx.store.hasDevice('bob', deviceHash(id))), [false, false, false]);
+  // Seven devices of the password fill the rest; the next one takes the place of a passkey device.
+  const pw = [];
+  for (let i = 0; i < 7; i++) {
+    ctx.clock.t += 1000;
+    pw.push(deviceHash((await ctx.l.signIn('bob', { epoch, ip: '203.0.113.1' })).deviceId));
+  }
+  assert.equal(ctx.store.devices('bob').length, MAX_DEVICES);
+  ctx.clock.t += 1000;
+  const next = await ctx.l.signIn('bob', { epoch, ip: '203.0.113.1' });
+  assert.equal(ctx.store.devices('bob').length, MAX_DEVICES);
+  assert.ok(pw.every((h) => ctx.store.hasDevice('bob', h)) && ctx.store.hasDevice('bob', deviceHash(next.deviceId)));
+  assert.equal(ctx.store.devices('bob').filter((d) => ids.some((id) => deviceHash(id) === d.hash)).length, 2);
+});
+
+test('passkey sign in: after a restart the cap of three still holds for the devices whose browsers come back, and no password device is forgotten', async () => {
+  const { l, store, keys, users, dataDir } = await keyedLogin();
+  const pw = [];
+  for (let i = 0; i < 4; i++) pw.push(deviceHash((await l.signIn('bob', { epoch: l.epochOf('bob') })).deviceId));
+  const cookies = [];
+  for (let i = 0; i < 3; i++) cookies.push((await l.signIn('bob', { epoch: l.epochOf('bob'), via: 'passkey' })).deviceId);
+  assert.equal(store.devices('bob').length, 7);
+  store.close();
+  // A restart: the tags are not on disk, so a new store does not know which devices those are.
+  const again = await UserStore.open({ dataDir, configUsers: users, keys, warn: () => {} });
+  const l2 = createLogin({ users, store: again, hasher: fakeHasher, audit: { write: async () => {}, flush: async () => {} }, log: () => {}, sleep: async () => {} });
+  const epoch = l2.epochOf('bob');
+  // The browsers that come back with their cookie are tagged again.
+  for (const deviceId of cookies) assert.ok(await l2.signIn('bob', { epoch, device: deviceHash(deviceId), deviceId, via: 'passkey' }));
+  assert.equal(again.devices('bob').length, 7);
+  const made = [];
+  for (let i = 0; i < 3; i++) made.push((await l2.signIn('bob', { epoch, via: 'passkey' })).deviceId);
+  const left = again.devices('bob').map((d) => d.hash);
+  assert.ok(pw.every((h) => left.includes(h)), 'no device made with the password is forgotten');
+  assert.deepEqual(left.filter((h) => !pw.includes(h)).sort(), made.map(deviceHash).sort(), 'only the three newest passkey devices are left');
+  assert.equal(left.length, 7);
+  again.close();
+});
+
+test('passkey sign in: 100 sign ins when the list is full of devices made with the password write at most one audit line', async () => {
+  const ctx = await passkeyLogin();
+  await ctx.store.setRole('bob', 'admin', { force: true });
+  await enroll(ctx, 'bob');
+  const ref = ctx.store.passkeys('bob')[0].ref;
+  const epoch = ctx.l.epochOf('bob');
+  const old = [];
+  for (let i = 0; i < MAX_DEVICES; i++) {
+    const h = deviceHash(newDeviceId());
+    await ctx.store.addDevice('bob', h);
+    old.push(h);
+  }
+  ctx.clock.t += 3 * 86_400_000;
+  for (let i = 0; i < 100; i++) {
+    ctx.clock.t += 1000;
+    assert.ok(await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey', ref }));
+  }
+  assert.deepEqual(ctx.store.devices('bob').map((d) => d.hash), old);
+  assert.equal(ctx.events.filter(([e]) => e === 'device-added').length, 0, 'nothing was added');
+  assert.ok(ctx.events.length <= 1, JSON.stringify(ctx.events));
+  assert.equal(ctx.notes.filter(([e]) => e === 'device-added').length, 100);
+});
+
+test('device ids: those made for the password never start with the passkey prefix, those for a passkey always do', () => {
+  for (let i = 0; i < 60_000; i++) assert.doesNotMatch(newDeviceId(), /^pk/);
+  for (let i = 0; i < 100; i++) assert.match(newDeviceId(true), /^pk[A-Za-z0-9_-]{20}$/);
+  assert.equal(newDeviceId().length, 22);
+});
+
+test('passkey sign in: successful sign ins are paced per user, with a 3 burst and a minute each; the password and other users are not held back', async () => {
+  const ctx = await passkeyLogin();
+  const bob = await enroll(ctx, 'bob');
+  const carol = await enroll(ctx, 'carol');
+  const sign = async (who, ip) => {
+    const st = ctx.l.startPasskeySignIn(ip);
+    return ctx.l.finishPasskeySignIn(st.token, pkAnswer(who.a, st, who.handle), ip, {});
+  };
+  let n = 0;
+  const ip = () => `198.51.100.${(n++ % 200) + 1}`;
+  for (let i = 0; i < PASSKEY_SIGNIN_BURST; i++) assert.equal((await sign(bob, ip())).ok, true, `sign in ${i + 1}`);
+  const refused = await sign(bob, ip());
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'paced');
+  assert.ok(refused.retryAfterMs > 0 && refused.retryAfterMs <= PASSKEY_SIGNIN_INTERVAL_MS);
+  assert.deepEqual(ctx.notes.filter(([e]) => e === 'passkey-sign-in-paced').map(([, k]) => k), ['user:bob']);
+  // A refused one is no failed try for the address or the name, and the password is not held back.
+  assert.equal(ctx.l.addresses.size, 0);
+  assert.equal((await ctx.l.attempt('bob', 'a good password', '203.0.113.60')).ok, true);
+  assert.equal((await sign(carol, ip())).ok, true, 'another user\'s passkey is not held back');
+  // A minute later one more.
+  ctx.clock.t += PASSKEY_SIGNIN_INTERVAL_MS;
+  assert.equal((await sign(bob, ip())).ok, true);
+  assert.equal((await sign(bob, ip())).reason, 'paced');
+  // Wrong answers do not take a turn.
+  ctx.clock.t += PASSKEY_SIGNIN_INTERVAL_MS * 3;
+  for (let i = 0; i < 5; i++) {
+    const at = ip();
+    const st = ctx.l.startPasskeySignIn(at);
+    assert.deepEqual(await ctx.l.finishPasskeySignIn(st.token, pkAnswer(bob.a, st, bob.handle, { uv: false }), at, {}), INVALID);
+  }
+  assert.equal((await sign(bob, ip())).ok, true, 'the turns were all still there');
+});
+
+test('passkey sign in: 1,000 sign ins of an admin write one passkey-sign-in audit line a day for the user and passkey, the rest are counted in failures.log', async () => {
+  const ctx = await passkeyLogin();
+  await ctx.store.setRole('bob', 'admin', { force: true });
+  await enroll(ctx, 'bob');
+  const ref = ctx.store.passkeys('bob')[0].ref;
+  const epoch = ctx.l.epochOf('bob');
+  const lines = () => ctx.events.filter(([e]) => e === 'passkey-sign-in');
+  for (let i = 0; i < 1000; i++) {
+    ctx.clock.t += 1000;
+    assert.ok(await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey', ref }));
+  }
+  assert.equal(lines().length, 1);
+  assert.equal(lines()[0][1].passkey, ctx.store.passkeyByRef('bob', ref).name);
+  assert.equal(ctx.notes.filter(([e]) => e === 'passkey-sign-in').length, 999);
+  // A day later: one more. Another passkey of the same user is its own.
+  ctx.clock.t += PASSKEY_AUDIT_MS;
+  // (The devices of yesterday are forgotten, so that their being pushed out is no audit line of its own.)
+  ctx.store.dropDevices('bob');
+  await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey', ref });
+  await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey', ref });
+  assert.equal(lines().length, 2);
+  await ctx.l.signIn('bob', { epoch, ip: '198.51.100.7', via: 'passkey', ref: 'f'.repeat(16) });
+  assert.equal(lines().length, 3);
+  // A viewer's are never audit lines.
+  const carol = await ctx.l.signIn('carol', { epoch: ctx.l.epochOf('carol'), ip: '198.51.100.7', via: 'passkey', ref });
+  assert.ok(carol);
+  assert.equal(lines().length, 3);
 });

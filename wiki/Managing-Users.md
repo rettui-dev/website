@@ -12,7 +12,7 @@ password, hash, secret, passkey id or device id is ever sent. On a phone the tab
 
 **What an admin can do.**
 
-- **Add a user** (website users only): a name (1 to 32 letters, digits, `.`, `-`, `_`), a role
+- **Add a user** (website users only): a name (1 to 32 letters, digits, `.`, `-`, `_`; `status-links` is kept for the website's own reads of the nodes and is refused in any case), a role
   (`admin`, `manage` or `viewer`), and a first password. Either the admin types one (12+
   characters, the same rules as a password change), or the page makes a one-time password (20
   random letters and digits) and shows it once, with a Copy button: it is never shown again, not
@@ -22,8 +22,14 @@ password, hash, secret, passkey id or device id is ever sent. On a phone the tab
   demoted here (see below). An admin may give themselves another role.
 - **Reset the password** of a website user: a one-time or typed password, as above, which they
   must change at their next sign in. An admin changes their own password on the Account page.
-- **Reset two-step sign-in**, for someone who lost their phone or security key: it turns the app
-  code off, removes every passkey and the recovery codes, and forgets every known device. The
+  **This does not stop a passkey.** A user with a passkey can still "Sign in with a passkey"
+  without the password (then they are asked to choose a new one). If the account may be in
+  someone else's hands, use Reset two-step as well. The Reset password window tells the admin so.
+  A user who changes their own password can tick "Also remove my other passkeys" (see
+  [Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)).
+- **Reset two-step sign-in**, for someone who lost their phone or security key, or whose account
+  may have been taken over: it turns the app
+  code off, removes every passkey (so none can sign in on its own any more) and the recovery codes, and forgets every known device. The
   dialog names what will go ("app code, 2 passkeys, recovery codes and known devices"). This works for users in the config file too.
   An admin turns their own off on the Account page.
 - **Delete** a website user who is not an admin (see below). An admin may delete themselves.
@@ -190,6 +196,19 @@ admin is left (another one in the store, or the user you are moving) before you 
 out of the config file. A config user's two-step sign-in and devices are kept in the store apart
 from the website users and are **not** moved: a store user made with the same name starts
 without two-step sign-in and without known devices, and must set it up again on the Account
-page. The old record stays, unused (the command line mentions it), and would be used again only
-if the name went back into the config file; reset it there first (`reset-2fa` with `--config`)
-if you want it gone.
+page. The old record is not used for anyone: at start the website warns about each config user who
+is gone from the config file but still has a record, and removes it, so that a user who is later
+given that name (in the config file or on the website) does not get the old passkeys or app code.
+Each record removed is a line in `audit.log`, `second-factor-orphaned`, with the user (lower case)
+and nothing else. (The command line, which does not read the config file, leaves such a record
+alone.) A user who is taken out of the config file by mistake and put back at the next start
+therefore has to set up two-step sign-in again. **Nothing is removed when the config file is not
+read at all (`CONFIG_FILE` is not set, as after a lost setting in a service file or a container
+started without it) or has no users**: a start like that is far more likely a mistake than every
+config user having left. The website then says at start that it left the records of that many users
+alone, and why, and the records are used again once the config file is back. If you really did
+remove all config users, the records stay until a config user exists and the next start; to
+remove them sooner, put a user back in the config file, start, and take them out again. A website user whose name is also in the config file cannot sign in, and
+their passkeys are not used either. A website user stored with the reserved name `status-links`
+(made by an older version or by editing `users.db`) is warned about at start, cannot sign in, and
+its role and password cannot be changed; delete it.

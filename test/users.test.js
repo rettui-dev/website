@@ -455,7 +455,7 @@ test('audit: the log is rotated at its size limit, keeps 3 files in all, each 06
 
 test('config: users only in users.json allow login settings and require_login, and lock every section by default', async () => {
   const { loadConfig, loadNodes } = await import('../lib/config.js');
-  const { SECTIONS } = await import('../lib/access.js');
+  const { ALL_SECTIONS: SECTIONS } = await import('../lib/access.js');
   const text = "login:\n  trusted_proxies: ['127.0.0.1']\n  max_sessions: 50\nnodes:\n  - address: a.test:1\n";
   assert.throws(() => loadConfig(text), /"login" needs "users"/);
   const c = loadConfig(text, { storeUsers: true });
@@ -478,7 +478,7 @@ test('server: with users only in the user store, a config with login settings st
   const { spawn } = await import('node:child_process');
   const { fileURLToPath } = await import('node:url');
   const net = await import('node:net');
-  const { SECTIONS } = await import('../lib/access.js');
+  const { ALL_SECTIONS: SECTIONS } = await import('../lib/access.js');
   const dataDir = await tmp();
   const key = crypto.randomBytes(32).toString('base64url');
   const seed = await UserStore.open({ dataDir, keys: new Keyring(new Map([[1, Buffer.from(key, 'base64url')]])), warn: () => {} });
@@ -1329,6 +1329,108 @@ test('passkeys: one id belongs to one passkey of one user only', async () => {
   store.close();
 });
 
+test('passkeys: passkeyOwner finds the owner of a credential id in website users and in config users\' records, and nobody else', async () => {
+  const configUsers = [await configUser('Alice', 'admin')];
+  const { store } = await open({ configUsers });
+  await store.createUser({ name: 'Bob', passwordHash: await hash() });
+  const [mine, hers] = [passkey('Phone'), passkey('Key')];
+  await store.addPasskey('Bob', mine);
+  await store.addPasskey('alice', hers);
+  assert.equal(store.passkeyOwner(mine.id), 'Bob', 'the name as the store keeps it');
+  assert.equal(store.passkeyOwner(hers.id), 'Alice');
+  // Unknown ids and anything that is not an id.
+  for (const id of [crypto.randomBytes(32).toString('base64url'), '', null, undefined, 42, {}, [mine.id], mine.id.toUpperCase()]) assert.equal(store.passkeyOwner(id), null, String(id));
+  // It only reads: no record was made for anyone.
+  assert.equal(store.factorRecord('nobody'), null);
+
+  // Gone with the passkey, and with the user.
+  await store.removePasskey('Bob', passkeyRef(mine.id));
+  assert.equal(store.passkeyOwner(mine.id), null);
+  const again = passkey('Phone again');
+  await store.addPasskey('Bob', again);
+  assert.equal(store.passkeyOwner(again.id), 'Bob');
+  await store.deleteUser('Bob', { force: true });
+  assert.equal(store.passkeyOwner(again.id), null);
+  await store.resetSecondFactor('alice');
+  assert.equal(store.passkeyOwner(hers.id), null);
+  store.close();
+});
+
+test('passkeys: the factor record of a config user who is gone never signs anyone in, is warned about at start, and is removed by the website', async () => {
+  const configUsers = [await configUser('Alice', 'admin'), await configUser('Zed')];
+  const { store, dataDir } = await open({ configUsers });
+  const p = passkey('Key');
+  await store.addPasskey('Zed', p);
+  store.close();
+  // The command line does not know the config file: it keeps the record, but it names nobody.
+  const cli = await reopen(dataDir, { configUsers: [configUsers[0]] });
+  assert.equal(cli.lookup('Zed'), null);
+  assert.equal(cli.passkeyOwner(p.id), null);
+  cli.close();
+  // The website: said at start, then removed.
+  const warned = [];
+  const web = await reopen(dataDir, { configUsers: [configUsers[0]], dropOrphans: true, warn: (m) => warned.push(m) });
+  assert.equal(warned.filter((m) => m.includes('"zed"')).length, 1);
+  assert.equal(web.passkeyOwner(p.id), null);
+  assert.equal(web.forgetOrphans(), 1);
+  assert.equal(row(dataDir, 'Zed', 'config'), null);
+  web.close();
+  // Put back in the config file (or a website user made with that name): nothing from before.
+  const back = await reopen(dataDir, { configUsers, dropOrphans: true });
+  assert.equal(back.passkeyOwner(p.id), null);
+  assert.equal(back.passkeys('Zed').length, 0);
+  assert.equal(back.secondFactorEnabled('Zed'), false);
+  back.close();
+});
+
+test('passkeys: a website user made over the record of a config user who was removed gets none of its passkeys', async () => {
+  const configUsers = [await configUser('Alice', 'admin'), await configUser('Zed')];
+  const { store, dataDir } = await open({ configUsers });
+  const p = passkey('Key');
+  await store.addPasskey('Zed', p);
+  store.close();
+  const web = await reopen(dataDir, { configUsers: [configUsers[0]], dropOrphans: true });
+  web.forgetOrphans();
+  await web.createUser({ name: 'zed', passwordHash: await hash() });
+  assert.equal(web.passkeyOwner(p.id), null);
+  assert.equal(web.secondFactorEnabled('zed'), false);
+  web.close();
+});
+
+test('passkeys: a website user shadowed by a config user of the same name cannot be named by a passkey', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'zed', passwordHash: await hash() });
+  const p = passkey('Key');
+  await store.addPasskey('zed', p);
+  assert.equal(store.passkeyOwner(p.id), 'zed');
+  store.close();
+  const warned = [];
+  const shadowed = await reopen(dataDir, { configUsers: [await configUser('Zed')], warn: (m) => warned.push(m) });
+  assert.equal(warned.some((m) => m.includes('also in the config file')), true);
+  assert.equal(shadowed.passkeyOwner(p.id), null);
+  shadowed.close();
+});
+
+test('users: a stored user named status-links is warned about at start and cannot sign in or have the role or password changed', async () => {
+  const { store, dataDir } = await open();
+  await store.createUser({ name: 'Other', passwordHash: await hash() });
+  store.close();
+  // Put there behind the store's back (an older version, or an edit of users.db).
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE));
+  sql.prepare("UPDATE users SET name = 'Status-Links', name_key = 'status-links' WHERE name_key = 'other'").run();
+  sql.close();
+  const warned = [];
+  const again = await reopen(dataDir, { warn: (m) => warned.push(m) });
+  assert.equal(warned.some((m) => /reserved/.test(m) && m.includes('Status-Links')), true, warned.join('|'));
+  for (const name of ['status-links', 'STATUS-LINKS']) {
+    assert.equal(again.find(name), null);
+    assert.equal(again.lookup(name), null);
+    await assert.rejects(again.setRole(name, 'admin'), { code: 'reserved-name' });
+    await assert.rejects(again.setPassword(name, await hash()), { code: 'reserved-name' });
+  }
+  again.close();
+});
+
 test('passkeys: removing the last second factor clears the recovery codes; TOTP off keeps them while a passkey is left', async () => {
   const { store, dataDir } = await open();
   await store.createUser({ name: 'bob', passwordHash: await hash() });
@@ -1505,4 +1607,35 @@ test('passkeys: a store without a database keeps them in memory', async () => {
   await store.usePasskey('bob', ref, { counter: 2 }).saved;
   assert.equal(store.passkeyByRef('bob', ref).counter, 2);
   assert.deepEqual(await store.removePasskey('bob', ref), { label: 'Phone', secondFactorOff: true });
+});
+
+test('store: setPassword with removeOtherPasskeys changes the password and the passkeys in one write, or neither', async () => {
+  const { store } = await open();
+  await store.createUser({ name: 'Bob', passwordHash: await hash() });
+  const keep = passkey('Keep');
+  const gone = passkey('Gone');
+  await store.addPasskey('Bob', keep);
+  await store.addPasskey('Bob', gone);
+  const before = store.factorRecord('Bob').passwordHash;
+  const next = await hash();
+  // A write that fails: not the password, not the passkeys.
+  const put = store.db.put.bind(store.db);
+  store.db.put = () => {
+    throw new Error('disk full');
+  };
+  await assert.rejects(store.setPassword('bob', next, { removeOtherPasskeys: { keep: passkeyRef(keep.id) } }), /disk full/);
+  store.db.put = put;
+  assert.equal(store.factorRecord('Bob').passwordHash, before);
+  assert.equal(store.passkeys('Bob').length, 2);
+  // Not asked for: the passkeys stay and nothing is counted.
+  assert.deepEqual(await store.setPassword('bob', next), { removedPasskeys: null });
+  assert.equal(store.passkeys('Bob').length, 2);
+  // Asked for, keeping one; then all of them (null).
+  assert.deepEqual(await store.setPassword('bob', await hash(), { removeOtherPasskeys: { keep: passkeyRef(keep.id) } }), { removedPasskeys: 1 });
+  assert.deepEqual(store.passkeys('Bob').map((p) => p.ref), [passkeyRef(keep.id)]);
+  assert.deepEqual(await store.setPassword('bob', await hash(), { removeOtherPasskeys: { keep: null } }), { removedPasskeys: 1 });
+  assert.equal(store.passkeys('Bob').length, 0);
+  assert.equal(store.secondFactorEnabled('Bob'), false);
+  assert.deepEqual(await store.setPassword('bob', await hash(), { removeOtherPasskeys: { keep: null } }), { removedPasskeys: 0 });
+  store.close();
 });

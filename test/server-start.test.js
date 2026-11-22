@@ -11,8 +11,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../lib/password.js';
 import { STORE_FILE, hashRecoveryCode } from '../lib/users.js';
-import { base32Encode } from '../lib/totp.js';
+import { base32Decode, base32Encode, totp } from '../lib/totp.js';
 import { DB_FILE, NO_KEY } from '../lib/userdb.js';
+import { Keyring, parseKeys } from '../lib/keys.js';
+import { UserStore } from '../lib/users.js';
+import { parsePhc } from '../lib/password.js';
+import { DatabaseSync } from 'node:sqlite';
 import { AUDIT_FILE } from '../lib/audit.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 
@@ -194,4 +198,100 @@ test('server: with users, the start says why passkeys are off: no address, or on
   assert.doesNotMatch(ip, /https address is not set/);
   await fs.writeFile(config, user + site('https://status.example.org'));
   assert.doesNotMatch((await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out, /passkeys: off/);
+});
+
+test('server: the start says when signing in with a passkey alone is turned off, and only when passkeys work', async () => {
+  const dataDir = await tmp();
+  const config = path.join(dataDir, 'config.yaml');
+  const user = `users:\n  - name: alice\n    password_hash: '${await hashPassword('a good password', undefined, fakeHasher)}'\nnodes:\n  - address: 127.0.0.1:9\n`;
+  const key = newKey();
+  const login = '\nlogin:\n  passkey_sign_in: false\n';
+  const off = /^passkey sign-in: off \(login\.passkey_sign_in is false\)$/m;
+  await fs.writeFile(config, `${user}${login}site:\n  url: https://status.example.org\n`);
+  assert.match((await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out, off);
+  // On (the default): nothing is said.
+  await fs.writeFile(config, `${user}site:\n  url: https://status.example.org\n`);
+  assert.doesNotMatch((await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out, /passkey sign-in/);
+  // Without a usable address passkeys are off altogether, and that is what is said.
+  await fs.writeFile(config, `${user}${login}`);
+  const none = (await startAndStop({ DATA_DIR: dataDir, CONFIG_FILE: config, USERS_KEY: key })).out;
+  assert.match(none, /^passkeys: off, as /m);
+  assert.doesNotMatch(none, /passkey sign-in/);
+});
+
+// A data directory where two config users, alice and Zed, each have an app code on (a second factor
+// record). The key is the one the server is given.
+async function seedFactors(dataDir, key) {
+  const phc = parsePhc(await hashPassword('a good password', undefined, fakeHasher));
+  const store = await UserStore.open({ dataDir, keys: new Keyring(parseKeys(key)), configUsers: [{ name: 'alice', phc, role: 'admin' }, { name: 'Zed', phc }], warn: () => {} });
+  for (const name of ['alice', 'Zed']) {
+    await store.beginTotp(name);
+    await store.enableTotp(name, totp(base32Decode(store.factorRecord(name).totp.secret), Date.now()));
+  }
+  store.close();
+}
+const factorRows = (dataDir) => {
+  const sql = new DatabaseSync(path.join(dataDir, DB_FILE), { readOnly: true });
+  try {
+    return sql.prepare("SELECT name_key FROM users WHERE kind = 'config' ORDER BY name_key").all().map((r) => r.name_key);
+  } finally {
+    sql.close();
+  }
+};
+const aliceConfig = async (dataDir) => {
+  const config = path.join(dataDir, 'config.yaml');
+  await fs.writeFile(config, `users:\n  - name: alice\n    password_hash: '${await hashPassword('a good password', undefined, fakeHasher)}'\n    role: admin\nnodes:\n  - address: 127.0.0.1:9\n`);
+  return config;
+};
+
+test('server: the second factors of a config user who is no longer in the config file are removed at start, one audit line each, with the user only', async () => {
+  const dataDir = await tmp();
+  const key = newKey();
+  await seedFactors(dataDir, key);
+  assert.deepEqual(factorRows(dataDir), ['alice', 'zed']);
+  const run1 = await startAndStop({ DATA_DIR: dataDir, USERS_KEY: key, CONFIG_FILE: await aliceConfig(dataDir) });
+  assert.match(run1.err, /"zed" has a second factor/);
+  assert.deepEqual(factorRows(dataDir), ['alice'], 'the record of Zed is gone, found by its lower-case key; alice keeps hers');
+  const lines = (await auditLines(dataDir)).filter((l) => l.event === 'second-factor-orphaned');
+  assert.deepEqual(lines.map((l) => Object.keys(l).sort()), [['event', 'time', 'user']]);
+  assert.deepEqual(lines.map((l) => l.user), ['zed']);
+  // Nothing is left to remove the next time.
+  await startAndStop({ DATA_DIR: dataDir, USERS_KEY: key, CONFIG_FILE: await aliceConfig(dataDir) });
+  assert.equal((await auditLines(dataDir)).filter((l) => l.event === 'second-factor-orphaned').length, 1);
+});
+
+test('server: the audit lines of removed second factors are written even when a later step of the start fails', async () => {
+  const dataDir = await tmp();
+  const key = newKey();
+  await seedFactors(dataDir, key);
+  const p = run({ PORT: '1', DATA_DIR: dataDir, USERS_KEY: key, CONFIG_FILE: await aliceConfig(dataDir), RELEASE_REPOS: 'not a repository' });
+  assert.equal(await p.exited, 1, p.out());
+  assert.match(p.err(), /RELEASE_REPOS/);
+  assert.deepEqual(factorRows(dataDir), ['alice']);
+  assert.deepEqual((await auditLines(dataDir)).filter((l) => l.event === 'second-factor-orphaned').map((l) => l.user), ['zed']);
+});
+
+test('server: without CONFIG_FILE no second factor is removed; it says so, and writes no audit line', async () => {
+  const dataDir = await tmp();
+  const key = newKey();
+  await seedFactors(dataDir, key);
+  const r = await startAndStop({ DATA_DIR: dataDir, USERS_KEY: key });
+  assert.match(r.err, /keeps the second factors .* of 2 users from the config file, but CONFIG_FILE is not set\. They were left alone/);
+  assert.deepEqual(factorRows(dataDir), ['alice', 'zed']);
+  assert.equal((await auditLines(dataDir)).some((l) => l.event === 'second-factor-orphaned'), false);
+  // And with the config file back, only the user who is not in it goes.
+  await startAndStop({ DATA_DIR: dataDir, USERS_KEY: key, CONFIG_FILE: await aliceConfig(dataDir) });
+  assert.deepEqual(factorRows(dataDir), ['alice']);
+});
+
+test('server: a config file with no users removes no second factor either, and says that the config file has none', async () => {
+  const dataDir = await tmp();
+  const key = newKey();
+  await seedFactors(dataDir, key);
+  const config = path.join(dataDir, 'config.yaml');
+  await fs.writeFile(config, 'nodes:\n  - address: 127.0.0.1:9\n');
+  const r = await startAndStop({ DATA_DIR: dataDir, USERS_KEY: key, CONFIG_FILE: config });
+  assert.match(r.err, /keeps the second factors .* of 2 users from the config file, but the config file has no users\./);
+  assert.deepEqual(factorRows(dataDir), ['alice', 'zed']);
+  assert.equal((await auditLines(dataDir)).some((l) => l.event === 'second-factor-orphaned'), false);
 });

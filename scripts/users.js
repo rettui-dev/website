@@ -39,7 +39,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAX_PASSWORD_BYTES, argon2Available, argon2id, hashPassword, parsePhc, weakPassword } from '../lib/password.js';
-import { ROLES, STORE_FILE, StoreBusyError, StoreError, USER_NAME_RE, UserError, UserStore, writeRefusal } from '../lib/users.js';
+import { ROLES, STORE_FILE, StoreBusyError, StoreError, USER_NAME_RE, UserError, UserStore, reservedName, writeRefusal } from '../lib/users.js';
 import { DB_FILE, RETIRED_FILE, checkSchema, retireJson } from '../lib/userdb.js';
 import { KEY_BYTES, KeyError, MAX_VERSION, MIN_VERSION, loadKeys } from '../lib/keys.js';
 import { loadConfigFile } from '../lib/config.js';
@@ -150,6 +150,7 @@ export function parseArgs(argv, env = {}) {
     if (f === '--delete') out.remove = true;
   }
   if (USER_CHANGES.includes(out.command) && !USER_NAME_RE.test(out.args[0])) throw new UsageError('a name is 1 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit');
+  if (out.command === 'create' && reservedName(out.args[0])) throw new UsageError('that name is reserved for the website itself: choose another');
   if (out.command === 'create' && !ROLES.includes(out.role)) throw new UsageError(`create needs --role, one of ${ROLES.join(', ')}`);
   if (out.command === 'set-role' && !ROLES.includes(out.args[1])) throw new UsageError(`the role must be one of ${ROLES.join(', ')}`);
   if (out.command === 'gen-key') {
@@ -170,6 +171,7 @@ const REFUSED = {
   unknown: 'there is no such user',
   exists: 'a user with this name exists already (in the user store or in the config file)',
   'bad-name': 'a name is 1 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit',
+  'reserved-name': 'that name is reserved for the website itself: choose another',
   'bad-role': `the role must be one of ${ROLES.join(', ')}`,
   full: 'the user store is full; delete users that are not needed any more',
 };

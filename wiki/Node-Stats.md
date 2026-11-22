@@ -279,6 +279,17 @@ other request.
   prefers reduced motion.
 - **Lines** are solid from the proxy to its nodes and dashed to external peers. A line is grey
   when either end is down.
+- **Links between nodes** are arcs in a gutter on the right of the node column: a dot at the node
+  that dials, an arrowhead at the node that is dialled (once the link is up, traffic flows both
+  ways). A solid arrow was found in the node's own config, an outlined arrow was declared by the
+  operator, a dotted line with a bar is turned off in the dialling node's config, a line with two
+  slashes has a node that is down, and a hollow circle at each end means the direction is not
+  known. Two nodes that dial each other are one line with an arrowhead at both ends. Pointing at or
+  focusing a node makes its links thicker and fades the others. On a narrow screen the arcs are not
+  drawn: the page says the links are listed on each node's card, where "Dials", "Dialled by" and
+  "Linked with" chips name them. The text for screen readers and "Show as list" says the same
+  (`Front: up, ... Dials Back, Side (turned off). Dialled by Netspeak (declared).`). How the links
+  are found, and what is published, is in [Links between nodes](Connecting-Nodes#links-between-nodes).
 - **Upstreams** are for display only. A node's `upstreams` lists the external backbone peers it
   connects out to, so the map can draw them as grey "External" boxes. The server never resolves,
   probes or fetches an upstream's address, and an upstream has no state. The same name and

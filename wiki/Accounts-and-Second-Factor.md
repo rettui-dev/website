@@ -119,7 +119,8 @@ a second factor before the password is right.
 **Changes need a recent sign in.** Changing the password, setting up, turning on or off the second
 factor, making new recovery codes and signing out other sessions need a sign in from the last 15
 minutes. After that the page asks for the password again (`POST /api/account/reauth`) and then goes
-on. That can be done at most 10 times an hour from one session and 20 times an hour for one user,
+on. That can be done at most 10 times an hour from one session and 20 times an hour for one user
+(20 times a day for the user in sessions made with a passkey alone),
 right and wrong passwords alike (a right one does not start the count again); past that the
 answer is 429 with `Retry-After`. Some need more in the request itself, and the page asks for it
 in a pop-up (the step-up dialog) when the button is pressed, not in boxes on the page:
@@ -196,7 +197,7 @@ changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enabl
 `/devices/remove-others`, `/passkeys/challenge`, `/passkeys/begin`, `/passkeys/finish`,
 `/passkeys/rename` and `/passkeys/remove`. `GET /api/account` also says whether passkeys are
 available here (`passkeys.available`, with `reason: "no-address"` when `site.url` is not set), and
-lists them (`passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and `here`, false for a
+lists them (`passkeys.signIn` says whether signing in with a passkey alone is on; `passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and `here`, false for a
 passkey made for another address). Ids are short references, never the credential id or key. They
 only take JSON (`Content-Type: application/json`, at most 16 KiB, as a new passkey's answer is
 several kilobytes), with the header `X-Rettui-Request: 1`, from the page itself (`Sec-Fetch-Site:
@@ -208,6 +209,8 @@ Without a session the answer is 401. All answers carry `Cache-Control: no-store`
 0600: `password-changed` (`with`), `totp-enabled`, `totp-disabled` (`with`: `password`,
 `password+code` or `password+recovery`),
 `recovery-code-used` (with how many are `left`), `recovery-codes-regenerated` (`with`),
+`second-factor-orphaned` (the record of a config user who is gone from the config file was removed
+at start, `user` only, see [Managing users](Managing-Users#managing-users)),
 `sessions-ended` (how many were `ended`), `device-added` (a sign in from a new browser),
 `device-removed` and `devices-removed` (how many were `removed`, and how many sessions that
 ended, `ended`). Turning on a first second factor (the app code, or a first passkey, with no
@@ -216,7 +219,7 @@ other second factor on) adds `second-factor-first` as well (`role`, `method`: `t
 Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
 user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
 `ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
-its counter did not go up, see "Passkeys"). A passkey is named by its name only: no credential id
+its counter did not go up, see "Passkeys"; `step: "sign-in"` when it was a sign in with the passkey alone). `device-added` has `with: "passkey"` for a sign in with a passkey alone. A passkey is named by its name only: no credential id
 or key is ever in a line. Changes on the Users page add `user-created` (`role`, and `password`:
 `generated` or `typed`), `user-role-changed` (`from`, `to`), `user-deleted` (`role`),
 `user-password-reset` (`password`) and `user-second-factor-reset` (with `passkeys`: how many
@@ -245,8 +248,9 @@ new browsers over and over cannot push the other events out of `audit.log`.
 
 Wrong passwords and codes go to `failures.log` instead, so that no amount of them can push a
 security event out of `audit.log`. They are summed up: one line per name and kind
-(`password-failures`, `second-factor-failures`, and `device-added` for the new browsers above,
-counted in `failures`) per 15 minutes, with how many `failures`, from
+(`password-failures`, `second-factor-failures`, `reauth-failures` for wrong passwords asked again in
+a session made with a passkey alone, `passkey-sign-in`, `passkey-sign-in-paced` and `device-added`
+for the new browsers above, counted in `failures`) per 15 minutes, with how many `failures`, from
 how many `addresses` (`100+` past a hundred), the `lastAddress`, and when the first and last were
 (`from`, `to`). Every name gets its lines, known or not. A summary is written once its 15 minutes
 are over, and all of them when the server stops. At most 10000 are summed up at once; past that
@@ -259,10 +263,10 @@ still pushes old lines out, and whoever takes over the server can change the cop
 
 ## Passkeys
 
-A passkey is a second step after the password. The user's phone, computer or security key confirms
-it is them, with a fingerprint, face or PIN, and there is nothing to type. It sits next to the app
-code (TOTP), not in place of the password: **passkey-only sign-in is not offered yet**. Users can
-have an app code, passkeys, or both.
+A passkey is the user's phone, computer or security key confirming it is them, with a fingerprint,
+face or PIN, and there is nothing to type. It works as the second step after the password, next to
+the app code (TOTP), and it can also sign in on its own (see "Signing in with a passkey alone").
+Users can have an app code, passkeys, or both.
 
 **What you need.** Users (see [Logins](Logins#logins)) and the site's public address:
 
@@ -319,6 +323,98 @@ same waits and limits, and it is summed up in `failures.log` as
 `second-factor-failures` (see "Two-step sign-in with an app code (TOTP)"). The same choice is made
 when a change on the Account page or the Users page asks for a second step (the dialog asks for the
 passkey first).
+
+### Signing in with a passkey alone
+
+The sign in dialog has a second button under the form, "Sign
+in with a passkey". It needs no name and no password: the browser lists the passkeys it has for this
+site, the user picks one and confirms with their fingerprint, face or PIN, and that is the whole
+sign in. It counts as a complete two-step sign in (the passkey is what you have, the fingerprint or
+PIN is what you are or know), so there is no second prompt, and it passes the rule that managing
+nodes needs two-step sign-in. It is on wherever passkeys work; set `login.passkey_sign_in: false`
+(or `LOGIN_PASSKEY_SIGN_IN=false`) to turn it off (see [Configuration](Configuration)). It is
+offered on the site's own address only (`site.url`).
+
+- **Which passkeys work.** The server needs the passkey to be discoverable, so that the browser can
+  list it without a name. Passkeys made by phones, computers and password managers (iCloud, Google,
+  Windows Hello, 1Password, Bitwarden) are, and work at once. Some security keys, and every key
+  that only speaks the older U2F, are not: the browser shows no passkey for them. The sign in says
+  "No passkey was used. If yours did not show up, sign in with your name and password, then add a
+  passkey on your account page." Adding the passkey again makes a discoverable one; the old one can
+  stay as a second step. Nothing is stored about which passkeys are discoverable, and the user
+  store does not change.
+- **What is checked.** The server finds the account from the passkey's id and the user handle the
+  passkey sends (a random value kept for the user, never their name), and checks that the user
+  verified themselves, the signature, the address, and the counter, as for the second step.
+  The passkey must send the user's own handle. A passkey that does not (an old record) still
+  works as a second step.
+- **Adding the same security key again.** A browser does not make a second passkey on a security
+  key that already holds one for this site: it refuses. To make a discoverable passkey on such a
+  key, remove the old passkey first (the key then holds one that works on its own), or use another
+  key. The site asks the browser to prefer a discoverable passkey; that is a preference, and some
+  keys still make one that cannot sign in alone.
+- **Changes still need the password.** A session made with a passkey alone has not given the
+  password, so it is not "recently signed in": every change on the Account page, the Users page and
+  the Manage page (changing the password, setting up or turning off the app code, new recovery codes,
+  adding, renaming or removing a passkey, signing out other sessions, forgetting devices) first asks
+  for the password, and then, for the changes that already asked for one, for a second step as
+  before. The password is good for 15 minutes in that session, as after a password sign in. The page
+  asks by itself ("Enter your password again to do this"). A sign in with the password and a passkey
+  as the second step has just given the password, so it is not asked at once. A passkey session has
+  its own count of password tries per user, 20 a day (the owner's password sessions have 20 an
+  hour, apart), so someone who holds a stolen passkey cannot use up the tries of the owner's own
+  sessions. A wrong password given again in such a session is counted in `failures.log` as
+  `reauth-failures` for the user (the password sessions' own slips are not). Once the 20 are used,
+  the answer is 429 with a wait of up to a day; the owner can still sign in with the password, which
+  gives sessions with their own tries. The wait before node changes after a user's first second factor
+  (see [Managing nodes](Managing-Nodes#managing-nodes)) is not shortened or started by it.
+- **Known devices.** A browser signed in with a passkey alone is remembered as a device for passkey
+  sign ins only. A password typed there is treated as from a new device (it gets the waits of the
+  address and the name), and a password sign in on that browser makes a device of its own. Wrong
+  passwords from all of a user's known devices together are also held back after 200 of them. A
+  user has at most 3 such devices, and a new one pushes out only the oldest of them, never a device
+  made with the password (when the list of 10 holds only those, the new browser is simply not
+  remembered). Their ids start with `pk`; the ids of the others never do. The server keeps no other
+  record of which is which, so that `users.db` stays as older versions read it; after a restart the
+  devices of an earlier run count as the others when the list is full.
+- **Limits against someone who holds a passkey.** A user has at most 5 sessions made with a passkey
+  alone; a new one ends the oldest of those and never a session made with the password, however
+  often it is used. Sign ins that work are paced for each user: three at once, then one a minute
+  (429 with a wait, "Too many passkey sign ins for this user right now"; the password is not
+  held back and neither are other users). A passkey that does not work on a browser the user has
+  made known counts in a wait of its own for passkeys, and a passkey that works clears only that
+  one: it gives the browser no fresh tries at the password.
+- **Any role may use it**, admins and managers too.
+- **Failures** are one and the same answer ("That passkey did not work. Try again, or sign in with
+  your name and password."), count for the address and not for the user, and are summed up in
+  `failures.log` as `passkey-sign-in-failures` (with the address, never a name or a passkey). A
+  sign in by a manager or an admin is an `audit.log` line, `passkey-sign-in` (the user, the role, the
+  passkey's name and the address, never its id or the user handle), but at most one a day for each
+  user and passkey, and also one with a new browser that has its own `device-added` line; the others
+  are only counted in `failures.log` as `passkey-sign-in`, and so are all of those of viewers. So
+  nobody who signs in over and over can push the older lines out of `audit.log`. Sign ins refused
+  because a user signed in too often are counted as `passkey-sign-in-paced`. A new browser's
+  `device-added` line says `with: "passkey"`. A counter that went back is the usual `passkey-counter-error`, with `step:
+  "sign-in"`. See [Logins](Logins#logins) for the routes, the limits and the waits.
+
+> **Warning: a passkey keeps signing in after a password change.** Changing or resetting the
+> password does not remove a passkey on its own, so a passkey that someone else added (with the
+> password and a phished code, say) still signs in afterwards. When you change your own password,
+> tick **Also remove my other passkeys** (see below). When an account may be in someone else's
+> hands, an admin should use **Reset two-step** (the Users page, or `scripts/users.js reset-2fa`),
+> which removes every passkey, and not only "Reset password": the Reset password window says so.
+
+**Also remove my other passkeys.** The form that changes the password has a tick box with this
+name, off by default and shown only while you have passkeys. Tick it when you think someone else may
+have added a passkey. The change is confirmed as always (the current password and a second step).
+When it is confirmed with a passkey, every passkey except that one is removed; when it is confirmed
+with a code from the app or a recovery code, all passkeys are removed. You can add them again
+afterwards. It is one write with the password change: both change or, if the write fails, neither (the answer
+is 500 and says nothing was changed), and other sessions are signed out as
+for any password change, the page says how many passkeys were removed, and `audit.log` gets
+`passkeys-removed-with-password` with the count (never a passkey id). Left unticked, nothing changes
+but the password, and the page reminds you that passkeys still sign in. Nobody can ask for it
+without the same confirmation: the request is refused like any password change without it.
 
 **Synced and device-bound.** Some passkeys are copied by the user's password manager or phone
 account to their other devices ("synced"); others stay on one device or security key

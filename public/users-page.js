@@ -266,7 +266,7 @@
   // ---- the dialog for a change to one user ----
   var KINDS = {
     role: { path: '/api/users/role', title: 'Change the role', go: 'Change role', why: function (u) { return u.name + ' is signed out everywhere, and signs in again with the new role.'; } },
-    password: { path: '/api/users/reset-password', title: 'Reset the password', go: 'Reset password', danger: true, why: function (u) { return 'The password of ' + u.name + ' stops working now, and they are signed out everywhere. They must choose a new one when they sign in with the one you set.'; } },
+    password: { path: '/api/users/reset-password', title: 'Reset the password', go: 'Reset password', danger: true, why: function (u) { return 'The password of ' + u.name + ' stops working now, and they are signed out everywhere. They must choose a new one when they sign in with the one you set. Their passkeys still sign them in without a password. To stop those too, use Reset two-step sign-in, which removes them.'; } },
     factor: { path: '/api/users/reset-second-factor', title: 'Reset two-step sign-in', go: 'Reset two-step sign-in', danger: true, why: function (u) { return 'This turns off two-step sign-in for ' + u.name + ', removes their ' + removed(u) + ', and signs them out everywhere. Their password alone then signs them in, until they set it up again.'; } },
     delete: { path: '/api/users/delete', title: 'Delete user', go: 'Delete', danger: true, why: function (u) { return 'This deletes ' + u.name + ' and signs them out everywhere. It cannot be undone.'; } }
   };

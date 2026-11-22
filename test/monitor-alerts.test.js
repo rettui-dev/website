@@ -1,4 +1,5 @@
 import test from 'node:test';
+import util from 'node:util';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -122,10 +123,15 @@ test('end to end: a webhook goes out for the down and the recovery, and the prob
   await alerts.idle();
   assert.deepEqual(bodies.map((b) => b.event), ['down', 'recovered']);
   assert.match(bodies[0].message, /^Front \(a\.test:1\) is down since 12:01 UTC\.$/);
+  // A link watcher knows the hosts the nodes' configs point at (here 10.77.9.9): they stay in private fields.
+  const { LinkWatcher } = await import('../lib/links.js');
+  const watcher = new LinkWatcher({ client: { has: () => true, call: async () => ({ ok: false, error: 'network' }) }, entries: [{ key: 'a.test:1', name: 'Front', host: 'a.test', port: 1, manageHost: '10.77.9.9', statsHost: null }] });
+  m.attachLinks(watcher);
+  await watcher.refresh();
   // Nothing of the channel is in what the site publishes or saves.
-  const published = JSON.stringify(m.snapshot()) + JSON.stringify(m.incidentList()) + JSON.stringify(m);
+  const published = JSON.stringify(m.snapshot()) + JSON.stringify(m.incidentList()) + JSON.stringify(m) + JSON.stringify(watcher) + util.inspect(m, { depth: Infinity, showHidden: true }) + util.inspect(watcher, { depth: Infinity, showHidden: true });
   const saved = (await Promise.all((await fs.readdir(dir)).map((f) => fs.readFile(path.join(dir, f), 'utf8')))).join('');
-  for (const text of [published, saved]) assert.ok(!/SECRETPATH|hooks\.example|secret-0123456789abcdef/.test(text));
+  for (const text of [published, saved]) assert.ok(!/SECRETPATH|hooks\.example|secret-0123456789abcdef|10\.77\.9\.9/.test(text));
 });
 
 test('the monitor feeds the announce queue to the alerts, and a node without one is never watched', async () => {
