@@ -36,7 +36,8 @@ async fn start(path: &std::path::Path, healthcheck: bool) -> Result<(), String> 
     let secret = read_secret(&config.secret_file, |warning| tracing::warn!("{warning}")).map_err(|e| e.to_string())?;
     let listener = TcpListener::bind(config.listen).await.map_err(|e| format!("cannot listen on {}: {e}", config.listen))?;
     let lxmf = Arc::new(Lxmf::start(&config).await?);
-    tracing::info!("listening on {}; {} recipient(s)", config.listen, config.recipients.len());
+    let named = if config.website_recipients { ", and the addresses the website names" } else { "" };
+    tracing::info!("listening on {}; {} recipient(s){named}", config.listen, config.recipients.len());
     lxmf_bridge::run(&config, secret, listener, lxmf.clone(), Retry::default(), shutdown_signal()).await;
     tracing::info!("stopping");
     lxmf.shutdown().await;

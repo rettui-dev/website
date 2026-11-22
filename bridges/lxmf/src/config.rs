@@ -24,6 +24,12 @@ const DEFAULT_ENTRY_POINT: &str = "rns.rettui.dev:4242";
 const DEFAULT_NAME: &str = "rettui alerts";
 const DEFAULT_MAX_AGE: u64 = 300;
 const DEFAULT_MAX_BODY: usize = 16 * 1024;
+const DEFAULT_PER_RECIPIENT: u32 = 10;
+const DEFAULT_RECIPIENTS_PER_HOUR: u32 = 50;
+const DEFAULT_WEBSITE_SLOTS: u32 = 4;
+const DEFAULT_WEBSITE_QUEUE: u32 = 20;
+const DEFAULT_WEBSITE_MAX_STAMP_COST: u32 = 12;
+const DEFAULT_WEBSITE_DELIVERY_SECONDS: u64 = 300;
 
 /// A configuration problem, in words fit to print.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +62,15 @@ struct Raw {
     secret_file: String,
     identity_file: String,
     display_name: Option<String>,
+    #[serde(default)]
     recipients: Vec<String>,
+    website_recipients: Option<bool>,
+    per_recipient_per_hour: Option<u32>,
+    recipients_per_hour: Option<u32>,
+    website_slots: Option<u32>,
+    website_queue: Option<u32>,
+    website_max_stamp_cost: Option<u32>,
+    website_delivery_seconds: Option<u64>,
     entry_points: Option<Vec<String>>,
     propagation_node: Option<String>,
     max_age_seconds: Option<u64>,
@@ -72,6 +86,17 @@ pub struct Config {
     pub identity_file: PathBuf,
     pub display_name: String,
     pub recipients: Vec<Hash>,
+    /// Whether the website may name the address an alert goes to (a `to` in the body).
+    pub website_recipients: bool,
+    /// The most messages an hour to one named address, and the most different named addresses an hour.
+    pub per_recipient_per_hour: u32,
+    pub recipients_per_hour: u32,
+    /// For named addresses, apart from the list: delivery slots, queue room, the highest stamp cost
+    /// worked out, and the most seconds one whole delivery may take.
+    pub website_slots: u32,
+    pub website_queue: u32,
+    pub website_max_stamp_cost: u32,
+    pub website_delivery_seconds: u64,
     pub entry_points: Vec<EntryPoint>,
     pub propagation_node: Option<Hash>,
     pub max_age_seconds: u64,
@@ -90,15 +115,59 @@ impl Config {
 
     /// Checks the text of a config file; `base` is what relative paths in it are relative to.
     pub fn parse(text: &str, base: &Path) -> Result<Self, ConfigError> {
-        let raw: Raw = toml::from_str(text).map_err(|e| ConfigError(format!("bridge.toml: {}", e.message())))?;
+        let raw: Raw = toml::from_str(text).map_err(|e| {
+            // A value of the wrong type is pointed at, not named: say which setting it was.
+            let key = e.span().and_then(|span| text.get(..span.start)).and_then(|before| before.lines().last()).and_then(|line| {
+                let key = line.split_once('=')?.0.trim();
+                (!key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(key)
+            });
+            match key {
+                Some(key) => ConfigError(format!("bridge.toml: {key}: {}", e.message())),
+                None => ConfigError(format!("bridge.toml: {}", e.message())),
+            }
+        })?;
         let listen = raw.listen.as_deref().unwrap_or(DEFAULT_LISTEN);
         let listen = listen.parse().or_else(|_| fail(format!("listen: {listen:?} is not an address like 127.0.0.1:8742")))?;
         let display_name = raw.display_name.unwrap_or_else(|| DEFAULT_NAME.to_string());
         if display_name.is_empty() || display_name.chars().count() > 64 || display_name.chars().any(char::is_control) {
             return fail("display_name: 1 to 64 characters, no control characters");
         }
-        if raw.recipients.is_empty() || raw.recipients.len() > MAX_RECIPIENTS {
-            return fail(format!("recipients: give 1 to {MAX_RECIPIENTS} destination hashes"));
+        let website_recipients = raw.website_recipients.unwrap_or(false);
+        // With the website naming the addresses, the list may be empty: it is then only for alerts
+        // that name nobody.
+        let least = if website_recipients { 0 } else { 1 };
+        if raw.recipients.len() < least || raw.recipients.len() > MAX_RECIPIENTS {
+            return fail(if website_recipients {
+                format!("recipients: give at most {MAX_RECIPIENTS} destination hashes")
+            } else {
+                format!(
+                    "recipients: give 1 to {MAX_RECIPIENTS} destination hashes (or set website_recipients = true to send only to addresses the website names)"
+                )
+            });
+        }
+        let per_recipient_per_hour = raw.per_recipient_per_hour.unwrap_or(DEFAULT_PER_RECIPIENT);
+        if !(1..=100).contains(&per_recipient_per_hour) {
+            return fail("per_recipient_per_hour: 1 to 100");
+        }
+        let recipients_per_hour = raw.recipients_per_hour.unwrap_or(DEFAULT_RECIPIENTS_PER_HOUR);
+        if !(1..=1000).contains(&recipients_per_hour) {
+            return fail("recipients_per_hour: 1 to 1000");
+        }
+        let website_slots = raw.website_slots.unwrap_or(DEFAULT_WEBSITE_SLOTS);
+        if !(1..=16).contains(&website_slots) {
+            return fail("website_slots: 1 to 16");
+        }
+        let website_queue = raw.website_queue.unwrap_or(DEFAULT_WEBSITE_QUEUE);
+        if !(1..=100).contains(&website_queue) {
+            return fail("website_queue: 1 to 100");
+        }
+        let website_max_stamp_cost = raw.website_max_stamp_cost.unwrap_or(DEFAULT_WEBSITE_MAX_STAMP_COST);
+        if website_max_stamp_cost > 28 {
+            return fail("website_max_stamp_cost: 0 to 28");
+        }
+        let website_delivery_seconds = raw.website_delivery_seconds.unwrap_or(DEFAULT_WEBSITE_DELIVERY_SECONDS);
+        if !(30..=3600).contains(&website_delivery_seconds) {
+            return fail("website_delivery_seconds: 30 to 3600");
         }
         let mut recipients: Vec<Hash> = Vec::new();
         for (i, text) in raw.recipients.iter().enumerate() {
@@ -151,6 +220,13 @@ impl Config {
             identity_file: base.join(raw.identity_file),
             display_name,
             recipients,
+            website_recipients,
+            per_recipient_per_hour,
+            recipients_per_hour,
+            website_slots,
+            website_queue,
+            website_max_stamp_cost,
+            website_delivery_seconds,
             entry_points,
             propagation_node,
             max_age_seconds,
@@ -249,6 +325,67 @@ mod tests {
         assert_eq!(config.recipients, [parse_hash(HASH).unwrap()]);
         assert_eq!(config.propagation_node, None);
         assert!(config.allow_from.is_empty());
+        assert!(!config.website_recipients);
+        assert_eq!((config.per_recipient_per_hour, config.recipients_per_hour), (10, 50));
+    }
+
+    #[test]
+    fn website_recipients_and_its_limits_are_read() {
+        let config = with_recipient("website_recipients = true\nper_recipient_per_hour = 100\nrecipients_per_hour = 1").unwrap();
+        assert!(config.website_recipients);
+        assert_eq!((config.per_recipient_per_hour, config.recipients_per_hour), (100, 1));
+        let config = with_recipient("per_recipient_per_hour = 1\nrecipients_per_hour = 1000").unwrap();
+        assert_eq!((config.per_recipient_per_hour, config.recipients_per_hour), (1, 1000));
+    }
+
+    #[test]
+    fn the_named_address_pool_has_defaults_and_bounds() {
+        let config = with_recipient("").unwrap();
+        assert_eq!(
+            (config.website_slots, config.website_queue, config.website_max_stamp_cost, config.website_delivery_seconds),
+            (4, 20, 12, 300)
+        );
+        let config =
+            with_recipient("website_slots = 16\nwebsite_queue = 100\nwebsite_max_stamp_cost = 28\nwebsite_delivery_seconds = 3600")
+                .unwrap();
+        assert_eq!(
+            (config.website_slots, config.website_queue, config.website_max_stamp_cost, config.website_delivery_seconds),
+            (16, 100, 28, 3600)
+        );
+        let config =
+            with_recipient("website_slots = 1\nwebsite_queue = 1\nwebsite_max_stamp_cost = 0\nwebsite_delivery_seconds = 30").unwrap();
+        assert_eq!(
+            (config.website_slots, config.website_queue, config.website_max_stamp_cost, config.website_delivery_seconds),
+            (1, 1, 0, 30)
+        );
+        for (setting, range) in [
+            ("website_slots = 0", "website_slots: 1 to 16"),
+            ("website_slots = 17", "website_slots: 1 to 16"),
+            ("website_queue = 0", "website_queue: 1 to 100"),
+            ("website_queue = 101", "website_queue: 1 to 100"),
+            ("website_max_stamp_cost = 29", "website_max_stamp_cost: 0 to 28"),
+            ("website_max_stamp_cost = -1", "website_max_stamp_cost"),
+            ("website_delivery_seconds = 29", "website_delivery_seconds: 30 to 3600"),
+            ("website_delivery_seconds = 3601", "website_delivery_seconds: 30 to 3600"),
+        ] {
+            let error = with_recipient(setting).expect_err(setting).to_string();
+            assert!(error.contains(range), "{setting}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_list_may_be_empty_only_when_the_website_names_the_addresses() {
+        let config = parse("website_recipients = true").unwrap();
+        assert!(config.recipients.is_empty());
+        assert!(parse("website_recipients = true\nrecipients = []").unwrap().recipients.is_empty());
+        for off in ["", "website_recipients = false", "recipients = []\nwebsite_recipients = false"] {
+            let error = parse(off).expect_err(off).to_string();
+            assert!(error.contains("recipients: give 1 to 16") && error.contains("website_recipients"), "{error}");
+        }
+        // The upper bound and the checks on what is listed stay.
+        let many = (0..17).map(|i| format!("\"{i:032x}\"")).collect::<Vec<_>>().join(", ");
+        assert!(parse(&format!("website_recipients = true\nrecipients = [{many}]")).unwrap_err().to_string().contains("recipients"));
+        assert!(parse("website_recipients = true\nrecipients = [\"abc\"]").unwrap_err().to_string().contains("recipients[0]"));
     }
 
     #[test]
@@ -292,6 +429,12 @@ mod tests {
             (&format!("recipients = [\"{HASH}\"]\nmax_body_bytes = 10"), "max_body_bytes"),
             (&format!("recipients = [\"{HASH}\"]\ndisplay_name = \"\""), "display_name"),
             (&format!("recipients = [\"{HASH}\"]\ncolour = 1"), "colour"),
+            (&format!("recipients = [\"{HASH}\"]\nper_recipient_per_hour = 0"), "per_recipient_per_hour"),
+            (&format!("recipients = [\"{HASH}\"]\nper_recipient_per_hour = 101"), "per_recipient_per_hour"),
+            (&format!("recipients = [\"{HASH}\"]\nper_recipient_per_hour = -1"), "per_recipient_per_hour"),
+            (&format!("recipients = [\"{HASH}\"]\nrecipients_per_hour = 0"), "recipients_per_hour"),
+            (&format!("recipients = [\"{HASH}\"]\nrecipients_per_hour = 1001"), "recipients_per_hour"),
+            (&format!("recipients = [\"{HASH}\"]\nwebsite_recipients = \"yes\""), "website_recipients"),
             (&format!("recipients = [\"{HASH}\"]\nallow_from = [\"10.0.0.0/8\"]"), "allow_from[0]"),
             (&format!("recipients = [\"{HASH}\"]\nallow_from = [\"nope\"]"), "allow_from[0]"),
         ];

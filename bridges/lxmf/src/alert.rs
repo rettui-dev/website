@@ -13,11 +13,13 @@ pub struct Alert {
     pub content: String,
 }
 
-/// The two fields of the website's generic webhook body the bridge uses; the rest is ignored.
+/// The fields of the website's generic webhook body the bridge uses; the rest is ignored. `to` is
+/// kept as text here: the server decides what it means.
 #[derive(Deserialize)]
 struct Body {
     event: String,
     message: String,
+    to: Option<String>,
 }
 
 /// Why a body is not an alert.
@@ -28,7 +30,13 @@ impl Alert {
     /// Reads the generic webhook body: `event` is the title and `message` the text, cut to
     /// [`MAX_CONTENT_CHARS`] characters.
     pub fn parse(body: &[u8]) -> Result<Self, NotAnAlert> {
-        let Body { event, message } = serde_json::from_slice(body).map_err(|_| NotAnAlert)?;
+        Self::parse_with_to(body).map(|(alert, _)| alert)
+    }
+
+    /// Like [`Alert::parse`], and also the body's optional `to` (the address the website wants this
+    /// alert sent to), unchecked.
+    pub fn parse_with_to(body: &[u8]) -> Result<(Self, Option<String>), NotAnAlert> {
+        let Body { event, message, to } = serde_json::from_slice(body).map_err(|_| NotAnAlert)?;
         let word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ' ');
         if event.is_empty() || event.chars().count() > MAX_TITLE_CHARS || !event.chars().all(word) {
             return Err(NotAnAlert);
@@ -39,7 +47,7 @@ impl Alert {
         if content.is_empty() {
             return Err(NotAnAlert);
         }
-        Ok(Self { title: event, content })
+        Ok((Self { title: event, content }, to))
     }
 }
 
@@ -108,6 +116,18 @@ mod tests {
         ] {
             assert_eq!(Alert::parse(bad), Err(NotAnAlert), "{}", String::from_utf8_lossy(bad));
         }
+    }
+
+    #[test]
+    fn the_target_is_read_apart_from_the_alert() {
+        let with = br#"{"event":"down","message":"x","to":"<0123456789abcdef0123456789abcdef>"}"#;
+        let (alert, to) = Alert::parse_with_to(with).unwrap();
+        assert_eq!(alert, Alert::parse(&body("down", "x")).unwrap());
+        assert_eq!(to.as_deref(), Some("<0123456789abcdef0123456789abcdef>"));
+        assert_eq!(Alert::parse_with_to(&body("down", "x")).unwrap().1, None);
+        assert_eq!(Alert::parse_with_to(br#"{"event":"down","message":"x","to":null}"#).unwrap().1, None);
+        // Not text: not an alert.
+        assert_eq!(Alert::parse_with_to(br#"{"event":"down","message":"x","to":5}"#), Err(NotAnAlert));
     }
 
     #[test]

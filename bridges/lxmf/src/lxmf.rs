@@ -7,18 +7,19 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use lxmf_core::handlers::{compression_support_from_app_data, get_announce_app_data, parse_pn_announce_data, stamp_cost_from_app_data};
 use lxmf_core::message_api::{DeliveryMethod, LxMessage, LxMessageDraft, MessageError, SignedLxMessage};
 use lxmf_core::propagation_send::{AdvertisedNodePolicy, EncryptionBinding, PreparedNode, PropagationEnvelope};
+use lxmf_core::stamper::StampControl;
 use rns_runtime::prelude::*;
 
 use crate::alert::Alert;
 use crate::config::{Config, EntryPoint, Hash};
 use crate::http::unix_now;
-use crate::queue::Sender;
+use crate::queue::{Delivery, Sender};
 
 const DELIVERY_ASPECT: &str = "lxmf.delivery";
 /// A delivery proof or a transfer that takes longer than this has failed.
@@ -180,24 +181,36 @@ impl Lxmf {
         }
     }
 
-    fn message(&self, to: Hash, alert: &Alert, app_data: Option<&[u8]>) -> Result<SignedLxMessage, String> {
+    /// The signed message with its stamp worked out, if the recipient asks for one, checked against the
+    /// highest cost the delivery allows. A message is stamped once for a delivery: a next try (or the
+    /// propagation node after a direct try) uses the same one while the recipient's cost is the same.
+    async fn stamped_message(&self, to: Hash, alert: &Alert, app_data: Option<&[u8]>, delivery: &Delivery) -> Result<LxMessage, String> {
+        let cost = app_data.and_then(stamp_cost_from_app_data);
+        check_cost(cost, delivery)?;
+        let same = |kept: &mut Kept| kept.message.as_ref().filter(|(was, _)| *was == cost).map(|(_, message)| message.clone());
+        if let Some(message) = delivery.with_kept(same) {
+            return Ok(message);
+        }
         let mut draft =
             LxMessageDraft::new(to, self.source, &alert.title, &alert.content, DeliveryMethod::Direct).map_err(|e| e.to_string())?;
-        draft.stamp_cost = app_data.and_then(stamp_cost_from_app_data);
-        if let Some(cost) = draft.stamp_cost.filter(|cost| *cost > MAX_STAMP_COST) {
-            return Err(format!("the recipient asks for a stamp cost of {cost}, more than the bridge will work out ({MAX_STAMP_COST})"));
-        }
+        draft.stamp_cost = cost;
         let key = self.identity.get_signing_key().ok_or("the identity has no signing key")?;
-        draft.sign(&key).map_err(|e| e.to_string())
+        let signed = draft.sign(&key).map_err(|e| e.to_string())?;
+        let message = if signed.stamp_cost().is_none() {
+            signed.finalize(None).map_err(|e| e.to_string())?
+        } else {
+            off_thread(delivery, move |ctl| stamp(signed, ctl)).await?.map_err(|e| e.to_string())?
+        };
+        delivery.with_kept(|kept: &mut Kept| kept.message = Some((cost, message.clone())));
+        Ok(message)
     }
 
     /// Direct delivery: a Link to the recipient, and the message over it.
-    async fn direct(&self, to: Hash, alert: &Alert) -> Result<(), String> {
+    async fn direct(&self, to: Hash, alert: &Alert, delivery: &Delivery) -> Result<(), String> {
         self.find_path(to).await?;
         let recipient = self.recall(to).await?;
         let compress = recipient.app_data.as_deref().is_none_or(compression_support_from_app_data);
-        let message = self.message(to, alert, recipient.app_data.as_deref())?;
-        let packed = finish(message).await?;
+        let packed = self.stamped_message(to, alert, recipient.app_data.as_deref(), delivery).await?.wire_bytes().to_vec();
         let options = LinkConnectOptions {
             path_timeout: Duration::from_secs(30),
             client_label: "lxmf-bridge".into(),
@@ -218,29 +231,41 @@ impl Lxmf {
     }
 
     /// Store and forward: the message encrypted for the recipient and handed to the propagation node.
-    async fn propagate(&self, node: Hash, to: Hash, alert: &Alert) -> Result<(), String> {
+    async fn propagate(&self, node: Hash, to: Hash, alert: &Alert, delivery: &Delivery) -> Result<(), String> {
         // The recipient may be offline: only its key is needed, not a path.
         let recipient = self.recall(to).await?;
         self.find_path(node).await?;
         let node_info = self.recall(node).await?;
         let stamp_cost = node_info.app_data.as_deref().and_then(parse_pn_announce_data).map_or(0.0, |data| data.stamp_cost);
-        if stamp_cost > MAX_STAMP_COST {
-            return Err(format!("the propagation node asks for a stamp cost of {stamp_cost}, more than the bridge will work out"));
+        let cap = cost_cap(delivery);
+        if stamp_cost > cap {
+            return Err(format!("the propagation node asks for a stamp cost of {stamp_cost}, more than the bridge will work out ({cap})"));
         }
-        let message = self.message(to, alert, recipient.app_data.as_deref())?;
-        let (public, ratchet) = (recipient.identity, recipient.ratchet);
-        let packed = tokio::task::spawn_blocking(move || {
-            let message = stamp(message)?;
-            let binding = EncryptionBinding::for_recipient(&public.get_public_key(), ratchet.as_ref());
-            let mut envelope = PropagationEnvelope::new(message, binding, stamp_cost, |plaintext| {
-                public.encrypt(plaintext, ratchet.as_ref()).map_err(|e| MessageError::PackFailed(e.to_string()))
-            })?;
-            let policy = AdvertisedNodePolicy { stamp_cost, transfer_limit_kb: f64::MAX, recorded_at: 0. };
-            envelope.pack_for(PreparedNode { node, policy }, unix_now() as f64)
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        let message = self.stamped_message(to, alert, recipient.app_data.as_deref(), delivery).await?;
+        let id = message.message_id();
+        let done = |kept: &mut Kept| kept.packed.as_ref().filter(|(n, i, _)| *n == node && *i == id).map(|(_, _, packed)| packed.clone());
+        let packed = match delivery.with_kept(done) {
+            Some(packed) => packed,
+            None => {
+                let (public, ratchet) = (recipient.identity, recipient.ratchet);
+                let packed = off_thread(delivery, move |ctl| {
+                    let binding = EncryptionBinding::for_recipient(&public.get_public_key(), ratchet.as_ref());
+                    let mut envelope = PropagationEnvelope::new_cancellable(
+                        message,
+                        binding,
+                        stamp_cost,
+                        |plaintext| public.encrypt(plaintext, ratchet.as_ref()).map_err(|e| MessageError::PackFailed(e.to_string())),
+                        ctl,
+                    )?;
+                    let policy = AdvertisedNodePolicy { stamp_cost, transfer_limit_kb: f64::MAX, recorded_at: 0. };
+                    envelope.pack_for_cancellable(PreparedNode { node, policy }, unix_now() as f64, ctl)
+                })
+                .await?
+                .map_err(|e| e.to_string())?;
+                delivery.with_kept(|kept: &mut Kept| kept.packed = Some((node, id, packed.clone())));
+                packed
+            }
+        };
         let options = LinkConnectOptions {
             path_timeout: Duration::from_secs(30),
             client_label: "lxmf-bridge.propagation".into(),
@@ -259,31 +284,79 @@ impl Lxmf {
 }
 
 impl Sender for Lxmf {
+    fn own_address(&self) -> Option<Hash> {
+        Some(self.source)
+    }
+
     async fn send(&self, to: Hash, alert: &Alert) -> Result<(), String> {
-        let direct = self.direct(to, alert).await;
+        self.send_with(to, alert, &Delivery::default()).await
+    }
+
+    async fn send_with(&self, to: Hash, alert: &Alert, delivery: &Delivery) -> Result<(), String> {
+        let direct = self.direct(to, alert, delivery).await;
         match (direct, self.propagation_node) {
             (Ok(()), _) => Ok(()),
+            // The propagation node would be asked for the same stamp.
+            (Err(e), _) if delivery.refused() => Err(e),
             (Err(e), Some(node)) => {
-                tracing::info!("direct delivery to {} failed ({e}); trying the propagation node", hex::encode(to));
-                self.propagate(node, to, alert).await.map_err(|pe| format!("direct: {e}; propagation: {pe}"))
+                tracing::info!("direct delivery to {} failed ({e}); trying the propagation node", delivery.label());
+                self.propagate(node, to, alert, delivery).await.map_err(|pe| format!("direct: {e}; propagation: {pe}"))
             }
             (Err(e), None) => Err(e),
         }
     }
 }
 
-/// Stamps (if the recipient asks for one) and finishes a signed message.
-fn stamp(message: SignedLxMessage) -> Result<LxMessage, MessageError> {
-    let stamp = message.generate_recipient_stamp()?;
-    message.finalize(stamp)
+/// The highest stamp cost this delivery may work out: the bridge's own limit, or a lower one set for it.
+fn cost_cap(delivery: &Delivery) -> f64 {
+    delivery.max_stamp_cost().map_or(MAX_STAMP_COST, |cap| cap.min(MAX_STAMP_COST))
 }
 
-/// The message's bytes, ready to send. A stamp can take a while, so this runs off the async threads.
-async fn finish(message: SignedLxMessage) -> Result<Vec<u8>, String> {
-    tokio::task::spawn_blocking(move || stamp(message).map(|message| message.wire_bytes().to_vec()))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+/// Refuses a stamp cost above what the delivery may work out. For a named address the delivery then ends
+/// at once, as asking again will not change what the address announced.
+fn check_cost(cost: Option<f64>, delivery: &Delivery) -> Result<(), String> {
+    let cap = cost_cap(delivery);
+    let Some(cost) = cost.filter(|cost| *cost > cap) else { return Ok(()) };
+    if delivery.max_stamp_cost().is_some() {
+        delivery.refuse();
+    }
+    Err(format!("the recipient asks for a stamp cost of {cost}, more than the bridge will work out ({cap})"))
+}
+
+/// What a delivery keeps from one try to the next, so that nothing is stamped twice.
+#[derive(Default)]
+struct Kept {
+    /// The stamped message, and the stamp cost it was made for.
+    message: Option<(Option<f64>, LxMessage)>,
+    /// The message packed for a propagation node: the node, the message's id and the bytes.
+    packed: Option<(Hash, [u8; 32], Vec<u8>)>,
+}
+
+/// Tells a stamp search to stop when this is dropped (a delivery that is given up on drops its future).
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Runs `work`, which may search for a stamp for a long time, off the async threads. The search is told
+/// to stop if the caller is dropped, and the delivery's stamp permit goes with the thread, so that it is
+/// only free again when the thread has really stopped.
+async fn off_thread<R: Send + 'static>(delivery: &Delivery, work: impl FnOnce(&StampControl) -> R + Send + 'static) -> Result<R, String> {
+    let ctl = StampControl::default();
+    let _stop = StopOnDrop(ctl.cancel.clone());
+    let slot = delivery.take_stamp_slot();
+    let (result, slot) = tokio::task::spawn_blocking(move || (work(&ctl), slot)).await.map_err(|e| e.to_string())?;
+    delivery.put_stamp_slot(slot);
+    Ok(result)
+}
+
+/// Stamps (if the recipient asks for one) and finishes a signed message.
+fn stamp(message: SignedLxMessage, ctl: &StampControl) -> Result<LxMessage, MessageError> {
+    let stamp = message.generate_recipient_stamp_with(ctl)?;
+    message.finalize(stamp)
 }
 
 async fn send_resource(handle: &LinkSessionHandle, data: Vec<u8>, compress: bool) -> Result<(), String> {
@@ -350,6 +423,23 @@ async fn drain(mut registered: RegisteredDestination) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamp_cost_over_the_limit_is_refused_and_a_named_delivery_ends() {
+        let named = Delivery::capped(12.0);
+        assert!(check_cost(None, &named).is_ok() && check_cost(Some(0.0), &named).is_ok() && check_cost(Some(12.0), &named).is_ok());
+        assert!(!named.refused());
+        let why = check_cost(Some(13.0), &named).unwrap_err();
+        assert!(why.contains("stamp cost of 13") && why.contains("(12)"), "{why}");
+        assert!(named.refused());
+        // A cap above the bridge's own limit does not raise it.
+        assert!(check_cost(Some(29.0), &Delivery::capped(40.0)).is_err());
+        // The list keeps the bridge's limit, and its deliveries are tried again as before.
+        let listed = Delivery::default();
+        assert!(check_cost(Some(28.0), &listed).is_ok());
+        assert!(check_cost(Some(28.5), &listed).is_err());
+        assert!(!listed.refused());
+    }
 
     #[test]
     fn the_reticulum_config_has_one_tcp_client_for_each_entry_point() {

@@ -17,7 +17,8 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
 1. **Get the address of your LXMF app** (the recipient). Every LXMF app
    shows its own address (32 hex digits): rettui prints it with `rettui address`, and Sideband and
    MeshChat show it in their own settings or profile pages. Use the plain hex digits (a
-   `<...>` around them is accepted). Only addresses in `recipients` ever get a message.
+   `<...>` around them is accepted). Only addresses in `recipients` get a message, unless you turn on
+   `website_recipients` (see "Addresses the website names" below).
 2. **Make a secret** (16 to 256 printable characters, no spaces) and keep it in two files, one for
    the website and one for the bridge, each readable by its own user only:
 
@@ -29,7 +30,7 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
    (65532 is the user the bridge's image runs as. A secret file that other users can read gets a
    warning at start.)
 3. **Write `bridge.toml`**, starting from [`bridge.example.toml`](bridge.example.toml). Only
-   `secret_file`, `identity_file` and `recipients` are needed. Settings are checked at start: a
+   `secret_file`, `identity_file` and `recipients` (or `website_recipients = true`) are needed. Settings are checked at start: a
    mistake stops the bridge with a message that names the setting, and never repeats the secret.
 
    | Setting | Default | |
@@ -38,7 +39,14 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
    | `secret_file` | | the shared secret (16 to 256 printable characters, file of at most 1 KiB) |
    | `identity_file` | | the bridge's LXMF identity; made on the first start with mode 600 |
    | `display_name` | `rettui alerts` | name announced for the bridge's address |
-   | `recipients` | | 1 to 16 LXMF addresses (32 hex digits) |
+   | `recipients` | | 1 to 16 LXMF addresses (32 hex digits); may be empty when `website_recipients` is on |
+   | `website_recipients` | `false` | let the website name the address of an alert with `to` (see below) |
+   | `per_recipient_per_hour` | `10` | the most alerts an hour to one address named with `to` (1 to 100) |
+   | `recipients_per_hour` | `50` | the most different addresses named with `to` an hour (1 to 1000) |
+   | `website_slots` | `4` | deliveries to addresses named with `to` going on at once, apart from the list's own 32 (1 to 16) |
+   | `website_queue` | `20` | alerts with a `to` that may wait, apart from the list's queue of 100 (1 to 100) |
+   | `website_max_stamp_cost` | `12` | the highest stamp cost worked out for an address named with `to` (0 to 28) |
+   | `website_delivery_seconds` | `300` | the longest one whole delivery to a named address may take, all tries included (30 to 3600) |
    | `entry_points` | `["rns.rettui.dev:4242"]` | 1 to 8 Reticulum TCP servers, `host:port` |
    | `propagation_node` | none | a propagation node's address, for store and forward |
    | `allow_from` | none | up to 16 exact IP addresses (no ranges) that may connect; others are closed on at once. Empty means any |
@@ -62,6 +70,59 @@ branches of `rsReticulum` and `rsLXMF`, as git submodules in `deps/`).
 5. **Check**: the first start logs the bridge's own address (`delivery address <...>`). Send a
    test alert by making the website send one (stop a monitored node for two checks), or sign one
    by hand (see "Trying it" below).
+
+## Addresses the website names
+
+By default every alert goes to the fixed `recipients`. With `website_recipients = true` the website
+may also name the address for one alert: the signed JSON body then carries an optional `to`, one LXMF
+address as 32 hex digits (angle brackets, spaces around it and capitals are accepted):
+
+    {"event":"down","message":"...","to":"0123456789abcdef0123456789abcdef"}
+
+The signature (and the timestamp) covers the whole body as before, so `to` cannot be changed or
+added by anyone without the secret. An alert with a `to` goes to that address only, never to
+`recipients`; one without goes to `recipients` as before (and is refused with 400 if that list is
+empty).
+
+**The website must check an address before it uses it**: it sends a code there and has the user type
+it back. The bridge cannot do that, since it receives nothing, and it takes the address as it is.
+It refuses only an address that is not 32 hex digits and its own delivery address.
+
+The limits are for the day the secret leaks or the website has a bug: they stop the bridge from
+sending a flood to the network. Counted over a sliding hour, one address gets at most
+`per_recipient_per_hour` messages, and at most `recipients_per_hour` different addresses get any
+(addresses in `recipients` do not count). Over a limit the answer is `429` with a `Retry-After` header
+(seconds); a refused request counts for nothing, so waiting that long is enough. The log gets one
+line per address per hour, not one per request. The bridge keeps this in memory only (at most
+`recipients_per_hour` addresses, each with at most `per_recipient_per_hour` times, plus up to 1000
+refused addresses for the log), so a restart starts the count again.
+
+Addresses named with `to` cannot crowd out `recipients`. Their deliveries have a pool of their own:
+`website_slots` deliveries at once and `website_queue` alerts waiting, apart from the 32 deliveries and
+100 waiting alerts of the list, which are always all there for it. When the named queue is full, a
+request with a `to` gets `503` (with a reason) and one without is not affected. For a named address:
+
+- An address that announces a stamp cost above `website_max_stamp_cost` is not delivered to (the
+  bridge does not work out a stamp that big for an address anyone can name). The delivery ends at once,
+  with a line in the log that says why, and is not tried again or sent to the propagation node.
+- One whole delivery, all tries and the propagation node included, may take `website_delivery_seconds`
+  at most. Then it is given up (with a log line) and its slot is free again. A stamp search is told to
+  stop at that moment, but a search cannot always be called back at once, so the bridge also keeps the
+  number of such threads still running to `website_slots`: while that many are, no
+  new named delivery starts (the list is not held up by it).
+- A message is stamped once for a delivery: the next try, and the propagation node after a direct try,
+  use the same stamp while the address announces the same cost.
+- The log shows only the first 8 hex digits of the address at the default level (the whole address
+  at debug level). The addresses in `recipients` are logged in full.
+
+| Request | Answer |
+| --- | --- |
+| `to` while `website_recipients` is off | `403` and a reason; nothing is sent |
+| `to` that is not 32 hex digits, or not text | `400` and a reason |
+| `to` is the bridge's own address | `422` and a reason |
+| over a limit | `429`, `Retry-After: <seconds>` and a reason |
+| `to` while the named queue (`website_queue`) is full | `503` and a reason |
+| no `to` and no `recipients` | `400` and a reason |
 
 ## Run it with Docker Compose
 
@@ -137,11 +198,13 @@ Without Docker: `cargo build --release --locked` in this folder, then
   the website's address (under Compose its address on the compose network, which you can fix as
   above), or keep the port on a private network. Only
   `POST /alert` and `GET /healthz` exist; anything else gets a 4xx with no body.
-- **Answers.** 202 taken, 400 not an alert, 401 not authentic (a missing, wrong, stale or future
-  signature or time all look alike), 409 replayed, 413 too big, 503 the queue (100 alerts) is full
-  or busy, so the website's own retry applies.
+- **Answers.** 202 taken, 400 not an alert (or a bad `to`), 403 `to` not allowed, 422 `to` is the
+  bridge itself, 429 over a limit (see above), 401 not authentic (a missing, wrong, stale or future
+  signature or time all look alike), 409 replayed, 413 too big, 503 the queue (100 alerts, or `website_queue` for alerts with a `to`) is full
+  or busy, so the website's own retry applies. The 4xx answers about `to` and the 429 come with a
+  one-line reason as the body.
 - **Nothing sensitive in the log.** The secret, the signature and the body are never logged. A
-  delivery's log line has the recipient's address and the reason it failed.
+  delivery's log line has the recipient's address (for an address named with `to`, its first 8 digits) and the reason it failed.
 - **Sending.** Each alert goes to each recipient on its own. A delivery is tried up to 3 times (after
   5 and 30 seconds, as the website tries), and then given up; a failure is logged and never stops
   the bridge. Alerts are kept in memory only: a restart loses what is waiting.
