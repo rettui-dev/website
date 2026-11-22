@@ -52,182 +52,204 @@
 
   <div id="acct" hidden>
     <p id="acct-must-change" class="acct-card users-warning" role="alert" hidden>Your password was set by an admin. Choose a new password of your own below before you go on: until then this is all you can do here.</p>
-    <section class="acct-card" aria-labelledby="acct-profile-h">
-      <h2 id="acct-profile-h">Profile</h2>
-      <dl class="acct-facts">
-        <dt>Name</dt><dd id="acct-name"></dd>
-        <dt>Role</dt><dd id="acct-role"></dd>
-        <dt>Last sign in</dt><dd id="acct-last"></dd>
-      </dl>
-      <p id="acct-users" hidden><a href="/users">Manage users</a> (admins only)</p>
-      <p id="acct-manage" hidden><a href="/manage">Manage nodes</a> (manage and admin roles)</p>
-      <p id="acct-config-note" class="note" hidden>Managed by config: the name, password and role of this account are set in the site's config file, not here.</p>
-    </section>
+    <div class="acct-col">
+      <div class="acct-col">
+        <div class="acct-stack">
+          <section class="acct-card" aria-labelledby="acct-profile-h">
+            <h2 id="acct-profile-h">Profile</h2>
+            <dl class="acct-facts">
+              <dt>Name</dt><dd id="acct-name"></dd>
+              <dt>Role</dt><dd id="acct-role"></dd>
+              <dt>Last sign in</dt><dd id="acct-last"></dd>
+            </dl>
+            <p id="acct-users" hidden><a href="/users">Manage users</a> (admins only)</p>
+            <p id="acct-manage" hidden><a href="/manage">Manage nodes</a> (manage and admin roles)</p>
+            <p id="acct-config-note" class="note" hidden>Managed by config: the name, password and role of this account are set in the site's config file, not here.</p>
+          </section>
 
-    <section class="acct-card" aria-labelledby="acct-pw-h">
-      <h2 id="acct-pw-h">Password</h2>
-      <p id="pw-config" class="note" hidden>This password is set in the config file. Ask whoever runs the site to change it.</p>
-      <form id="pw-form" class="acct-form" novalidate hidden>
-        <p id="pw-error" class="login-error" role="alert"></p>
-        <input id="pw-user" type="text" autocomplete="username" aria-label="Name" readonly hidden>
-        <label for="pw-next">New password</label>
-        <input id="pw-next" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required aria-describedby="pw-next-help pw-error">
-        <p id="pw-next-help" class="note">At least 12 characters, and not one of the most common passwords. Signing in elsewhere ends when you change it, and every other known device is forgotten.</p>
-        <p id="pw-ask" class="note">When you change it, a pop-up asks for your current password, and for your passkey or a code from your app if two-step sign-in is on.</p>
-        <label for="pw-again">New password again</label>
-        <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
-        <div id="pw-remove-box" class="acct-check" hidden>
-          <input id="pw-remove" type="checkbox" checked aria-describedby="pw-remove-help">
-          <label for="pw-remove">Also remove my other passkeys</label>
-          <p id="pw-remove-help" class="note">Every passkey except the one you use to confirm this change is removed. If you confirm with a code or a recovery code, all of them are removed. You can add them again afterwards. This is ticked so that a passkey someone else added cannot keep signing in after you change your password. Untick it to keep your other passkeys.</p>
+          <section class="acct-card" aria-labelledby="acct-pw-h">
+            <h2 id="acct-pw-h">Password</h2>
+            <p id="pw-config" class="note" hidden>This password is set in the config file. Ask whoever runs the site to change it.</p>
+            <form id="pw-form" class="acct-form" novalidate hidden>
+              <p id="pw-error" class="login-error" role="alert"></p>
+              <input id="pw-user" type="text" autocomplete="username" aria-label="Name" readonly hidden>
+              <label for="pw-next">New password</label>
+              <input id="pw-next" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required aria-describedby="pw-next-help pw-error">
+              <p id="pw-next-help" class="note">At least 12 characters, and not one of the most common passwords. Signing in elsewhere ends when you change it, and every other known device is forgotten.</p>
+              <p id="pw-ask" class="note">When you change it, a pop-up asks for your current password, and for your passkey or a code from your app if two-step sign-in is on.</p>
+              <label for="pw-again">New password again</label>
+              <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
+              <div id="pw-remove-box" class="acct-check" hidden>
+                <input id="pw-remove" type="checkbox" checked aria-describedby="pw-remove-help">
+                <label for="pw-remove">Also remove my other passkeys</label>
+                <p id="pw-remove-help" class="note">Every passkey except the one you use to confirm this change is removed. If you confirm with a code or a recovery code, all of them are removed. You can add them again afterwards. This is ticked so that a passkey someone else added cannot keep signing in after you change your password. Untick it to keep your other passkeys.</p>
+              </div>
+              <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
+            </form>
+          </section>
         </div>
-        <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
-      </form>
-    </section>
 
-    <section class="acct-card" data-after-password aria-labelledby="acct-totp-h">
-      <h2 id="acct-totp-h">App code</h2>
-      <p id="totp-state"></p>
+        <div class="acct-stack">
+          <section class="acct-card" data-after-password aria-labelledby="acct-sessions-h">
+            <h2 id="acct-sessions-h" tabindex="-1">Where you are signed in</h2>
+            <p class="note">Your sessions on this site, oldest first. Each ends after a time without use, or when you sign out there.</p>
+            <ul id="sessions-list" class="acct-sessions"></ul>
+            <div class="login-actions"><button id="sessions-end" type="button">Sign out other sessions</button></div>
+          </section>
 
-      <div id="totp-off" hidden>
-        <p class="note">After your password you also enter a 6-digit code from an authenticator app on your phone (such as Aegis, Google Authenticator or 1Password).</p>
-        <form id="totp-setup-form" class="acct-form" novalidate>
-          <p id="totp-setup-error" class="login-error" role="alert"></p>
-          <p id="totp-setup-help" class="note">A pop-up asks for your password to start.</p>
-          <div class="login-actions"><button id="totp-setup" type="submit" class="primary">Set up an app code</button></div>
-        </form>
+          <section class="acct-card" data-after-password aria-labelledby="acct-devices-h">
+            <h2 id="acct-devices-h" tabindex="-1">Known devices</h2>
+            <p class="note">Browsers you signed in from. When someone tries many wrong passwords for your name, a known device is not held back by it. It still needs your password, and your second step (passkey or code) if you have one. Remove a device you no longer use, or do not recognise: removing it also signs it out.</p>
+            <p id="devices-none" class="note" hidden>No known devices.</p>
+            <ul id="devices-list" class="acct-sessions"></ul>
+            <div class="login-actions"><button id="devices-others" type="button">Remove all other devices</button></div>
+          </section>
+        </div>
       </div>
 
-      <div id="totp-setup-box" hidden>
-        <ol class="acct-steps">
-          <li>In your authenticator app, add an account and scan this code.</li>
-          <li>Or type this key in by hand (time-based, 6 digits, 30 seconds): <code id="totp-key" class="acct-key"></code> <button id="totp-key-copy" type="button">Copy key</button></li>
-          <li>Enter the code the app shows now.</li>
-        </ol>
-        <div id="totp-qr" class="acct-qr"></div>
-        <form id="totp-enable-form" class="acct-form" novalidate>
-          <p id="totp-enable-error" class="login-error" role="alert"></p>
-          <label for="totp-enable-code">Code from the app</label>
-          <input id="totp-enable-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="totp-enable-error">
-          <div class="login-actions">
-            <button id="totp-enable" type="submit" class="primary">Turn on</button>
-            <button id="totp-cancel" type="button">Cancel</button>
+      <div class="acct-stack">
+        <section class="acct-card" data-after-password aria-labelledby="acct-totp-h">
+          <h2 id="acct-totp-h">App code</h2>
+          <p id="totp-state"></p>
+
+          <div id="totp-off" hidden>
+            <p class="note">After your password you also enter a 6-digit code from an authenticator app on your phone (such as Aegis, Google Authenticator or 1Password).</p>
+            <form id="totp-setup-form" class="acct-form" novalidate>
+              <p id="totp-setup-error" class="login-error" role="alert"></p>
+              <p id="totp-setup-help" class="note">A pop-up asks for your password to start.</p>
+              <div class="login-actions"><button id="totp-setup" type="submit" class="primary">Set up an app code</button></div>
+            </form>
           </div>
-        </form>
+
+          <div id="totp-setup-box" hidden>
+            <ol class="acct-steps">
+              <li>In your authenticator app, add an account and scan this code.</li>
+              <li>Or type this key in by hand (time-based, 6 digits, 30 seconds): <code id="totp-key" class="acct-key"></code> <button id="totp-key-copy" type="button">Copy key</button></li>
+              <li>Enter the code the app shows now.</li>
+            </ol>
+            <div id="totp-qr" class="acct-qr"></div>
+            <form id="totp-enable-form" class="acct-form" novalidate>
+              <p id="totp-enable-error" class="login-error" role="alert"></p>
+              <label for="totp-enable-code">Code from the app</label>
+              <input id="totp-enable-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="totp-enable-error">
+              <div class="login-actions">
+                <button id="totp-enable" type="submit" class="primary">Turn on</button>
+                <button id="totp-cancel" type="button">Cancel</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="totp-on" hidden>
+            <form id="totp-disable-form" class="acct-form" novalidate>
+              <h3>Turn off the app code</h3>
+              <p id="totp-disable-error" class="login-error" role="alert"></p>
+              <p id="totp-disable-help" class="note">Without the app code, your password alone signs you in, unless you have a passkey. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
+              <div class="login-actions"><button id="totp-disable" type="submit">Turn off</button></div>
+            </form>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="acct-col">
+      <div class="acct-stack">
+        <section id="acct-passkeys" class="acct-card" data-after-password aria-labelledby="acct-passkeys-h" hidden>
+          <h2 id="acct-passkeys-h" tabindex="-1">Passkeys</h2>
+          <p id="passkeys-note" class="note">Your phone, computer or security key confirms it is you, with a fingerprint, face or PIN. There is nothing to type. A passkey works as the second step after your password.</p>
+          <p id="passkeys-unavailable" class="note" hidden></p>
+          <p id="passkeys-none" class="note" hidden>You have no passkeys.</p>
+          <ul id="passkeys-list" class="acct-passkeys"></ul>
+          <form id="passkey-add-form" class="acct-form" novalidate hidden>
+            <h3>Add a passkey</h3>
+            <p id="passkey-add-error" class="login-error" role="alert"></p>
+            <label for="passkey-name">Name (to tell your passkeys apart)</label>
+            <input id="passkey-name" type="text" autocomplete="off" maxlength="64" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="passkey-add-help passkey-add-error">
+            <p id="passkey-add-help" class="note">Optional, up to 64 characters, such as "Work laptop". A pop-up asks for your password, and for a second step if you have one. Then your device asks you to make the passkey.</p>
+            <div class="login-actions"><button id="passkey-add" type="submit" class="primary">Add a passkey</button></div>
+          </form>
+          <p id="passkeys-full" class="note" hidden></p>
+          <p id="passkeys-browser" class="note" hidden>This browser cannot make or use passkeys, so you cannot add one here. You can still rename or remove the ones you have.</p>
+        </section>
+
+        <section id="acct-recovery" class="acct-card" data-after-password aria-labelledby="acct-recovery-h" hidden>
+          <h2 id="acct-recovery-h">Recovery codes</h2>
+          <div id="codes-box" hidden>
+            <h3 id="codes-h">Your recovery codes</h3>
+            <p class="note">Each code works once, instead of your passkey or a code from the app, if you lose your phone or key. They are shown only now: save them somewhere safe.</p>
+            <ul id="codes-list" class="acct-codes" aria-labelledby="codes-h"></ul>
+            <div class="login-actions">
+              <button id="codes-copy" type="button">Copy</button>
+              <button id="codes-download" type="button">Download</button>
+              <button id="codes-done" type="button" class="primary">I have saved them</button>
+            </div>
+          </div>
+
+          <div id="codes-on">
+            <p id="codes-left"></p>
+            <form id="codes-new-form" class="acct-form" novalidate>
+              <h3>New recovery codes</h3>
+              <p id="codes-new-error" class="login-error" role="alert"></p>
+              <p id="codes-new-help" class="note">New codes replace all the old ones. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
+              <div class="login-actions"><button id="codes-new" type="submit">New recovery codes</button></div>
+            </form>
+          </div>
+        </section>
       </div>
 
-      <div id="totp-on" hidden>
-        <form id="totp-disable-form" class="acct-form" novalidate>
-          <h3>Turn off the app code</h3>
-          <p id="totp-disable-error" class="login-error" role="alert"></p>
-          <p id="totp-disable-help" class="note">Without the app code, your password alone signs you in, unless you have a passkey. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
-          <div class="login-actions"><button id="totp-disable" type="submit">Turn off</button></div>
-        </form>
+      <div class="acct-stack">
+        <section id="acct-lxmf" class="acct-card" data-after-password aria-labelledby="acct-lxmf-h" hidden>
+          <h2 id="acct-lxmf-h" tabindex="-1">LXMF alerts</h2>
+          <p class="note">Get a message at your own LXMF addresses (up to 3) when something changes about your account: a passkey added or removed, your password changed or reset, two-step sign-in turned off or reset, new recovery codes, an LXMF address added or removed. Each says what happened and when, and which admin did it if one did. It never holds a passkey id, a secret or an IP address. Every confirmed address gets every alert, and is told when another address is added or removed.</p>
+          <p id="lxmf-state" role="status"></p>
+          <p id="lxmf-hidden" class="note" hidden>Your password has not been given in this session, so the addresses are not shown. Adding, confirming or removing one asks for your password.</p>
+
+          <div id="lxmf-list-box" hidden>
+            <h3 id="lxmf-list-h">Your addresses</h3>
+            <ul id="lxmf-list" class="acct-passkeys" aria-labelledby="lxmf-list-h"></ul>
+            <div id="lxmf-test-box" class="login-actions acct-test" hidden>
+              <button id="lxmf-test" type="button" aria-describedby="lxmf-test-help lxmf-test-result">Send a test alert</button>
+              <p id="lxmf-test-result" class="note" role="status"></p>
+            </div>
+            <p id="lxmf-test-help" class="note">Sends one test alert to every confirmed address, to see that alerts reach you. You can send 3 an hour. It asks for your password if you gave it more than 15 minutes ago.</p>
+          </div>
+
+          <form id="lxmf-set-form" class="acct-form" novalidate>
+            <h3>Add an address</h3>
+            <p id="lxmf-set-error" class="login-error" role="alert"></p>
+            <label for="lxmf-address">LXMF address</label>
+            <input id="lxmf-address" type="text" inputmode="text" autocomplete="off" maxlength="80" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-address-help lxmf-set-error">
+            <p id="lxmf-address-help" class="note">32 hex digits, for example 0123456789abcdef0123456789abcdef; angle brackets around it are fine. The website sends a 6-digit code to it, and you type the code back to confirm it. Nothing else is sent there until you do. A pop-up asks for your password, and for your second step if you have one.</p>
+            <div class="login-actions"><button id="lxmf-set" type="submit" class="primary">Send a code</button></div>
+          </form>
+          <p id="lxmf-full" class="note" hidden></p>
+
+          <form id="lxmf-confirm-form" class="acct-form" novalidate hidden>
+            <h3>Confirm an address</h3>
+            <p id="lxmf-confirm-error" class="login-error" role="alert"></p>
+            <label for="lxmf-code-for">Address to confirm</label>
+            <select id="lxmf-code-for" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true"></select>
+            <label for="lxmf-code">Code sent to that address</label>
+            <input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-code-help lxmf-confirm-error">
+            <p id="lxmf-code-help" class="note">The code works for 15 minutes. You can try to confirm 5 times an hour from one session, and 10 times an hour in all. A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.</p>
+            <div class="login-actions">
+              <button id="lxmf-confirm" type="submit" class="primary">Confirm</button>
+              <button id="lxmf-resend" type="button">Send a new code</button>
+            </div>
+          </form>
+
+          <form id="lxmf-nodes-form" class="acct-form" novalidate hidden>
+            <h3>Node alerts</h3>
+            <p id="lxmf-nodes-error" class="login-error" role="alert"></p>
+            <div class="acct-check">
+              <input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">
+              <label for="lxmf-nodes">Node down and recovered alerts</label>
+              <p id="lxmf-nodes-help" class="note">Also get the node alerts the site's operator gets, such as an entry point going down and coming back, at every confirmed address. For admins and managers.</p>
+            </div>
+            <p id="lxmf-nodes-status" class="note" role="status"></p>
+          </form>
+        </section>
       </div>
-    </section>
-
-    <section id="acct-passkeys" class="acct-card" data-after-password aria-labelledby="acct-passkeys-h" hidden>
-      <h2 id="acct-passkeys-h" tabindex="-1">Passkeys</h2>
-      <p id="passkeys-note" class="note">Your phone, computer or security key confirms it is you, with a fingerprint, face or PIN. There is nothing to type. A passkey works as the second step after your password.</p>
-      <p id="passkeys-unavailable" class="note" hidden></p>
-      <p id="passkeys-none" class="note" hidden>You have no passkeys.</p>
-      <ul id="passkeys-list" class="acct-passkeys"></ul>
-      <form id="passkey-add-form" class="acct-form" novalidate hidden>
-        <h3>Add a passkey</h3>
-        <p id="passkey-add-error" class="login-error" role="alert"></p>
-        <label for="passkey-name">Name (to tell your passkeys apart)</label>
-        <input id="passkey-name" type="text" autocomplete="off" maxlength="64" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="passkey-add-help passkey-add-error">
-        <p id="passkey-add-help" class="note">Optional, up to 64 characters, such as "Work laptop". A pop-up asks for your password, and for a second step if you have one. Then your device asks you to make the passkey.</p>
-        <div class="login-actions"><button id="passkey-add" type="submit" class="primary">Add a passkey</button></div>
-      </form>
-      <p id="passkeys-full" class="note" hidden></p>
-      <p id="passkeys-browser" class="note" hidden>This browser cannot make or use passkeys, so you cannot add one here. You can still rename or remove the ones you have.</p>
-    </section>
-
-    <section id="acct-lxmf" class="acct-card" data-after-password aria-labelledby="acct-lxmf-h" hidden>
-      <h2 id="acct-lxmf-h" tabindex="-1">LXMF alerts</h2>
-      <p class="note">Get a message at your own LXMF addresses (up to 3) when something changes about your account: a passkey added or removed, your password changed or reset, two-step sign-in turned off or reset, new recovery codes, an LXMF address added or removed. Each says what happened and when, and which admin did it if one did. It never holds a passkey id, a secret or an IP address. Every confirmed address gets every alert, and is told when another address is added or removed.</p>
-      <p id="lxmf-state" role="status"></p>
-      <p id="lxmf-hidden" class="note" hidden>Your password has not been given in this session, so the addresses are not shown. Adding, confirming or removing one asks for your password.</p>
-
-      <div id="lxmf-list-box" hidden>
-        <h3 id="lxmf-list-h">Your addresses</h3>
-        <ul id="lxmf-list" class="acct-passkeys" aria-labelledby="lxmf-list-h"></ul>
-      </div>
-
-      <form id="lxmf-set-form" class="acct-form" novalidate>
-        <h3>Add an address</h3>
-        <p id="lxmf-set-error" class="login-error" role="alert"></p>
-        <label for="lxmf-address">LXMF address</label>
-        <input id="lxmf-address" type="text" inputmode="text" autocomplete="off" maxlength="80" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-address-help lxmf-set-error">
-        <p id="lxmf-address-help" class="note">32 hex digits, for example 0123456789abcdef0123456789abcdef; angle brackets around it are fine. The website sends a 6-digit code to it, and you type the code back to confirm it. Nothing else is sent there until you do. A pop-up asks for your password, and for your second step if you have one.</p>
-        <div class="login-actions"><button id="lxmf-set" type="submit" class="primary">Send a code</button></div>
-      </form>
-      <p id="lxmf-full" class="note" hidden></p>
-
-      <form id="lxmf-confirm-form" class="acct-form" novalidate hidden>
-        <h3>Confirm an address</h3>
-        <p id="lxmf-confirm-error" class="login-error" role="alert"></p>
-        <label for="lxmf-code-for">Address to confirm</label>
-        <select id="lxmf-code-for" autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true"></select>
-        <label for="lxmf-code">Code sent to that address</label>
-        <input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-code-help lxmf-confirm-error">
-        <p id="lxmf-code-help" class="note">The code works for 15 minutes. You can try to confirm 5 times an hour from one session, and 10 times an hour in all. A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.</p>
-        <div class="login-actions">
-          <button id="lxmf-confirm" type="submit" class="primary">Confirm</button>
-          <button id="lxmf-resend" type="button">Send a new code</button>
-        </div>
-      </form>
-
-      <form id="lxmf-nodes-form" class="acct-form" novalidate hidden>
-        <h3>Node alerts</h3>
-        <p id="lxmf-nodes-error" class="login-error" role="alert"></p>
-        <div class="acct-check">
-          <input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">
-          <label for="lxmf-nodes">Node down and recovered alerts</label>
-          <p id="lxmf-nodes-help" class="note">Also get the node alerts the site's operator gets, such as an entry point going down and coming back, at every confirmed address. For admins and managers.</p>
-        </div>
-      </form>
-    </section>
-
-    <section id="acct-recovery" class="acct-card" data-after-password aria-labelledby="acct-recovery-h" hidden>
-      <h2 id="acct-recovery-h">Recovery codes</h2>
-      <div id="codes-box" hidden>
-        <h3 id="codes-h">Your recovery codes</h3>
-        <p class="note">Each code works once, instead of your passkey or a code from the app, if you lose your phone or key. They are shown only now: save them somewhere safe.</p>
-        <ul id="codes-list" class="acct-codes" aria-labelledby="codes-h"></ul>
-        <div class="login-actions">
-          <button id="codes-copy" type="button">Copy</button>
-          <button id="codes-download" type="button">Download</button>
-          <button id="codes-done" type="button" class="primary">I have saved them</button>
-        </div>
-      </div>
-
-      <div id="codes-on">
-        <p id="codes-left"></p>
-        <form id="codes-new-form" class="acct-form" novalidate>
-          <h3>New recovery codes</h3>
-          <p id="codes-new-error" class="login-error" role="alert"></p>
-          <p id="codes-new-help" class="note">New codes replace all the old ones. A pop-up asks for your password and a second step: your passkey, a code from your app or a recovery code.</p>
-          <div class="login-actions"><button id="codes-new" type="submit">New recovery codes</button></div>
-        </form>
-      </div>
-    </section>
-
-    <section class="acct-card" data-after-password aria-labelledby="acct-sessions-h">
-      <h2 id="acct-sessions-h" tabindex="-1">Where you are signed in</h2>
-      <p class="note">Your sessions on this site, oldest first. Each ends after a time without use, or when you sign out there.</p>
-      <ul id="sessions-list" class="acct-sessions"></ul>
-      <div class="login-actions"><button id="sessions-end" type="button">Sign out other sessions</button></div>
-    </section>
-
-    <section class="acct-card" data-after-password aria-labelledby="acct-devices-h">
-      <h2 id="acct-devices-h" tabindex="-1">Known devices</h2>
-      <p class="note">Browsers you signed in from. When someone tries many wrong passwords for your name, a known device is not held back by it. It still needs your password, and your second step (passkey or code) if you have one. Remove a device you no longer use, or do not recognise: removing it also signs it out.</p>
-      <p id="devices-none" class="note" hidden>No known devices.</p>
-      <ul id="devices-list" class="acct-sessions"></ul>
-      <div class="login-actions"><button id="devices-others" type="button">Remove all other devices</button></div>
-    </section>
+    </div>
   </div>
 </main>
 <footer>

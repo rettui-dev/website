@@ -282,6 +282,66 @@ test('the LXMF alerts card is a named region that is hidden until the server say
   assert.match(js, /\$\('acct-lxmf-h'\)\.focus\(\);/);
 });
 
+test('the test alert button is a button with words in the list group, hidden until the script shows it, with its result read out and its help read with it, and no inline style or script', async () => {
+  const html = await read('account.html');
+  const css = await read('site.css');
+  const box = /<div id="lxmf-list-box" hidden>([\s\S]*?)<\/div>\s*<form id="lxmf-set-form"/.exec(html)?.[1] ?? '';
+  assert.match(box, /<div id="lxmf-test-box" class="login-actions acct-test" hidden>\s*<button id="lxmf-test" type="button" aria-describedby="lxmf-test-help lxmf-test-result">Send a test alert<\/button>\s*<p id="lxmf-test-result" class="note" role="status"><\/p>\s*<\/div>/);
+  assert.match(box, /<p id="lxmf-test-help" class="note">[^<]*3 an hour[^<]*<\/p>/);
+  assert.doesNotMatch(box, /\sstyle=|\sonclick=/);
+  assert.match(css, /\.acct-test \.note \{ margin: 0; \}/);
+  const js = await read('account-page.js');
+  assert.match(js, /\$\('lxmf-test'\)\.addEventListener\('click'/);
+  assert.doesNotMatch(js, /delivered/i);
+});
+
+test('the account cards are in five stacks, in reading order, with every card kept; the layout uses no order, CSS columns, dense flow or script, and an empty stack takes no place', async () => {
+  const html = await read('account.html');
+  const css = await read('site.css');
+  const acct = /<div id="acct" hidden>([\s\S]*?)\n  <\/div>\n<\/main>/.exec(html)[1];
+  // The alert first, then two wrappers; the first holds a wrapper of two stacks and one stack, the second two stacks.
+  assert.match(acct, /^\s*<p id="acct-must-change"[^>]*>[^<]*<\/p>\s*<div class="acct-col">\s*<div class="acct-col">\s*<div class="acct-stack">/);
+  assert.equal((acct.match(/<div class="acct-col">/g) ?? []).length, 3);
+  // The stacks in document order (which is the order of the columns, top to bottom and left to right, from 1000px to 1900px).
+  const stacks = acct.split('<div class="acct-stack">').slice(1).map((chunk) => [...chunk.matchAll(/<section\b[^>]*aria-labelledby="([^"]+)"/g)].map((x) => x[1]));
+  assert.deepEqual(stacks, [['acct-profile-h', 'acct-pw-h'], ['acct-sessions-h', 'acct-devices-h'], ['acct-totp-h'], ['acct-passkeys-h', 'acct-recovery-h'], ['acct-lxmf-h']]);
+  // The wrappers and stacks are plain: no role, no heading, no label.
+  assert.doesNotMatch(acct, /<div class="acct-(?:col|stack)"[^>]*(?:role|aria-|id)=/);
+  // Each card keeps its id, its heading and the mark that holds it back until the password has been given.
+  assert.equal((acct.match(/<section\b/g) ?? []).length, 8);
+  for (const id of ['acct-passkeys', 'acct-recovery', 'acct-lxmf']) assert.match(acct, new RegExp(`<section id="${id}" class="acct-card" data-after-password aria-labelledby="${id}-h"`));
+  assert.equal((acct.match(/<section class="acct-card" data-after-password /g) ?? []).length, 3, 'app code, sessions and devices');
+  // The layout rules.
+  const grid = css.slice(css.indexOf('/* The account page: five stacks'), css.indexOf('/* The users page: the table'));
+  assert.ok(grid.length > 500);
+  assert.doesNotMatch(grid.replace(/\/\*[\s\S]*?\*\//g, ''), /(?<![-\w])order\s*:|(?<![-\w])columns\s*:|column-count|column-width|grid-auto-flow|\bdense\b/);
+  // One column, then 2, 3 and 4 from 1000, 1500 and 1900px, each at least 26rem wide.
+  assert.match(grid, /@media \(min-width: 1000px\) \{\s*#acct:not\(\[hidden\]\) \{ grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 26rem\), 1fr\)\);/);
+  assert.match(grid, /@media \(min-width: 1500px\) \{\s*#acct:not\(\[hidden\]\) \{ grid-template-rows: auto 1fr; \}/);
+  assert.match(grid, /@media \(min-width: 1900px\) \{/);
+  // Four columns: profile and password; sessions and devices over the app code; passkeys and recovery codes; LXMF alerts.
+  const four = grid.slice(grid.indexOf('@media (min-width: 1900px)'));
+  assert.match(four, /\.acct-stack:first-child \{ grid-column: 1; grid-row: 1 \/ span 2; \}/);
+  assert.match(four, /\.acct-col > \.acct-stack:last-child \{ grid-column: 2; grid-row: 1; \}/);
+  assert.match(four, /:nth-of-type\(1\) > \.acct-stack \{ grid-column: 2; grid-row: 2; \}/);
+  assert.match(four, /:nth-of-type\(2\) > \.acct-stack:first-child \{ grid-column: 3; grid-row: 1 \/ span 2; \}/);
+  assert.match(four, /:nth-of-type\(2\) > \.acct-stack:last-child \{ grid-column: 4; grid-row: 1 \/ span 2; \}/);
+  assert.deepEqual([...grid.matchAll(/min-width: (\d+)px/g)].map((m) => m[1]), ['1000', '1500', '1900']);
+  assert.match(grid, /#acct .acct-stack:not\(:has\(> \.acct-card:not\(\[hidden\]\)\)\), #acct \.acct-col:not\(:has\(\.acct-card:not\(\[hidden\]\)\)\) \{ display: none; \}/);
+  assert.match(grid, /#acct:has\(> #acct-must-change:not\(\[hidden\]\)\) \{ grid-template-columns: minmax\(0, 1fr\); grid-template-rows: none; max-width: 40rem; \}/);
+  // The header and footer of this page are as wide as its main.
+  assert.match(grid, /body:has\(> main\.wide\.acct-page\) main\.acct-page, body:has\(> main\.wide\.acct-page\) header\.top \.wrap, body:has\(> main\.wide\.acct-page\) footer \.wrap \{ max-width: 2400px; \}/);
+  // Fields stay about 22rem wide, the help runs to 60 characters.
+  assert.match(css, /\.acct-form \{ display: grid; gap: 6px; max-width: none; \}/);
+  assert.match(css, /\.acct-form \.note, \.acct-card > \.note \{ max-width: 60ch; \}/);
+  assert.match(css, /min-height: 40px; width: 100%; max-width: 22rem;/);
+  assert.match(css, /\.acct-passkey \.acct-form \{ max-width: none; \}/);
+  // The status line under the heading is a live region that holds "Loading" and nothing after; the node alerts say what they did in their own.
+  assert.match(html, /<p id="acct-status" class="note" role="status">Loading your account\.\.\.<\/p>/);
+  assert.match(css, /#acct-status:empty \{ margin: 0; \}/);
+  assert.match(acct, /<\/div>\s*<p id="lxmf-nodes-status" class="note" role="status"><\/p>\s*<\/form>/);
+});
+
 test('the LXMF alerts card is laid out in groups with the same space between them as the other account cards: each group has its own heading, and no button sits on the next control', async () => {
   const html = await read('account.html');
   const css = await read('site.css');

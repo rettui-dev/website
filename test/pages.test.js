@@ -1072,6 +1072,7 @@ async function accountPage({ account = ACCOUNT, routes = {}, ask, passkey = {}, 
   dom.byId('totp-setup-box').hidden = true;
   dom.byId('passkey-add').textContent = 'Add a passkey';
   dom.byId('lxmf-set').textContent = 'Send a code';
+  dom.byId('lxmf-test').textContent = 'Send a test alert';
   dom.byId('passkeys-note').textContent = /<p id="passkeys-note" class="note">([^<]*)<\/p>/.exec(await read('account.html'))[1];
   const state = { account: structuredClone(account) };
   const log = [];
@@ -1686,7 +1687,8 @@ test('account page: removing an address is asked for in the step-up dialog and n
   await settle();
   assert.deepEqual(sent, [{ enabled: true }]);
   assert.equal(p.asked.length, 0);
-  assert.equal(p.$('acct-status').textContent, 'Node down and recovered alerts now go to your confirmed LXMF addresses too.');
+  assert.equal(p.$('lxmf-nodes-status').textContent, 'Node down and recovered alerts now go to your confirmed LXMF addresses too.');
+  assert.equal(p.$('acct-status').textContent, '', 'not in the line under the heading');
   assert.equal(p.$('lxmf-nodes').checked, true);
   assert.equal(p.$('lxmf-nodes').disabled, false);
   // Refused: the box goes back to what the server has, and says why.
@@ -1714,6 +1716,65 @@ test('account page: removing an address is asked for in the step-up dialog and n
   assert.equal(p.$('lxmf-list-box').hidden, true);
 });
 
+test('account page: the test alert button is there only with a confirmed address, sends with no step-up, and says plainly what happened', async () => {
+  const none = await accountPage({ account: withLxmf(LXMF_OFF) });
+  assert.equal(none.$('lxmf-test-box').hidden, true);
+  const waiting = await accountPage({ account: withLxmf(lxmfWith([WAITING(LXMF_A)])) });
+  assert.equal(waiting.$('lxmf-test-box').hidden, true, 'an address that waits for its code gets nothing');
+  assert.equal(waiting.$('lxmf-test-help').hidden, true);
+  const hiddenList = await accountPage({ account: withLxmf(lxmfWith([], { set: true, count: 1, hidden: true, confirmed: true })) });
+  assert.equal(hiddenList.$('lxmf-test-box').hidden, true, 'the list is not shown until the password is given');
+  const off = await accountPage({ account: withLxmf({ available: false }) });
+  assert.equal(off.$('acct-lxmf').hidden, true);
+
+  let answer = [200, { ok: true, queued: 2, held: 0, results: [{ to: '01234567', queued: true }, { to: 'fedcba98', queued: true }] }];
+  const sent = [];
+  const p = await accountPage({ account: withLxmf(lxmfWith([CONFIRMED(LXMF_A), CONFIRMED(LXMF_B)])), routes: { 'POST /api/account/lxmf/test': (o) => (sent.push(JSON.parse(o.body)), answer) } });
+  assert.equal(p.$('lxmf-test-box').hidden, false);
+  assert.equal(p.$('lxmf-test').textContent, 'Send a test alert');
+  p.$('lxmf-test').fire('click');
+  await settle();
+  assert.deepEqual(sent, [{}], 'nothing but the request: no password, no address');
+  assert.equal(p.asked.length, 0, 'no step-up dialog');
+  assert.equal(p.$('lxmf-test-result').textContent, 'Sent to the bridge for 2 addresses. LXMF can take a while to arrive.');
+  assert.equal(p.$('lxmf-test').disabled, false);
+  assert.equal(p.$('lxmf-test').textContent, 'Send a test alert');
+  // One address held back by a limit.
+  answer = [200, { ok: true, queued: 1, held: 1, results: [{ to: '01234567', queued: true }, { to: 'fedcba98', queued: false, retryAfter: 1500 }] }];
+  p.$('lxmf-test').fire('click');
+  await settle();
+  assert.equal(p.$('lxmf-test-result').textContent, 'Sent to the bridge for 1 address. LXMF can take a while to arrive. 1 address was held back by a limit; try again in 25 minutes.');
+  // None: the server's words, with the wait.
+  answer = [429, { error: 'You sent 3 test alerts in the last hour, the most allowed. Try again in 40 minutes.', retryAfter: 2400 }];
+  p.$('lxmf-test').fire('click');
+  await settle();
+  assert.equal(p.$('lxmf-test-result').textContent, 'You sent 3 test alerts in the last hour, the most allowed. Try again in 40 minutes.');
+  assert.doesNotMatch(p.$('lxmf-test-result').textContent, /delivered/i);
+});
+
+test('account page: the test alert result goes when the last confirmed address does, and a refusal that is no limit is shown in the server\'s words', async () => {
+  const p = await accountPage({
+    account: withLxmf(lxmfWith([CONFIRMED(LXMF_A)])),
+    routes: { 'POST /api/account/lxmf/test': [409, { error: 'Confirm an LXMF address first.' }] },
+  });
+  p.$('lxmf-test').fire('click');
+  await settle();
+  assert.equal(p.$('lxmf-test-result').textContent, 'Confirm an LXMF address first.');
+  // The address goes (the page is loaded again): the button and what it said go too.
+  p.state.account = withLxmf(LXMF_OFF);
+  p.$('lxmf-nodes').fire('change');
+  await settle();
+  assert.equal(p.$('lxmf-test-box').hidden, true);
+  assert.equal(p.$('lxmf-test-result').textContent, '');
+});
+
+test('account page: the line under the heading is empty once the account is loaded, and says what a change did only until the next load', async () => {
+  const p = await accountPage({ account: withLxmf(lxmfWith([CONFIRMED(LXMF_A)])) });
+  assert.equal(p.$('acct-status').textContent, '');
+  assert.equal(p.$('acct-signin').hidden, true);
+  assert.equal(p.$('acct').hidden, false);
+});
+
 test('account page: a refresh with the same data replaces no list, shows and hides no card and writes no field, so a rename in progress and the focus stay', async () => {
   const hiddenWrites = {};
   const textWrites = {};
@@ -1726,7 +1787,7 @@ test('account page: a refresh with the same data replaces no list, shows and hid
       Object.defineProperty(e, 'text', { get: () => text, set: (v) => ((text = v), (textWrites[id] = (textWrites[id] ?? 0) + 1)) });
     }
   };
-  const IDS = ['acct-lxmf', 'acct-passkeys', 'acct-recovery', 'lxmf-set-form', 'lxmf-confirm-form', 'lxmf-nodes-form', 'lxmf-list-box', 'lxmf-state', 'lxmf-code-help', 'passkeys-list', 'lxmf-list', 'sessions-list', 'devices-list', 'pw-form', 'totp-state'];
+  const IDS = ['acct-lxmf', 'acct-passkeys', 'acct-recovery', 'lxmf-set-form', 'lxmf-confirm-form', 'lxmf-nodes-form', 'lxmf-list-box', 'lxmf-test-box', 'lxmf-test-help', 'lxmf-test-result', 'lxmf-state', 'lxmf-code-help', 'passkeys-list', 'lxmf-list', 'sessions-list', 'devices-list', 'pw-form', 'totp-state'];
   const account = withLxmf(lxmfWith([CONFIRMED(LXMF_A), WAITING(LXMF_B)], { canNodeAlerts: true }), { role: 'manage', sessions: [{ created: '2026-11-01T10:00:00.000Z', lastSeen: '2026-11-02T10:00:00.000Z', current: true }], devices: [{ id: 'dddd', created: '2026-11-01T10:00:00.000Z', lastUsed: null, current: true }], passkeys: { ...ACCOUNT.passkeys, list: [KEY] } });
   const p = await accountPage({ account, prepare: (dom) => watch(dom, IDS) });
   const lists = ['lxmf-list', 'passkeys-list', 'sessions-list', 'devices-list'].map((id) => [id, p.$(id).children.slice()]);
@@ -3207,8 +3268,11 @@ test('every page has the same 1400px header and footer, and the wide pages lay t
   assert.match(css, /main\.wide:has\(> \.join-side\) \{ display: grid; grid-template-columns: minmax\(0, 46rem\) minmax\(18rem, 26rem\);/);
   // Downloads: the projects side by side from 1000px.
   assert.match(css, /@media \(min-width: 1000px\) \{\s*#projects \{ grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 34rem\), 1fr\)\);/);
-  // Account: two columns from 1000px for the cards in the signed-in part only; the alert spans both.
-  assert.match(css, /#acct:not\(\[hidden\]\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  // Account: five stacks of cards in wrappers, in one column below 1000px and in 2, 3 and 4 columns from 1000, 1500 and 1900px; the alert spans all.
+  assert.match(css, /#acct:not\(\[hidden\]\) \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(css, /@media \(min-width: 1000px\) \{\s*#acct:not\(\[hidden\]\) \{ grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 26rem\), 1fr\)\);/);
+  assert.match(css, /@media \(min-width: 1500px\) \{\s*#acct:not\(\[hidden\]\) \{ grid-template-rows: auto 1fr; \}/);
+  assert.match(css, /@media \(min-width: 1900px\) \{\s*#acct > \.acct-col > \.acct-col \{ display: contents; \}/);
   assert.match(css, /#acct > #acct-must-change \{ grid-column: 1 \/ -1;/);
   assert.match(css, /#acct-signin \{ max-width: 32rem; \}/);
   // Users: the card stack is on below 1100px for this page only; the global rule (700px, used by the Manage tables too) is as it was.

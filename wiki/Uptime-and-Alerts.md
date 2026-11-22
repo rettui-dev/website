@@ -298,6 +298,17 @@ is, it gets (every confirmed address of the user gets each message):
   2026-11-19 12:03 UTC. 1 passkey was removed with it. You choose a new one when you next sign in.`
   They never hold a credential id, a secret, a code or an IP address. They are sent whatever
   `alerts.events` lists (that list is for the operator's own channels).
+- **A test alert**, which the user asks for with "Send a test alert" on the account page (`account_test`): to every
+  confirmed address, "Test alert for your account bob at https://status.example.org, sent at 2026-11-19 12:03 UTC. If
+  you got this, account alerts reach this address." (the site's address only when `site.url` is set; no IP address or
+  secret). A user may send 3 an hour, and the 30 an hour for the whole site are shared by all users (refused with 429
+  and a wait). It is an account alert, but it is counted with the codes and node alerts: it takes part of the same
+  `per_address_per_hour` minus 3 and `addresses_per_hour` minus 5 that they share, whatever order the messages come in,
+  so at least 3 messages an hour per address and 5 new addresses an hour always remain for real account alerts. Tests
+  alone may also take only a quarter of `addresses_per_hour` different addresses an hour, so they cannot crowd out the
+  node alerts of admins. An address that has no room, or that the bridge told the site to leave alone, is held back and
+  the page is told when it can go; a test that no address could take counts for nothing. Like the other account alerts
+  it is not tried again after the bridge was unreachable. It needs only the password from the last 15 minutes.
 - **Node alerts**, for users whose role is admin or manage who ticked "Node down and recovered
   alerts": the same events and the same text the channels get (`events`, the cooldown and the
   reminders all apply, as they are applied before a message is queued). A user whose role was lowered
@@ -323,7 +334,7 @@ store](User-Store)). They stay when the password changes or a passkey is
 removed (that is when an alert matters most), and go when the user is deleted. Changes made with
 `scripts/users.js` (`reset-password`, `reset-2fa`) send no message, as the command line has no alerter.
 The audit log gets `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`,
-`lxmf-address-removed` and `lxmf-node-alerts`, with the user and the first 8 digits of the address (and, for the
+`lxmf-address-removed`, `lxmf-node-alerts` and `lxmf-test-sent` (the user, the number of addresses and the IP address it came from, never an LXMF address), with the user and the first 8 digits of the address (and, for the
 first three, `with`: how the step-up was done). The password used from a new browser is no audit line of its own: a
 new device is `device-added`, as before.
 

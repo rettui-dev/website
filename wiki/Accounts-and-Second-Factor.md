@@ -205,6 +205,15 @@ can take a while to arrive over LXMF. If the bridge refuses, the page says why i
 bridge has website addresses turned off, it has sent the most it allows to that address (and for how
 long to wait), or it is busy.
 
+Once an address is confirmed, the "Send a test alert" button under the list sends one test alert to every
+confirmed address, so you can see that account alerts reach you (addresses still waiting for a code get nothing).
+It asks for your password only if you gave it more than 15 minutes ago, and for no second step. You can send 3
+an hour, and the whole site 30 an hour, shared by all users; past that the page says how long to wait. A test only goes to an address
+that still has room in its hour: it counts with the codes and node alerts, so it never uses the last 3 messages an hour that are kept for real account alerts,
+so the page may say an address was held back by a limit, and when it can go. The page says "Sent to the bridge
+for 2 addresses", not "delivered": the bridge took the message, and LXMF can take a while. The text names your
+account, the site's address when it is set, and the time; it has no IP address or secret.
+
 Once an address is confirmed, it gets a message when something changes about your account: a
 passkey is added or removed, your password is changed (by you, or reset by an admin, who is named), your app code is turned off or your two-step
 sign-in is reset by an admin, new recovery codes are made, or an LXMF address is added or removed. All your
@@ -230,7 +239,9 @@ changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enabl
 `/passkeys/rename` and `/passkeys/remove`, and, only with an LXMF bridge for users' addresses,
 `/lxmf/set` (`{address}` and the step-up fields: sends a code, keeps the address once the bridge took it; at most 3 addresses),
 `/lxmf/resend` (`{address}`), `/lxmf/confirm` (`{address, lxmfCode}` and the step-up fields; the step-up's own `code` is a different field),
-`/lxmf/remove` (`{address}` and the step-up fields) and `/lxmf/node-alerts` (`{enabled}`). `set`, `confirm` and `remove`
+`/lxmf/remove` (`{address}` and the step-up fields), `/lxmf/node-alerts` (`{enabled}`) and `/lxmf/test` (no fields; needs only the
+recent password; at most 3 an hour for a user and 30 for the site, refused with 429 and `Retry-After`; answers `queued`, `held` and `results`, a list of
+`to`, the first 8 digits of an address, and `queued`, or `retryAfter` in seconds when a limit held it back). `set`, `confirm` and `remove`
 are limited like the passkey changes. `GET /api/account` has an `lxmf` object (`available`, and with it `set`,
 `count`, `max`, `addresses`: a list of `address`, `confirmed` and `codeExpiresAt`, `confirmed`: whether any is,
 `canNodeAlerts`, `nodeAlerts`; `addresses` is empty with `hidden: true` in a session made
@@ -258,7 +269,7 @@ other second factor on) adds `second-factor-first` as well (`role`, `method`: `t
 The LXMF addresses add `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`, `lxmf-address-removed`
 and `lxmf-node-alerts` (`enabled`), each with the `user` and `lxmf`: the first 8 digits of the address (for
 `lxmf-node-alerts`, those of each confirmed address), never the whole one or a code; set, confirmed and removed
-also have `with`, how the step-up was done. Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
+also have `with`, how the step-up was done. `lxmf-test-sent` has the `user`, the `count` of addresses it was queued for and the `address` it came from (the IP), and no LXMF address. Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
 user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
 `ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
 its counter did not go up, see "Passkeys"; `step: "sign-in"` when it was a sign in with the passkey alone). `device-added` has `with: "passkey"` for a sign in with a passkey alone. A passkey is named by its name only: no credential id

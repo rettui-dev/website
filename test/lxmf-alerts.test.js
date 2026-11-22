@@ -1380,6 +1380,372 @@ test('audit: setting, confirming and removing an address are lines with the user
   }
 });
 
+// ---- the test alert ----
+
+const testAlert = (s, cookie, extra = {}) => api(s, '/api/account/lxmf/test', extra, cookie);
+const hexAddress = (n) => n.toString(16).padStart(32, '0');
+
+test('test alert: the message names the account, the site if there is one, and the time, and holds no address, IP or secret', () => {
+  const at = Date.UTC(2026, 10, 19, 12, 3);
+  assert.equal(accountMessage('account_test', 'bob', { siteUrl: 'https://status.example.org' }, at, 'rettui status'), '[rettui status] Test alert for your account bob at https://status.example.org, sent at 2026-11-19 12:03 UTC. If you got this, account alerts reach this address.');
+  assert.equal(accountMessage('account_test', 'bob', {}, at, 'rettui status'), '[rettui status] Test alert for your account bob, sent at 2026-11-19 12:03 UTC. If you got this, account alerts reach this address.');
+  assert.equal(accountMessage('account_test', 'bob', { siteUrl: '' }, at, 'rettui status'), '[rettui status] Test alert for your account bob, sent at 2026-11-19 12:03 UTC. If you got this, account alerts reach this address.');
+});
+
+test('test alert: it is sent to every confirmed address and to no other, and the answer says which were handed to the bridge, by the first 8 digits', async () => {
+  const s = await setup({ site: { url: ORIGIN } });
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    await confirmDirect(s, 'bob', A3);
+    await s.store.setLxmf('bob', A2);
+    assert.equal(s.store.lxmfOf('bob').addresses.find((e) => e.address === A2).confirmed, false);
+    await confirmDirect(s, 'carol', hexAddress(7));
+    const r = await testAlert(s, cookie);
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.json(), { ok: true, queued: 2, held: 0, results: [{ to: '01234567', queued: true }, { to: '00112233', queued: true }] });
+    await s.lxmf.idle();
+    assert.deepEqual(s.bridge.named().map((c) => [c.body.to, c.body.event]), [[A1, 'account_test'], [A3, 'account_test']]);
+    assert.equal(s.bridge.to(A2).length, 0, 'an address that waits for its code gets nothing');
+    assert.equal(s.bridge.to(hexAddress(7)).length, 0, 'nor does another user\'s');
+    const message = s.bridge.to(A1)[0].body.message;
+    assert.equal(message, `[rettui status] Test alert for your account bob at ${ORIGIN}, sent at 2027-01-15 08:00 UTC. If you got this, account alerts reach this address.`);
+    assert.doesNotMatch(message, /127\.0\.0\.1|password|secret/i);
+    for (const text of [r.text, ...s.logs]) for (const a of [A1, A2, A3]) assert.equal(text.includes(a), false, 'only the first 8 digits are shown');
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: without a site address the message leaves it out; without a confirmed address nothing is sent', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    const none = await testAlert(s, cookie);
+    assert.equal(none.status, 409);
+    assert.deepEqual(none.json(), { ok: false, error: 'Confirm an LXMF address first.' });
+    await s.store.setLxmf('bob', A2);
+    assert.equal((await testAlert(s, cookie)).status, 409, 'an address that waits for its code does not count');
+    assert.equal(s.bridge.calls.length, 0);
+    await confirmDirect(s, 'bob', A1);
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    await s.lxmf.idle();
+    assert.match(s.bridge.to(A1)[0].body.message, /^\[rettui status\] Test alert for your account bob, sent at /);
+    // The refused tries did not use up the user's tests: 1 of 3 so far.
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    assert.equal((await testAlert(s, cookie)).status, 429);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: it needs the same checks as the other routes, the recent password but no step-up, and a passkey-only session gives the password first', async () => {
+  const s = await setup({ userAddresses: true });
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    // Not signed in, from another site, without the header, not JSON.
+    assert.equal((await testAlert(s, undefined)).status, 401);
+    assert.equal((await request(s.port, { method: 'POST', path: '/api/account/lxmf/test', headers: { ...JSON_HEADERS, 'Sec-Fetch-Site': 'cross-site', Cookie: cookie }, body: '{}' })).status, 403);
+    assert.equal((await request(s.port, { method: 'POST', path: '/api/account/lxmf/test', headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', Cookie: cookie }, body: '{}' })).status, 403);
+    assert.equal((await request(s.port, { method: 'POST', path: '/api/account/lxmf/test', headers: { ...JSON_HEADERS, 'Content-Type': 'text/plain', Cookie: cookie }, body: '{}' })).status, 415);
+    assert.equal((await request(s.port, { method: 'GET', path: '/api/account/lxmf/test', headers: { Cookie: cookie } })).status >= 400, true);
+    // The password is older than 15 minutes.
+    s.clock.t += RECENT_AUTH_MS + 1;
+    const stale = await testAlert(s, cookie);
+    assert.equal(stale.status, 403);
+    assert.deepEqual(stale.json(), { error: 'Enter your password again to do this.', reauth: true });
+    assert.equal(s.bridge.calls.length, 0);
+    // The password alone is enough once given again: no second step is asked for, even with a passkey.
+    assert.equal((await api(s, '/api/account/reauth', { password: BOB }, cookie)).status, 200);
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().length, 1);
+    // A session made with a passkey alone has not given the password.
+    const { passkey } = await passkeyOnlyBob(s);
+    s.bridge.calls.length = 0;
+    const held = await testAlert(s, passkey);
+    assert.equal(held.status, 403);
+    assert.equal(held.json().reauth, true);
+    assert.equal(s.bridge.calls.length, 0);
+    assert.equal((await api(s, '/api/account/reauth', { password: BOB }, passkey)).status, 200);
+    assert.equal((await testAlert(s, passkey)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: without the feature the route is a 404', async () => {
+  const s = await setup({ userAddresses: false });
+  try {
+    const cookie = await logIn(s);
+    assert.equal((await testAlert(s, cookie)).status, 404);
+    assert.equal(s.bridge.calls.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: a user may send 3 an hour, then it is refused with 429 and a wait that is also in Retry-After; an hour after the first it works again', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await testAlert(s, cookie)).status, 200, `test ${i + 1}`);
+      s.clock.t += 60_000;
+    }
+    await s.lxmf.idle();
+    assert.equal(s.bridge.to(A1).length, 3);
+    // Not a "did this too often" of the change routes: these have their own words.
+    const r = await testAlert(s, cookie);
+    assert.equal(r.status, 429);
+    assert.equal(r.json().error, 'You sent 3 test alerts in the last hour, the most allowed. Try again in 57 minutes.');
+    assert.equal(r.json().retryAfter, 57 * 60);
+    assert.equal(r.headers['retry-after'], String(57 * 60));
+    await s.lxmf.idle();
+    assert.equal(s.bridge.to(A1).length, 3, 'nothing was sent');
+    // Another user is not held by it.
+    await confirmDirect(s, 'carol', A2);
+    assert.equal((await testAlert(s, await logIn(s, 'carol'))).status, 200);
+    // The first of the three is an hour old.
+    s.clock.t += 57 * 60_000;
+    const cookie2 = await logIn(s, 'bob');
+    assert.equal((await testAlert(s, cookie2)).status, 200);
+    assert.equal((await testAlert(s, cookie2)).status, 429, 'the second and third are still in the hour');
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: the whole site may send 30 an hour, and the one past it is refused in its own words, counted for no user', async () => {
+  const s = await setup();
+  try {
+    for (let u = 0; u < 11; u++) {
+      await addUser(s, `user${u}`);
+      await confirmDirect(s, `user${u}`, hexAddress(u + 100));
+    }
+    for (let u = 0; u < 10; u++) for (let i = 0; i < 3; i++) assert.equal(s.lxmf.sendTest(`user${u}`).ok, true);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.calls.length, 30);
+    const over = s.lxmf.sendTest('user10');
+    assert.equal(over.ok, false);
+    assert.equal(over.status, 429);
+    assert.equal(over.error, 'Too many test alerts were sent from this site in the last hour. Try again in 60 minutes.');
+    assert.equal(over.retryAfter, 3600);
+    assert.equal(s.bridge.calls.length, 30);
+    assert.equal(s.lxmf.testsPerUser.recent('user10').length, 0);
+    s.clock.t += 60 * 60_000;
+    assert.equal(s.lxmf.sendTest('user10').ok, true);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: tests never use the 3 an hour kept for real account alerts, and a test that no address can take is refused and not counted', async () => {
+  const s = await setup({ channelExtra: { perAddressPerHour: 6 } });
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmAddress(s, cookie, 'bob', A1);
+    // 6 an hour, 1 used by the code: tests go while fewer than 3 are used.
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    const third = await testAlert(s, cookie);
+    assert.equal(third.status, 429);
+    assert.deepEqual(third.json().results, [{ to: '01234567', queued: false, retryAfter: 3600 }]);
+    assert.match(third.json().error, /^The alert limit of your addresses is used up for now\. Try again in 60 minutes\.$/);
+    assert.equal(s.lxmf.testsPerUser.recent('bob').length, 2, 'the refused test is not counted');
+    // The real alerts have all 3 of what is left.
+    for (let i = 0; i < 5; i++) s.lxmf.notifyUser('bob', 'password_changed', {});
+    await s.lxmf.idle();
+    assert.equal(s.bridge.to(A1).filter((c) => c.body.event === 'password_changed').length, 3);
+    assert.equal(s.bridge.to(A1).filter((c) => c.body.event === 'account_test').length, 2);
+    // The refused test and the 2 real alerts past the budget were logged as dropped, by the first 8 digits.
+    assert.equal(s.logs.filter((l) => /a message to 01234567 was dropped to keep under the limit/.test(l)).length, 3);
+    for (const l of s.logs) assert.equal(l.includes(A1), false);
+    // An hour on, all of it is back.
+    s.clock.t += 60 * 60_000;
+    const cookie2 = await logIn(s, 'bob');
+    assert.equal((await testAlert(s, cookie2)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: node alerts that took the share of codes and node alerts leave no room for a test, and the real alerts still have their 3', async () => {
+  const s = await setup();
+  try {
+    await confirmDirect(s, 'bob', A1, true);
+    for (let i = 0; i < 20; i++) s.lxmf.notifyNode('down', 'a.test:1 is down');
+    await s.lxmf.idle();
+    assert.equal(s.bridge.to(A1).length, 7);
+    const r = s.lxmf.sendTest('bob');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 429);
+    for (let i = 0; i < 5; i++) s.lxmf.notifyUser('bob', 'password_changed', {});
+    await s.lxmf.idle();
+    assert.equal(s.bridge.to(A1).filter((c) => c.body.event === 'password_changed').length, 3);
+    assert.equal(s.bridge.to(A1).filter((c) => c.body.event === 'account_test').length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: with two addresses, one that has no room is held back with its wait and the other still gets the test (counted as sent for 1)', async () => {
+  const s = await setup({ channelExtra: { perAddressPerHour: 6 } });
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    await confirmDirect(s, 'bob', A2);
+    for (let i = 0; i < 3; i++) s.lxmf.notifyUser('bob', 'password_changed', {});
+    await s.lxmf.idle();
+    s.bridge.calls.length = 0;
+    // A1 and A2 each have 3 of 6 used: no room for a test there. A3 is fresh, so it gets the test.
+    await confirmDirect(s, 'bob', A3);
+    const r = await testAlert(s, cookie);
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.json(), { ok: true, queued: 1, held: 2, results: [{ to: '01234567', queued: false, retryAfter: 3600 }, { to: 'fedcba98', queued: false, retryAfter: 3600 }, { to: '00112233', queued: true }] });
+    await s.lxmf.idle();
+    assert.deepEqual(s.bridge.named().map((c) => c.body.to), [A3]);
+    const lines = (await auditLines(s)).filter((l) => l.event === 'lxmf-test-sent');
+    assert.deepEqual(lines.map((l) => ({ ...l, time: undefined })), [{ event: 'lxmf-test-sent', user: 'bob', count: 1, address: '127.0.0.1', time: undefined }]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: an address the bridge has told us to leave alone is held back until then', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    s.bridge.status = 429;
+    s.bridge.headers = { 'Retry-After': '600' };
+    assert.equal((await testAlert(s, cookie)).status, 200, 'queued: the bridge answers later');
+    await s.lxmf.idle();
+    const again = await testAlert(s, cookie);
+    assert.equal(again.status, 429);
+    assert.deepEqual(again.json().results, [{ to: '01234567', queued: false, retryAfter: 600 }]);
+    assert.equal(again.json().retryAfter, 600);
+    assert.equal(s.bridge.calls.length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: a bridge that is down does not fail the request, and the test is not tried a second time', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    s.bridge.down = true;
+    const r = await testAlert(s, cookie);
+    assert.equal(r.status, 200);
+    assert.equal(r.json().queued, 1);
+    await s.lxmf.idle();
+    assert.equal(s.bridge.calls.length, 0);
+    assert.equal(s.logs.filter((l) => l.includes('failed (bridge-unreachable), giving up')).length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: the audit line has the user and the count, no address', async () => {
+  const s = await setup();
+  try {
+    const cookie = await logIn(s, 'bob');
+    await confirmDirect(s, 'bob', A1);
+    await confirmDirect(s, 'bob', A2);
+    assert.equal((await testAlert(s, cookie)).status, 200);
+    const lines = (await auditLines(s)).filter((l) => l.event.startsWith('lxmf-'));
+    assert.deepEqual(lines.map((l) => ({ ...l, time: undefined })), [{ event: 'lxmf-test-sent', user: 'bob', count: 2, address: '127.0.0.1', time: undefined }]);
+    const text = await fs.readFile(s.audit.file, 'utf8');
+    for (const a of [A1, A2]) assert.equal(text.includes(a), false);
+    // A refused test (over the user's 3) is no line.
+    await testAlert(s, cookie);
+    await testAlert(s, cookie);
+    assert.equal((await testAlert(s, cookie)).status, 429);
+    assert.equal((await auditLines(s)).filter((l) => l.event === 'lxmf-test-sent').length, 3);
+  } finally {
+    await s.close();
+  }
+});
+
+test('test alert: tests count with the node alerts and codes, so in any order the real account alerts keep their 3 an hour', async () => {
+  const s = await setup();
+  try {
+    await confirmDirect(s, 'bob', A1, true);
+    for (let i = 0; i < 3; i++) assert.equal(s.lxmf.sendTest('bob').ok, true);
+    for (let i = 0; i < 20; i++) s.lxmf.notifyNode('down', 'a.test:1 is down');
+    for (let i = 0; i < 5; i++) s.lxmf.notifyUser('bob', 'password_changed', {});
+    await s.lxmf.idle();
+    const events = s.bridge.to(A1).map((c) => c.body.event);
+    assert.equal(events.filter((e) => e === 'account_test').length, 3);
+    assert.equal(events.filter((e) => e === 'password_changed').length, 3, 'the 3 kept for real account alerts');
+    assert.equal(events.length, 10);
+    assert.equal(events.filter((e) => e !== 'password_changed').length, 7, 'tests and node alerts together are the budget less 3');
+  } finally {
+    await s.close();
+  }
+  // With codes in between (a code for an address another user confirmed counts too).
+  const t = await setup();
+  try {
+    for (const n of ['dave', 'erin']) await addUser(t, n);
+    await confirmDirect(t, 'bob', A1, true);
+    for (let i = 0; i < 3; i++) assert.equal(t.lxmf.sendTest('bob').ok, true);
+    for (const n of ['carol', 'dave', 'erin']) assert.equal((await t.lxmf.sendCode(n, A1)).ok, true);
+    for (let i = 0; i < 20; i++) t.lxmf.notifyNode('down', 'a.test:1 is down');
+    for (let i = 0; i < 5; i++) t.lxmf.notifyUser('bob', 'password_changed', {});
+    await t.lxmf.idle();
+    assert.equal(t.bridge.to(A1).filter((c) => c.body.event === 'password_changed').length, 3);
+    assert.ok(t.bridge.to(A1).length <= 10);
+    // And a test after the node alerts has taken the room is held, not sent.
+    const late = await setup();
+    try {
+      await confirmDirect(late, 'bob', A1, true);
+      for (let i = 0; i < 20; i++) late.lxmf.notifyNode('down', 'a.test:1 is down');
+      assert.equal(late.lxmf.sendTest('bob').ok, false);
+    } finally {
+      await late.close();
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+test('test alert: tests and node alerts together leave the 5 new addresses an hour kept for account alerts, and tests alone take at most a quarter of the addresses, so node alerts to admins still go', async () => {
+  const s = await setup({ channelExtra: { addressesPerHour: 10 } });
+  try {
+    for (let u = 0; u < 10; u++) {
+      await addUser(s, `u${u}`);
+      await confirmDirect(s, `u${u}`, hexAddress(u + 200), true);
+    }
+    // 10 / 4 = 2 different addresses for tests: the third user's test is refused and counts for nothing.
+    assert.equal(s.lxmf.sendTest('u0').ok, true);
+    assert.equal(s.lxmf.sendTest('u1').ok, true);
+    const third = s.lxmf.sendTest('u2');
+    assert.equal(third.ok, false);
+    assert.equal(third.status, 429);
+    assert.equal(s.lxmf.testsPerUser.recent('u2').length, 0);
+    // The second test of a user who already had one goes: the address is in the window.
+    assert.equal(s.lxmf.sendTest('u0').ok, true);
+    // Node alerts to all ten: the addresses of the tests and 3 more make 5 (10 less the 5 kept), no more.
+    s.lxmf.notifyNode('down', 'a.test:1 is down');
+    await s.lxmf.idle();
+    const nodeTo = new Set(s.bridge.named().filter((c) => c.body.event !== 'account_test').map((c) => c.body.to));
+    assert.equal(nodeTo.size, 5, 'u0 and u1 already had a test; the node alerts took 3 new addresses more');
+    assert.ok(nodeTo.has(hexAddress(200)) && nodeTo.has(hexAddress(201)));
+    assert.equal(new Set(s.bridge.named().map((c) => c.body.to)).size, 5);
+    // The 5 new addresses that were kept for account alerts still go.
+    for (let u = 5; u < 10; u++) s.lxmf.notifyUser(`u${u}`, 'password_changed', {});
+    await s.lxmf.idle();
+    assert.equal(s.bridge.named().filter((c) => c.body.event === 'password_changed').length, 5);
+  } finally {
+    await s.close();
+  }
+});
+
 // ---- storage ----
 
 async function openStore(dataDir, { configUsers = [], now = () => NOW } = {}) {

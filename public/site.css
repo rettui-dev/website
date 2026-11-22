@@ -455,7 +455,7 @@ dialog.login::backdrop { background: rgba(0, 0, 0, 0.6); }
 .login-form label { margin-top: 6px; font-weight: 500; font-size: 14px; }
 .login-form input {
   font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
-  padding: 6px 10px; min-height: 40px; width: 100%;
+  padding: 6px 10px; min-height: 40px; width: 100%; max-width: 22rem;
 }
 .login-form input:hover { border-color: var(--accent); }
 .login-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
@@ -477,6 +477,8 @@ button:disabled { opacity: 0.7; cursor: progress; }
 
 /* The account page */
 .acct-page h1 { margin: 0 0 8px; font-size: 22px; }
+/* The status line is empty once the page has loaded: it takes no room (it stays a live region for what a change says). */
+#acct-status:empty { margin: 0; }
 .acct-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px 16px; margin: 16px 0; }
 .acct-card[hidden], #acct[hidden], .acct-page [hidden] { display: none; }
 .acct-card h2 { margin: 0 0 8px; font-size: 17px; }
@@ -484,7 +486,7 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
 .acct-facts dt { color: var(--dim); }
 .acct-facts dd { margin: 0; overflow-wrap: anywhere; }
-.acct-form { display: grid; gap: 6px; max-width: 360px; }
+.acct-form { display: grid; gap: 6px; max-width: none; }
 .acct-form label { margin-top: 6px; font-weight: 500; font-size: 14px; }
 .acct-form input, .acct-form select {
   font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
@@ -493,6 +495,8 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-form input:hover, .acct-form select:hover { border-color: var(--accent); }
 .acct-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
 .acct-form .note { margin: 0; }
+/* Help runs to a readable line, whatever width the fields keep. */
+.acct-form .note, .acct-card > .note { max-width: 60ch; }
 .acct-check { display: grid; grid-template-columns: 24px 1fr; gap: 2px 8px; align-items: center; }
 .acct-check input { width: 24px; height: 24px; min-height: 0; margin: 0; }
 .acct-check label { margin: 0; }
@@ -512,6 +516,8 @@ button:disabled { opacity: 0.7; cursor: progress; }
 .acct-passkey-name { font-size: 15px; }
 .acct-passkey-info { color: var(--dim); font-size: 14px; }
 .acct-passkey .login-actions { margin-top: 4px; }
+.acct-test { align-items: center; }
+.acct-test .note { margin: 0; }
 .acct-passkey .acct-form { max-width: none; }
 /* The users page: a table wide, a stack of cards on a phone (no sideways scroll) */
 .users-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
@@ -547,13 +553,48 @@ button.danger:hover { border-width: 1px; text-decoration: underline; }
   .users-table:not(.manage-ret-table) td.users-actions::before { display: block; margin-bottom: 4px; }
   .users-actions button { min-height: 40px; }
 }
-/* The account page on a wide screen: the cards in two columns, in reading order (a grid, so a card does not jump when a list changes). */
+/* The account page: five stacks of cards (profile and password; sessions and devices; app code; passkeys and recovery codes;
+   LXMF alerts), in wrappers that follow the reading order, so the keyboard goes the way the page reads at every width.
+   A stack is a column of its own, so a short card never leaves a hole beside a tall one. By width: one column; from 1000px
+   two (profile to devices with the app code, then passkeys, recovery codes and LXMF alerts); from 1500px three (profile,
+   password, sessions and devices; app code, passkeys and recovery codes; LXMF alerts); from 1900px four (profile and
+   password; sessions and devices with the app code under them; passkeys and recovery codes; LXMF alerts). A wrapper that is not a column is "display: contents". Where the stacks are placed on the grid by hand, the
+   rows are "auto 1fr" and a column spans both of them, so the second stack of a column starts right under the first. A
+   column is never under 26rem. A stack with no card showing (the LXMF card on a site without it, or all but the password
+   while it must be changed) is dropped, and the columns left share the width. No "order", no CSS columns and no script. */
 #acct-signin { max-width: 32rem; }
+.acct-stack, .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.acct-col { display: contents; }
+.acct-stack > .acct-card, #acct > .acct-card { margin: 0; }
+#acct:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px 24px; align-items: start; max-width: 60rem; }
+#acct > #acct-must-change { grid-column: 1 / -1; max-width: 60rem; }
+/* The page is as wide as the screen up to a limit, so the columns can be as wide as they should be; the header and footer of this page follow it. */
+body:has(> main.wide.acct-page) main.acct-page, body:has(> main.wide.acct-page) header.top .wrap, body:has(> main.wide.acct-page) footer .wrap { max-width: 2400px; }
 @media (min-width: 1000px) {
-  #acct:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; max-width: 70rem; }
-  #acct > .acct-card { margin: 0; }
-  #acct > #acct-must-change { grid-column: 1 / -1; max-width: 60rem; }
+  #acct:not([hidden]) { grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); max-width: 118rem; }
+  #acct > .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
 }
+@media (min-width: 1500px) {
+  #acct:not([hidden]) { grid-template-rows: auto 1fr; }
+  #acct > .acct-col { display: contents; }
+  #acct > .acct-col > .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; grid-column: 1; grid-row: 1 / span 2; }
+  #acct > .acct-col:nth-of-type(1) > .acct-stack { grid-column: 2; grid-row: 1; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:first-child { grid-column: 2; grid-row: 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:last-child { grid-column: 3; grid-row: 1 / span 2; }
+}
+@media (min-width: 1900px) {
+  #acct > .acct-col > .acct-col { display: contents; }
+  #acct > .acct-col > .acct-col > .acct-stack:first-child { grid-column: 1; grid-row: 1 / span 2; }
+  #acct > .acct-col > .acct-col > .acct-stack:last-child { grid-column: 2; grid-row: 1; }
+  #acct > .acct-col:nth-of-type(1) > .acct-stack { grid-column: 2; grid-row: 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:first-child { grid-column: 3; grid-row: 1 / span 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:last-child { grid-column: 4; grid-row: 1 / span 2; }
+}
+/* While the password must be changed, the one card that shows is one readable column, placed by the flow. */
+#acct:has(> #acct-must-change:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; max-width: 40rem; }
+#acct:has(> #acct-must-change:not([hidden])) .acct-col, #acct:has(> #acct-must-change:not([hidden])) .acct-stack { grid-area: auto; }
+/* Nothing to show in a stack, or in a wrapper: it takes no place (and no column). Without :has() it just stays empty. */
+#acct .acct-stack:not(:has(> .acct-card:not([hidden]))), #acct .acct-col:not(:has(.acct-card:not([hidden]))) { display: none; }
 /* The users page: the table has the width of the page, and a card for each user below 1100px (eight columns do not fit before that). */
 .users-page #users > .acct-card > .note { max-width: 70ch; }
 .users-page #users > .acct-card[aria-labelledby=users-new-h] { max-width: 40rem; }

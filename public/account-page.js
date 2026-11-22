@@ -336,6 +336,11 @@
         list.appendChild(li);
       });
     }
+    // The test alert: offered once an address is confirmed (and shown, so, with the list).
+    var canTest = l.confirmed === true && items.length > 0;
+    setHidden($('lxmf-test-box'), !canTest);
+    setHidden($('lxmf-test-help'), !canTest);
+    if (!canTest) setText($('lxmf-test-result'), '');
     // Adding.
     var full = count >= max;
     setHidden($('lxmf-set-form'), full);
@@ -361,6 +366,7 @@
     // Node alerts.
     setHidden($('lxmf-nodes-form'), !(l.confirmed === true && l.canNodeAlerts === true));
     setChecked($('lxmf-nodes'), l.nodeAlerts === true);
+    if ($('lxmf-nodes-form').hidden) setText($('lxmf-nodes-status'), '');
   }
 
   // The words under the code field, for the address picked.
@@ -882,10 +888,38 @@
     });
   }
 
+  // What the answer to a test alert says: how many addresses the bridge was given the message for, and for those
+  // held back by a limit, when they can go. It says the bridge was given the message: LXMF is slow and the website cannot tell more.
+  function testWords(body) {
+    var results = body && Array.isArray(body.results) ? body.results : [];
+    var sent = results.filter(function (x) { return x && x.queued === true; }).length;
+    var held = results.filter(function (x) { return x && x.queued !== true; });
+    var noun = function (n) { return n + (n === 1 ? ' address' : ' addresses'); };
+    var text = 'Sent to the bridge for ' + noun(sent) + '. LXMF can take a while to arrive.';
+    if (held.length > 0) {
+      var wait = Math.min.apply(null, held.map(function (x) { return typeof x.retryAfter === 'number' ? x.retryAfter : 3600; }));
+      text += ' ' + noun(held.length) + (held.length === 1 ? ' was' : ' were') + ' held back by a limit; try again in ' + (wait < 90 ? Math.max(1, wait) + ' seconds' : Math.ceil(wait / 60) + ' minutes') + '.';
+    }
+    return text;
+  }
+
+  $('lxmf-test').addEventListener('click', function () {
+    var result = $('lxmf-test-result');
+    busy($('lxmf-test'), 'Sending...', function () {
+      setText(result, '');
+      return send('/api/account/lxmf/test', {}).then(function (r) {
+        if (!r) return;
+        setText(result, r.status === 200 ? testWords(r.body) : errorOf(r));
+      });
+    });
+  });
+
   $('lxmf-nodes').addEventListener('change', function () {
     var box = $('lxmf-nodes');
     var on = box.checked;
     var told = '';
+    var statusLine = $('lxmf-nodes-status');
+    setText(statusLine, '');
     box.disabled = true;
     send('/api/account/lxmf/node-alerts', { enabled: on }).then(function (r) {
       if (!r) return;
@@ -897,7 +931,7 @@
       return load();
     }).then(function () {
       box.disabled = false;
-      if (told) say(told);
+      if (told) setText(statusLine, told);
       box.focus();
     });
   });
