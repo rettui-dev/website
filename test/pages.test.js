@@ -3402,3 +3402,7 @@ test('step-up: password() is the same dialog with the password alone, sent to /a
   // The status page loads it for the logs, and every page that reads behind the gate loads it.
   for (const name of ['status.html', 'users.html', 'manage.html']) assert.match(await read(name), /<script src="\/step-up\.js" defer><\/script>/, name);
 });
+
+test('the checked-ago time reserves room for two digits, so the node row does not rewrap as it ticks', async () => {
+  assert.match(await read('site.css'), /\.summary time \{ display: inline-block; min-width: 7ch; \}/);
+});
