@@ -32,7 +32,9 @@ gives its date and percent, and the bar has a text label with the same figures.
 
 ## Alerts
 
-The server can send a message when a node goes down and when it is up again. It is off unless the
+The server can send a message when a node goes down and when it is up again, and, when asked, when
+a user adds a passkey (see "Passkey added" below). With an LXMF bridge it can also send each user
+alerts about their own account to an LXMF address of their own (see "Users' own LXMF addresses" below). It is off unless the
 config file has an `alerts` section (there is no environment variable for it, because it carries
 secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242) is down since
 12:03 UTC.` and `Front (front.rns.rettui.dev:4242) is back up after 5m 00s (down since 12:03 UTC).`
@@ -52,7 +54,7 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
           auth: plain                             # plain (default) or login
           from: status@example.org
           to: [ops@example.org]
-      events: [down, recovered]                   # default both; announce_queue is added by listing it
+      events: [down, recovered]                   # default both; announce_queue and passkey_added are added by listing them
       announce_queue_samples: 3                   # default 3 (1 to 100): see "Announce queue" below
       cooldown_minutes: 15                        # default 15
       repeat_minutes: 0                           # default 0: no reminders
@@ -72,8 +74,9 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
   slot, so a dead channel does not hold up the others. A client error from a webhook (such
   as 404), a refused mail address and a wrong mail password are not tried again. Failures are logged
   as `alert: webhook channel 1 failed (http 500), ...`, never with an address, secret or answer.
-  Alerts only come from the monitor: there is no endpoint to send or test one, and nothing a
-  visitor sends starts a request.
+  Node alerts only come from the monitor, and the passkey alert from the account API when a
+  passkey is added: there is no endpoint to send or test one, and nothing a visitor sends decides
+  where an alert goes (a user adding a passkey starts one message, to your channels, nothing more).
 - **Webhook:** a POST with a short timeout (10 seconds), no redirects followed, and the answer is
   never read. The URL follows the `stats_url` rules: `https`, or `http` only for loopback and
   private addresses, and no user name or password. A URL that holds a secret in its path (as chat
@@ -104,7 +107,7 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
 - **Secrets:** `secret_file` and `password_file` are read once at start, relative to the config
   file (a file other users can read gets a warning), and held in memory only. They are never
   logged, never in an `/api` answer, never in `uptime.json`, and never repeated in an error.
-- **Checked at start:** unknown keys, wrong types, more than 4 channels, more than 5 recipients,
+- **Checked at start:** unknown keys, wrong types, more than 4 channels, more than 5 recipients, `user_addresses` without a secret or on more than one channel,
   too-long strings and bad addresses stop the server with a message. Alerts are sent to the
   addresses in this file only.
 
@@ -114,7 +117,11 @@ secrets). The messages are plain, for example `Front (front.rns.rettui.dev:4242)
 to the addresses you list, with a Reticulum entry point or a propagation node. It has its own
 Dockerfile and a Compose snippet, and it is not part of the website image; a built image is published
 as `ghcr.io/rettui-dev/lxmf-bridge` (tags `dev`, `latest` and release versions), so you can pull it
-instead of building it. Any other service that
+instead of building it. The bridge can also send an alert to one LXMF address that the website names
+in the webhook's optional `to` field (a user's own address, say). That is off unless the bridge's
+`website_recipients` setting is on, and the website must check an address (by sending a code to it)
+before it uses it. The bridge limits how many alerts one such address gets an hour, and how many
+different ones, so a mistake cannot make it send to the whole network; see its README. Any other service that
 accepts a webhook can be reached the same way, with a bridge of your own.
 
 **Other services (Telegram, Matrix, Pushover and so on): Apprise.** [Apprise](https://github.com/caronc/apprise)
@@ -191,6 +198,119 @@ The URL forms for each service are in the Apprise documentation (<https://appris
 
 LXMF has its own bridge, so a webhook channel for Apprise and one for the
 [LXMF bridge](https://github.com/rettui-dev/website/blob/main/bridges/lxmf/README.md) can be listed side by side: an alert goes to every channel.
+
+**Passkey added.** Off unless `passkey_added` is listed in `events` (the default stays
+`[down, recovered]`, so a config that does not list it behaves as before). It is the one alert that
+does not come from the monitor: the account API sends it when any user adds a passkey, which is the
+step an attacker with a stolen password and code would take to stay in. The message names the user,
+their role, the passkey's name and the time, for example `bob (manage) added a passkey named "Work
+laptop" at 2026-11-19 12:03 UTC.`, and nothing else: never a credential id, an address of the user
+or a secret. It goes to every channel in its format: the generic webhook body is `{event:
+"passkey_added", user, role, passkey, message, sentAt, notAnnounced}` (signed as the others), `ntfy`
+gets the text with the title "A passkey was added", `slack` and `discord` the text (the passkey's name
+is typed by the user, so every text shows it in quotes as a JSON string, so a `"` cannot end the quote
+and fake the rest of the sentence; Discord is told to ping nobody and gets the name's Markdown escaped,
+so `[x](https://...)` is no link, and Slack gets `&`, `<` and `>` escaped, which makes `@everyone` or
+`<!channel>` plain text), `apprise` a warning, and email the subject `[rettui]
+bob added a passkey`. **Flood protection:** at most one alert for each user in each `cooldown_minutes`
+(default 15; 0 sends every one). The passkeys added in between are counted, and when the cooldown
+ends an alert goes out for the latest of them and says how many others were not announced ("2 more
+passkeys were added by this user since the last alert, and not announced."; `notAnnounced` in the
+webhook body); an add after the cooldown, if it comes first, sends that alert itself. The queue, the retries and the logging are the
+same as for the other alerts (see "Sending" above), and a channel that is down, slow or refusing
+never fails or delays adding the passkey: the alert is only queued, and the `passkey-added` line in
+`audit.log` is written either way. It needs no `stats_url` and no node.
+
+    alerts:
+      events: [down, recovered, passkey_added]
+
+**Users' own LXMF addresses.** Off unless one webhook channel says it is an LXMF bridge that takes
+addresses the website names. The bridge needs `website_recipients = true` (see "Addresses the website
+names" in its README); then, in this file:
+
+    alerts:
+      channels:
+        - type: webhook
+          url: http://172.28.0.10:8742/alert
+          secret_file: secrets/hook.secret       # needed: the bridge only takes signed requests
+          user_addresses: true                   # this channel is the bridge; at most one channel has it
+          per_address_per_hour: 10               # default 10 (6 to 100): the most messages one address gets an hour
+          addresses_per_hour: 50                 # default 50 (10 to 1000): the most different addresses an hour
+
+`user_addresses` needs the `generic` format (the default) and a secret. Without it (or with `false`)
+nothing below exists: the account page has no "LXMF alerts" card and the `/api/account/lxmf/...`
+routes answer 404. Set `per_address_per_hour` and `addresses_per_hour` to the bridge's
+`per_recipient_per_hour` and `recipients_per_hour`, or lower: **the website keeps under them itself**
+(a sliding hour, in memory, so a restart starts it over), so a bug or a burst of events here cannot
+make the bridge refuse, or send a flood to the network. A message over a limit is dropped and logged
+(with the first 8 digits of the address, never the address). Every try counts, a retry too. A bridge
+that answers 429 with `Retry-After` is left alone for that address until then. The channel still gets the node alerts
+as before, with no `to`, so the bridge's `recipients` list must not be empty unless you want those
+to fail.
+
+**The hourly budget of one address is split**, so that alerts about an account are never crowded out.
+Codes get at most 3 an hour for the address (from all users together, and never more than
+`per_address_per_hour` minus 4), codes and node alerts together get `per_address_per_hour` minus 3,
+and the account alerts may use all of it: at least 3 an hour are theirs, whoever asks for codes to
+that address or however many node alerts there are. So `per_address_per_hour` must be at least 6:
+a smaller number is refused when the site starts, with a message saying so (it is not scaled, so
+nobody finds alerts missing later). An account alert is not tried again after the bridge was
+unreachable or timed out, because the first try may have got through; other failures are tried up to
+3 times.
+
+The different addresses an hour (`addresses_per_hour`) are split the same way, so that other users'
+code requests cannot use them up: codes may take new addresses only up to half of it (rounded down),
+codes and node alerts together up to `addresses_per_hour` minus 5, and the account alerts may use all
+of it, so 5 new addresses an hour are always theirs. So `addresses_per_hour` must be at least 10: a
+smaller number is refused when the site starts.
+
+On the account page ([Accounts and second factor](Accounts-and-Second-Factor)) each user
+may enter their own LXMF address. It only counts once the user has typed back a 6-digit code that the
+website sent to it through the bridge (`to` is that address, `event` is `lxmf_check`). The code works
+for 15 minutes, ends after 5 wrong tries, and a user gets at most 3 codes an hour (and the whole site
+30 an hour). A code asked for an address that another user has already confirmed is answered as if
+it was sent, and counts against the same limits as a real send (for the address, the different
+addresses, the user and the site), with the same answer and the same "try again in" time when a
+limit is reached, but nothing is posted to the bridge. So nobody can find out who has which address
+by counting codes. The answer comes after a short random wait (20 to 150 ms); a bridge that is slow
+or hangs still shows in the time a real send takes. The code is kept in memory only, as an HMAC, compared in constant time, and is in no log,
+no audit line and no answer. While an address is not confirmed nothing else is sent there. Once it
+is, it gets:
+
+- **Alerts about the user's own account**, each with what happened and when, and for an admin's
+  action which admin: a passkey added (`passkey_added`) or removed (`passkey_removed`, saying so when
+  it was the last second step), the password changed by the user or reset by an admin
+  (`password_changed`, `password_reset`; with how many passkeys went with it), the app code turned off
+  (`second_factor_off`) or two-step sign-in reset by an admin (`second_factor_reset`), and new
+  recovery codes (`recovery_codes_new`). When the user changes or removes the address, the old one is
+  told (`lxmf_address_changed`), so that someone who got into the account cannot move the alerts away
+  unseen. For example: `[rettui status] The admin alice reset the password of your account bob at
+  2026-11-19 12:03 UTC. 1 passkey was removed with it. You choose a new one when you next sign in.`
+  They never hold a credential id, a secret, a code or an IP address. They are sent whatever
+  `alerts.events` lists (that list is for the operator's own channels).
+- **Node alerts**, for users whose role is admin or manage who ticked "Node down and recovered
+  alerts": the same events and the same text the channels get (`events`, the cooldown and the
+  reminders all apply, as they are applied before a message is queued). A user whose role was lowered
+  gets none, whatever they ticked.
+
+A bridge that fails never fails or delays what the user did: the message is only queued, tried up to
+3 times in the background (waits of 5 and 30 seconds; a refusal that will not get better, such as a
+403 or 429, is not tried again, and counts for nothing against the website's limit), and a failure is
+logged without the address, the URL or the secret. Delivery is best effort: a 202 from the bridge only
+means it took the message. What the bridge answers while a code is sent is shown to the user plainly:
+403 (the bridge has website addresses turned off), 429 (with its wait), 503 (busy, with its wait), 400
+and 422 (not an address it can send to, or its own), 401 (the secret differs) and an unreachable
+bridge. An address the bridge refuses is not kept. Only the user's own session, with a password from
+the last 15 minutes, can set, change or remove an address (a session made with a passkey alone
+gives the password first and does not see the address until then).
+
+The address, whether it is confirmed and the node alerts tick are kept per user, for users made on the
+website and for users in the config file, in `users.db` without a schema change (see [The user
+store](User-Store)). They stay when the password changes or a passkey is
+removed (that is when an alert matters most), and go when the user is deleted. Changes made with
+`scripts/users.js` (`reset-password`, `reset-2fa`) send no message, as the command line has no alerter.
+The audit log gets `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`,
+`lxmf-address-removed` and `lxmf-node-alerts`, with the user and the first 8 digits of the address.
 
 **Announce queue.** Off unless `announce_queue` is listed in `events` (the default stays
 `[down, recovered]`). A rettui node reports the announces waiting to go out in `stats.json`

@@ -55,7 +55,7 @@
 #   # Signing in with a passkey alone, without name and password ("Sign in with a passkey").
 #   # Needs site.url. Default true.
 #   passkey_sign_in: true
-# Optional: a message when a node goes down or comes back (see "Alerts" in wiki/Uptime-and-Alerts.md).
+# Optional: a message when a node goes down or comes back, or a user adds a passkey (see "Alerts" in wiki/Uptime-and-Alerts.md).
 # A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or
 # email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
 # a missing file stops the server at start. A node counts as down after 2 failed checks in a row.
@@ -64,6 +64,16 @@
 #     - type: webhook
 #       url: https://hooks.example.org/rettui
 #       secret_file: secrets/hook.secret    # signs each request: X-Rettui-Signature: sha256=...
+#     # The LXMF bridge (bridges/lxmf). With user_addresses each user can also set their own LXMF address on the
+#     # account page, for alerts about their account (the bridge needs website_recipients = true; see "Users' own
+#     # LXMF addresses" in wiki/Uptime-and-Alerts.md). It needs a secret, and only one channel may have it.
+#     - type: webhook
+#       url: http://172.28.0.10:8742/alert
+#       secret_file: secrets/hook.secret
+#       user_addresses: true
+#       per_address_per_hour: 10            # default 10 (6 to 100); the bridge's per_recipient_per_hour or lower
+#       addresses_per_hour: 50              # default 50 (10 to 1000); the bridge's recipients_per_hour or lower
+#       #   (codes take up to half of it for new addresses, node alerts all but 5, account alerts all of it)
 #     # Telegram, Matrix, Pushover...: through an Apprise API container that holds their URLs
 #     # (a fixed private IP, because plain http is not allowed for a service name; no login in the URL).
 #     - type: webhook
@@ -77,8 +87,11 @@
 #       from: status@example.org
 #       to: [ops@example.org]
 #   events: [down, recovered]               # add announce_queue (needs rettui 2.1.0 on the node) for full queues
+#                                           # add passkey_added for a message each time a user adds a passkey
+#                                           # (user, role, the passkey's name and the time; never an id or an address)
 #   announce_queue_samples: 3               # stats samples in a row with a full queue before an alert
-#   cooldown_minutes: 15                    # a node that flaps is not announced again within this time
+#   cooldown_minutes: 15                    # a node that flaps is not announced again within this time;
+#                                           # a user's passkey_added alerts are held to one in this time, the rest counted
 #   repeat_minutes: 0                       # 0 = no reminders while a node stays down
 # Optional: serve only the status page, without the rettui project pages (see "Status-only
 # site" in wiki/Configuration.md). Default full. The environment variable SITE_MODE is for use without this file.

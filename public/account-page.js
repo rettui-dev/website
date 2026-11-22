@@ -8,6 +8,8 @@
 // with nothing else on asks there for the password only. A passkey is made in two steps: the server
 // gives options (after the step-up), the browser makes the passkey (passkey.js), and the answer goes
 // back to the server.
+// The LXMF alert address (shown only when the site has a bridge that takes users' own addresses) is set, confirmed
+// with the 6-digit code the site sends to it, changed and removed with send(): the recent password, nothing more.
 // Everything is set as text: nothing from the server becomes markup. The QR code is drawn from its
 // rows of modules as SVG elements.
 (function () {
@@ -237,7 +239,9 @@
     $('pw-form').hidden = !data.canChangePassword;
     // Only offered while there are passkeys to remove.
     $('pw-remove-box').hidden = passkeyList().length === 0;
-    if (passkeyList().length === 0) $('pw-remove').checked = false;
+    // Ticked by default: a passkey someone planted keeps signing in after the password changes. With none
+    // listed the box is hidden but still ticked, and sent: a passkey added since the list was loaded goes too.
+    if (passkeyList().length === 0) $('pw-remove').checked = true;
     // For password managers: the name the new password belongs to.
     $('pw-user').value = data.name;
     var on = Boolean(data.totp && data.totp.enabled);
@@ -264,7 +268,31 @@
     $('acct-passkeys').hidden = data.mustChangePassword === true || !data.passkeys;
     $('acct-recovery').hidden = data.mustChangePassword === true || !(secondFactorOn() || !$('codes-box').hidden);
     paintPasskeys();
+    paintLxmf();
     paintDevices();
+  }
+
+  // The LXMF alerts card: hidden unless the server says the site has a bridge for it.
+  function paintLxmf() {
+    var l = data.lxmf;
+    var card = $('acct-lxmf');
+    card.hidden = data.mustChangePassword === true || !l || l.available !== true;
+    if (card.hidden) return;
+    var set = l.set === true;
+    var state;
+    if (!set) state = 'No address is set.';
+    else if (l.hidden) state = 'An address is set. It is not shown until you give your password in this session.';
+    else if (l.confirmed) state = 'Alerts go to ' + l.address + '.';
+    else state = 'Waiting for the code for ' + l.address + '. Nothing is sent there until you confirm it.';
+    $('lxmf-state').textContent = state;
+    $('lxmf-hidden').hidden = !(l.hidden === true);
+    $('lxmf-address-label').textContent = set ? 'A different LXMF address' : 'LXMF address';
+    $('lxmf-set').textContent = set ? 'Send a code to the new address' : 'Send a code';
+    $('lxmf-confirm-form').hidden = !set || l.confirmed === true;
+    $('lxmf-code-help').textContent = (l.codeExpiresAt ? 'The code works until ' + when(l.codeExpiresAt) + ' and ends after 5 wrong tries. ' : 'No code is waiting: send a new one. ') + 'A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.';
+    $('lxmf-nodes-form').hidden = !(l.confirmed === true && l.canNodeAlerts === true);
+    $('lxmf-nodes').checked = l.nodeAlerts === true;
+    $('lxmf-remove-box').hidden = !set;
   }
 
   // The passkeys: what the server lists, and what can be done here. A passkey made for another address
@@ -430,7 +458,8 @@
     if (next.value !== again.value) { setFormError('pw-error', 'The two new passwords are not the same.', fields); again.focus(); return; }
     setFormError('pw-error', '', fields);
     busy($('pw-submit'), 'Changing...', function () {
-      var remove = !$('pw-remove-box').hidden && $('pw-remove').checked === true;
+      // Whenever the box is ticked, seen or not: a passkey planted after the list was loaded goes too.
+      var remove = $('pw-remove').checked === true;
       var sent = { next: next.value };
       if (remove) sent.removeOtherPasskeys = true;
       return confirmed('/api/account/password', sent, { title: 'Change your password', why: 'Your new password takes the place of the current one, and you are signed out everywhere else.', action: 'Change password' }).then(function (r) {
@@ -442,7 +471,7 @@
           var keeps = data && data.passkeys && data.passkeys.signIn === true && passkeyList().length > 0 && !remove;
           var count = r.body && typeof r.body.removedPasskeys === 'number' ? r.body.removedPasskeys : null;
           return load().then(function () {
-            $('pw-remove').checked = false;
+            $('pw-remove').checked = true;
             if (count !== null) say('Your password is changed. You are signed out everywhere else. ' + (count === 0 ? 'You had no other passkeys to remove.' : count === 1 ? '1 passkey was removed.' : count + ' passkeys were removed.') + (passkeyList().length === 0 ? ' You can add a passkey again below.' : ''));
             else say('Your password is changed. You are signed out everywhere else.' + (keeps ? ' Your passkeys can still sign you in without the password. Check the list below and remove any you do not know.' : ''));
           });
@@ -691,6 +720,94 @@
       });
     });
   }
+
+  // ---- LXMF alerts ----
+  var LXMF_ADDRESS = /^<?\s*[0-9a-fA-F]{32}\s*>?$/;
+
+  $('lxmf-set-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var input = $('lxmf-address');
+    var address = input.value.trim();
+    if (!LXMF_ADDRESS.test(address)) { setFormError('lxmf-set-error', 'An LXMF address is 32 hex digits, such as 0123456789abcdef0123456789abcdef.', ['lxmf-address']); input.focus(); return; }
+    setFormError('lxmf-set-error', '', ['lxmf-address']);
+    busy($('lxmf-set'), 'Sending...', function () {
+      return send('/api/account/lxmf/set', { address: address }).then(function (r) {
+        if (!r) return;
+        if (r.status !== 200) { setFormError('lxmf-set-error', errorOf(r), r.body && r.body.field === 'address' ? ['lxmf-address'] : []); input.focus(); return; }
+        input.value = '';
+        return load().then(function () {
+          say('A code was sent to your LXMF address. Type it below to confirm the address.');
+          $('lxmf-code').focus();
+        });
+      });
+    });
+  });
+
+  $('lxmf-confirm-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var input = $('lxmf-code');
+    var code = input.value.replace(/\s+/g, '');
+    if (!/^[0-9]{6}$/.test(code)) { setFormError('lxmf-confirm-error', 'Enter the 6 digits that were sent to your LXMF address.', ['lxmf-code']); input.focus(); return; }
+    setFormError('lxmf-confirm-error', '', ['lxmf-code']);
+    busy($('lxmf-confirm'), 'Checking...', function () {
+      return send('/api/account/lxmf/confirm', { code: code }).then(function (r) {
+        if (!r) return;
+        if (r.status !== 200) { setFormError('lxmf-confirm-error', errorOf(r), ['lxmf-code']); input.value = ''; input.focus(); return; }
+        input.value = '';
+        return load().then(function () {
+          say('Your LXMF address is confirmed. Alerts about your account now go there.');
+          $('acct-lxmf-h').focus();
+        });
+      });
+    });
+  });
+
+  $('lxmf-resend').addEventListener('click', function () {
+    busy($('lxmf-resend'), 'Sending...', function () {
+      return send('/api/account/lxmf/resend', {}).then(function (r) {
+        if (!r) return;
+        if (r.status !== 200) { setFormError('lxmf-confirm-error', errorOf(r), []); return; }
+        setFormError('lxmf-confirm-error', '', ['lxmf-code']);
+        return load().then(function () {
+          say('A new code was sent to your LXMF address. The old one no longer works.');
+          $('lxmf-code').focus();
+        });
+      });
+    });
+  });
+
+  $('lxmf-remove').addEventListener('click', function () {
+    busy($('lxmf-remove'), 'Removing...', function () {
+      return send('/api/account/lxmf/remove', {}).then(function (r) {
+        if (!r) return;
+        if (r.status !== 200) { say(errorOf(r)); return; }
+        return load().then(function () {
+          say('Your LXMF address is removed. No more alerts go there.');
+          $('acct-lxmf-h').focus();
+        });
+      });
+    });
+  });
+
+  $('lxmf-nodes').addEventListener('change', function () {
+    var box = $('lxmf-nodes');
+    var on = box.checked;
+    var told = '';
+    box.disabled = true;
+    send('/api/account/lxmf/node-alerts', { enabled: on }).then(function (r) {
+      if (!r) return;
+      if (r.status !== 200) { setFormError('lxmf-nodes-error', errorOf(r), []); return; }
+      setFormError('lxmf-nodes-error', '', []);
+      told = on ? 'Node down and recovered alerts now go to your LXMF address too.' : 'Node alerts no longer go to your LXMF address.';
+    }).catch(function () { told = 'Could not reach the server. Try again.'; }).then(function () {
+      // Shows what the server has, whatever happened; load() clears the status line, so it is said after.
+      return load();
+    }).then(function () {
+      box.disabled = false;
+      if (told) say(told);
+      box.focus();
+    });
+  });
 
   // ---- sessions ----
   $('sessions-end').addEventListener('click', function () {

@@ -23,6 +23,7 @@ import { base32Decode, hotp, stepAt, totp } from '../lib/totp.js';
 import { SoftAuthenticator } from './helpers/soft-authenticator.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 import { FIRST_FACTOR_HOLD_MS, createFactorHolds } from '../lib/factor-hold.js';
+import { Alerter } from '../lib/alerts.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const NOW = 1_800_000_000_000;
@@ -37,7 +38,8 @@ const IP = '127.0.0.1';
 // which passkeys are made for; null for none (passkeys off).
 // manage: what createApp gets for the nodes managed from the website (none by default).
 // loginSettings: over the login settings of the config (passkeySignIn: false turns off signing in with a passkey alone).
-async function setup({ siteUrl = ORIGIN, manage = null, loginSettings = {} } = {}) {
+// alerts: the alerter createApp tells when a passkey is added (none by default).
+async function setup({ siteUrl = ORIGIN, manage = null, loginSettings = {}, alerts = null } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'passkeys-http-'));
   const hash = await hashPassword(ALICE, undefined, fakeHasher);
   const config = loadConfig(`users:\n  - name: Alice\n    password_hash: '${hash}'\n    role: admin\nnodes:\n  - address: a.test:1\n`);
@@ -50,12 +52,12 @@ async function setup({ siteUrl = ORIGIN, manage = null, loginSettings = {} } = {
   const passkeys = siteUrl ? createPasskeys({ siteUrl, rpName: 'Status', store, now }) : NO_PASSKEYS;
   const logs = [];
   const login = createLogin({ users: config.users, store, settings: { ...config.login, ...loginSettings }, hasher: fakeHasher, now, audit, failures, sleep: async () => {}, passkeys, log: (m) => logs.push(m) });
-  const monitor = new Monitor({ targets: config.targets, dataDir, probeFn: async () => ({ up: true, ms: 1 }) });
+  const monitor = new Monitor({ targets: config.targets, nodes: config.nodes, dataDir, probeFn: async () => ({ up: true, ms: 1 }) });
   const holds = createFactorHolds({ dataDir, now });
-  const server = createApp({ monitor, publicDir, login, manage, holds });
+  const server = createApp({ monitor, publicDir, login, manage, holds, alerts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return {
-    port: server.address().port, clock, store, login, audit, failures, dataDir, logs, passkeys, holds,
+    port: server.address().port, monitor, clock, store, login, audit, failures, dataDir, logs, passkeys, holds,
     close: () => (server.closeAllConnections(), new Promise((r) => server.close(r))),
   };
 }
@@ -1653,5 +1655,304 @@ test('passkey sign in: a wrong password asked again in a session made by a passk
     assert.equal((await api(s, '/api/account/reauth', { password: BOB }, next)).status, 200);
   } finally {
     await s.close();
+  }
+});
+
+// ---- reads that need the password: a session made with a passkey alone ----
+
+// A read behind the manage role or the admin role, by path (a node that is not there answers 404 once the gate is passed).
+const GATED_READS = ['/api/manage', '/api/manage/node?host=a.test:1', '/api/manage/audit?host=a.test:1', '/api/manage/confirm?host=a.test:1', '/api/users'];
+
+// Alice (an admin, in the config file) with one passkey: a passkey-only session of hers.
+async function aliceWithPasskey(s) {
+  const cookie = await logIn(s, 'alice', ALICE);
+  const { a, finish, options } = await addPasskey(s, cookie, { password: ALICE });
+  assert.equal(finish.status, 200, finish.text);
+  const alone = await passkeyOnly(s, a, options.user.id);
+  assert.equal(alone.status, 200, alone.text);
+  return { a, handle: options.user.id, password: cookie, passkey: cookieOf(alone) };
+}
+
+test('passkey-only session: every manage and users read is a 403 with reauth until the password is given in this session, then open for its life', async () => {
+  const s = await setup();
+  try {
+    const { passkey } = await aliceWithPasskey(s);
+    assert.equal((await get(s, '/api/account', passkey)).json().signedInWith, 'passkey');
+    for (const method of ['GET', 'HEAD']) {
+      for (const path of GATED_READS) {
+        const r = await request(s.port, { method, path, headers: { Cookie: passkey } });
+        assert.equal(r.status, 403, `${method} ${path}: ${r.text}`);
+        if (method === 'GET') assert.deepEqual(r.json(), { error: 'Enter your password to see this. You signed in with a passkey, which is not enough here.', reauth: true }, path);
+      }
+    }
+    // Nothing of the lists is in the refusal, and the pages themselves are served (they ask for the password).
+    assert.equal((await get(s, '/api/users', passkey)).text.includes('bob'), false);
+    assert.equal((await get(s, '/users', passkey)).status, 200);
+    assert.equal((await get(s, '/manage', passkey)).status, 200);
+    // Viewer-level reads stay open.
+    for (const path of ['/api/status', '/api/account', '/api/session', '/api/incidents']) assert.equal((await get(s, path, passkey)).status, 200, path);
+    // A wrong password, or a body that only claims it, opens nothing.
+    assert.equal((await api(s, '/api/account/reauth', { password: 'not it' }, passkey)).status, 400);
+    assert.equal((await api(s, '/api/account/reauth', { password: 'not it', passwordGiven: true, via: 'password' }, passkey)).status, 400);
+    assert.equal((await api(s, '/api/account/reauth', { passwordGiven: true }, passkey)).status, 400);
+    assert.equal((await get(s, '/api/users', passkey)).status, 403);
+    // The right password opens every read.
+    assert.equal((await api(s, '/api/account/reauth', { password: ALICE }, passkey)).status, 200);
+    assert.equal((await get(s, '/api/manage', passkey)).status, 200);
+    assert.equal((await get(s, '/api/users', passkey)).status, 200);
+    assert.equal((await get(s, '/api/users', passkey)).json().users.some((u) => u.name === 'bob'), true);
+    // Past the 15 minutes the reads stay open (it is for the life of the session); a change asks again.
+    s.clock.t += RECENT_AUTH_MS + 60_000;
+    assert.equal((await get(s, '/api/account', passkey)).json().recentSignIn, false);
+    assert.equal((await get(s, '/api/manage', passkey)).status, 200);
+    assert.equal((await get(s, '/api/users', passkey)).status, 200);
+    const change = await api(s, '/api/users/role', { name: 'bob', role: 'viewer', password: ALICE }, passkey);
+    assert.equal(change.status, 403);
+    assert.equal(change.json().reauth, true);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey-only session: /api/status is the public view with passwordNeeded until the password is given, then the signed-in view', async () => {
+  const s = await setup();
+  try {
+    const { passkey, password } = await aliceWithPasskey(s);
+    const anon = (await get(s, '/api/status')).json();
+    const held = (await get(s, '/api/status', passkey)).json();
+    // The same numbers and the same locked sections as a visitor; only the viewer says who, and that the password is needed.
+    assert.deepEqual(held.hosts, anon.hosts);
+    assert.ok(held.hosts[0].locked.length > 0);
+    assert.deepEqual(held.viewer, { name: 'Alice', passwordNeeded: true });
+    assert.deepEqual(anon.viewer, { name: null });
+    // A session made with the password has nothing locked and no passwordNeeded.
+    const full = (await get(s, '/api/status', password)).json();
+    assert.deepEqual(full.viewer, { name: 'Alice' });
+    assert.deepEqual(full.hosts[0].locked, []);
+    // A wrong password changes nothing; the right one opens it, once, for the life of the session.
+    assert.equal((await api(s, '/api/account/reauth', { password: 'not it' }, passkey)).status, 400);
+    assert.deepEqual((await get(s, '/api/status', passkey)).json().viewer, { name: 'Alice', passwordNeeded: true });
+    assert.equal((await api(s, '/api/account/reauth', { password: ALICE }, passkey)).status, 200);
+    const after = (await get(s, '/api/status', passkey)).json();
+    assert.deepEqual(after.viewer, { name: 'Alice' });
+    assert.deepEqual(after.hosts[0].locked, []);
+    assert.equal(JSON.stringify(after).includes('passwordNeeded'), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey-only session: /api/stats and the node logs are shut like for a visitor until the password is given', async () => {
+  const s = await setup();
+  try {
+    const { passkey, password } = await aliceWithPasskey(s);
+    s.monitor.statsHistory.set('a.test:1', { samples: [], versions: [], extra: [] });
+    const stats = '/api/stats?host=a.test%3A1&range=24h';
+    const anon = await get(s, stats);
+    assert.equal(anon.status, 401);
+    // Not the details: the password is asked for, in the words of the other gated reads, and no numbers.
+    const held = await get(s, stats, passkey);
+    assert.equal(held.status, 403);
+    assert.deepEqual(held.json(), { error: 'Enter your password to see this. You signed in with a passkey, which is not enough here.', reauth: true });
+    assert.equal((await get(s, stats, password)).status, 200);
+    // Logs: a visitor is asked to log in, the passkey session for its password.
+    const logs = '/api/logs/a.test%3A1';
+    assert.equal((await get(s, logs)).status, 401);
+    assert.equal((await get(s, logs, passkey)).status, 403);
+    assert.equal((await get(s, logs, passkey)).json().reauth, true);
+    // After the password the details are open for the session.
+    assert.equal((await api(s, '/api/account/reauth', { password: ALICE }, passkey)).status, 200);
+    assert.equal((await get(s, stats, passkey)).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey-only session: the gate is per session; another passkey session of the same user, and a new one, are held back until they give the password', async () => {
+  const s = await setup();
+  try {
+    const { a, handle, passkey } = await aliceWithPasskey(s);
+    assert.equal((await api(s, '/api/account/reauth', { password: ALICE }, passkey)).status, 200);
+    assert.equal((await get(s, '/api/users', passkey)).status, 200);
+    s.clock.t += 120_000;
+    const other = cookieOf(await passkeyOnly(s, a, handle));
+    assert.notEqual(other, passkey);
+    assert.equal((await get(s, '/api/users', other)).status, 403);
+    // The first one is still open.
+    assert.equal((await get(s, '/api/users', passkey)).status, 200);
+    // The password of someone else does not do it.
+    assert.equal((await api(s, '/api/account/reauth', { password: BOB }, other)).status, 400);
+    assert.equal((await get(s, '/api/users', other)).status, 403);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey-only session of a manage user: the manage reads are held back the same way, and a viewer-level read is not', async () => {
+  const s = await setup();
+  try {
+    const { a, handle } = await bobWithPasskey(s);
+    const pk = cookieOf(await passkeyOnly(s, a, handle));
+    for (const path of GATED_READS.slice(0, 4)) assert.equal((await get(s, path, pk)).status, 403, path);
+    // Bob is no admin: the users list is refused on his role first, with or without the password.
+    assert.equal((await get(s, '/api/users', pk)).status, 403);
+    assert.equal((await get(s, '/api/users', pk)).json().reauth, undefined);
+    assert.equal((await get(s, '/api/status', pk)).status, 200);
+    assert.equal((await api(s, '/api/account/reauth', { password: BOB }, pk)).status, 200);
+    assert.equal((await get(s, '/api/manage', pk)).status, 200);
+    assert.deepEqual((await get(s, '/api/manage/node?host=nope:1', pk)).status, 404);
+    assert.equal((await get(s, '/api/manage/audit?host=nope:1', pk)).status, 404);
+    assert.equal((await get(s, '/api/manage/confirm?host=nope:1', pk)).status, 404);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a session made with the password (and a passkey as second step) reads everything at once, and with no passkey at all nothing changed', async () => {
+  const s = await setup();
+  try {
+    const { a, password } = await aliceWithPasskey(s);
+    // The password session, made before the passkey was added.
+    for (const path of GATED_READS) assert.notEqual((await get(s, path, password)).status, 403, path);
+    assert.equal((await get(s, '/api/users', password)).status, 200);
+    // The usual sign in with the password and the passkey as second step: a password session.
+    const usual = await logInWithPasskey(s, a, 'alice', ALICE);
+    assert.equal((await get(s, '/api/account', usual)).json().signedInWith, 'password');
+    assert.equal((await get(s, '/api/users', usual)).status, 200);
+    assert.equal((await get(s, '/api/manage', usual)).status, 200);
+    // Without a session, as before: 401.
+    assert.equal((await get(s, '/api/users')).status, 401);
+    assert.equal((await get(s, '/api/manage')).status, 401);
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- the alert when a passkey is added ----
+
+// An alerter that only records what it is told, as createApp gets it.
+function recordingAlerts({ throws = false } = {}) {
+  const told = [];
+  return { told, notifyPasskey: (e) => (told.push(e), throws ? (() => { throw new Error('channel down'); })() : undefined) };
+}
+
+test('passkey alert: adding a passkey tells the alerter the user, role, label and time, once, and nothing else', async () => {
+  const alerts = recordingAlerts();
+  const s = await setup({ alerts });
+  try {
+    const cookie = await logIn(s);
+    const added = await addPasskey(s, cookie, { name: 'Work laptop' });
+    assert.equal(added.finish.status, 200, added.finish.text);
+    assert.equal(alerts.told.length, 1);
+    assert.deepEqual(alerts.told[0], { user: 'bob', role: 'manage', passkey: 'Work laptop', at: NOW });
+    // No id, key, address or secret: only these four fields.
+    assert.equal(JSON.stringify(alerts.told[0]).includes(IP), false);
+    // A passkey that fails, or a begin on its own, is no alert.
+    const begin = await api(s, '/api/account/passkeys/begin', { password: BOB, passkey: await stepUpPasskey(s, cookie, added.a) }, cookie);
+    assert.equal(begin.status, 200, begin.text);
+    assert.equal((await api(s, '/api/account/passkeys/finish', { credential: { id: 'x' } }, cookie)).status, 400);
+    assert.equal(alerts.told.length, 1);
+    // Renaming one is no alert either; the next added one is.
+    const ref = s.store.passkeys('bob')[0].ref;
+    assert.equal((await api(s, '/api/account/passkeys/rename', { id: ref, name: 'Other' }, cookie)).status, 200);
+    assert.equal(alerts.told.length, 1);
+    s.clock.t += 1000;
+    const second = await addPasskey(s, cookie, { stepUp: { passkey: await stepUpPasskey(s, cookie, added.a) } });
+    assert.equal(second.finish.status, 200, second.finish.text);
+    assert.equal(alerts.told.length, 2);
+    assert.equal(alerts.told[1].at, NOW + 1000);
+    // The passkey added without a name has the label the site gives it.
+    assert.equal(typeof alerts.told[1].passkey, 'string');
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey alert: an alerter that throws cannot fail the registration: the passkey is added, the audit line is written, the answer is 200', async () => {
+  const alerts = recordingAlerts({ throws: true });
+  const s = await setup({ alerts });
+  try {
+    const cookie = await logIn(s);
+    const { finish } = await addPasskey(s, cookie, { name: 'Phone' });
+    assert.equal(finish.status, 200, finish.text);
+    assert.equal(finish.json().ok, true);
+    assert.equal(alerts.told.length, 1);
+    assert.equal(passkeyCount(s), 1);
+    assert.equal((await auditLines(s)).filter((l) => l.event === 'passkey-added').length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey alert: the alerter is told before the audit write, so a failing audit cannot silence it', async () => {
+  const alerts = recordingAlerts();
+  const s = await setup({ alerts });
+  try {
+    const cookie = await logIn(s);
+    const write = s.audit.write;
+    s.audit.write = async (event, fields) => {
+      // The alert is already queued when the audit line is written.
+      if (event === 'passkey-added') assert.equal(alerts.told.length, 1, 'told before the audit line');
+      return write(event, fields);
+    };
+    const ok = await addPasskey(s, cookie, { name: 'Phone' });
+    assert.equal(ok.finish.status, 200, ok.finish.text);
+    assert.equal(alerts.told.length, 1);
+  } finally {
+    await s.close();
+  }
+  // The audit write fails: the alert has gone all the same.
+  const failing = recordingAlerts();
+  const f = await setup({ alerts: failing });
+  try {
+    const cookie = await logIn(f);
+    const write = f.audit.write;
+    f.audit.write = async (event, fields) => {
+      if (event === 'passkey-added') throw new Error('disk full');
+      return write(event, fields);
+    };
+    await addPasskey(f, cookie, { name: 'Tablet' });
+    assert.equal(failing.told.length, 1);
+    assert.equal(failing.told[0].passkey, 'Tablet');
+  } finally {
+    await f.close();
+  }
+});
+
+test('passkey alert: with the real alerter, a channel that is down or never answers neither fails nor delays the registration, and the alert is sent once with the right words', async () => {
+  for (const mode of ['down', 'hangs', 'works']) {
+    const calls = [];
+    const fetchFn = async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      if (mode === 'down') throw new Error('connection refused');
+      if (mode === 'hangs') return new Promise(() => {});
+      return new Response('', { status: 200 });
+    };
+    const alerts = new Alerter({ channels: [{ type: 'webhook', url: 'https://hooks.example.org/x', format: 'generic' }], events: ['passkey_added'], now: () => NOW, fetchFn, sleep: async () => {}, log: () => {} });
+    const s = await setup({ alerts });
+    try {
+      const cookie = await logIn(s);
+      const started = Date.now();
+      const first = await addPasskey(s, cookie, { name: 'Work laptop' });
+      const { finish } = first;
+      assert.equal(finish.status, 200, `${mode}: ${finish.text}`);
+      assert.ok(Date.now() - started < 3000, mode);
+      assert.equal(passkeyCount(s), 1);
+      assert.equal(calls[0].body.event, 'passkey_added', mode);
+      assert.equal(calls[0].body.user, 'bob');
+      assert.equal(calls[0].body.role, 'manage');
+      assert.equal(calls[0].body.passkey, 'Work laptop');
+      assert.equal(calls[0].body.sentAt, new Date(NOW).toISOString());
+      // Another passkey inside the cooldown is not announced again; it is counted.
+      s.clock.t += 1000;
+      const second = await addPasskey(s, cookie, { name: 'Phone', stepUp: { passkey: await stepUpPasskey(s, cookie, first.a) } });
+      assert.equal(second.finish.status, 200, `${mode}: ${second.finish.text}`);
+      assert.equal(passkeyCount(s), 2);
+      assert.equal(calls.filter((c) => c.body.passkey === 'Phone').length, 0, mode);
+      assert.equal(alerts.passkeyState.get('bob').held, 1, mode);
+    } finally {
+      alerts.stop();
+      await s.close();
+    }
   }
 });

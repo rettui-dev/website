@@ -75,8 +75,21 @@
     return r.json().catch(function () { return {}; }).then(function (b) { return { status: r.status, body: b || {} }; });
   }
 
-  function getJson(path) {
+  function fetchJson(path) {
     return fetch(path, { credentials: 'same-origin', cache: 'no-store' }).then(read);
+  }
+
+  // A read. A session made with a passkey alone is told to give its password first (403 with reauth:
+  // true): the password dialog opens, and the read is sent again once it is given. The answer is the
+  // 403 itself when the visitor gives up.
+  function getJson(path) {
+    return fetchJson(path).then(function (r) {
+      if (r.status !== 403 || !r.body.reauth || !window.rettuiStepUp) return r;
+      return window.rettuiStepUp.password({ why: 'You signed in with a passkey. Enter your password to see and manage nodes.' }).then(function (a) {
+        if (a && a.status === 200) return fetchJson(path);
+        return a && a.status === 401 ? a : r;
+      });
+    });
   }
 
   function api(path, body) {

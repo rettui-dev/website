@@ -191,11 +191,39 @@ disk, a full user store, or the store held by `scripts/users.js` for longer than
 the user store; nothing was changed. Try again." for the last), nothing has changed, and nobody
 was signed out.
 
+**LXMF alerts.** When the site has an LXMF bridge that takes addresses the website names (a webhook
+channel with `user_addresses: true`, see [Uptime and alerts](Uptime-and-Alerts#alerts)), the account page
+has an "LXMF alerts" card. Without it the card is not there. Enter an LXMF address (32 hex digits;
+angle brackets, spaces around it and capitals are fine, and it is kept in lower case) and the
+website sends a 6-digit code to it. Type the code back to confirm the address: until then
+nothing else is sent there. The code works for 15 minutes and ends after 5 wrong tries; ask for a
+new one with "Send a new code" (3 codes an hour for you, a small number for the whole site). A message
+can take a while to arrive over LXMF. If the bridge refuses, the page says why in plain words: the
+bridge has website addresses turned off, it has sent the most it allows to that address (and for how
+long to wait), or it is busy.
+
+Once it is confirmed, the address gets a message when something changes about your account: a
+passkey is added or removed, your password is changed (by you, or reset by an admin, who is named), your app code is turned off or your two-step
+sign-in is reset by an admin, or new recovery codes are made. Each says what happened and when, never a
+passkey id, a secret or an address. Admins and managers can also tick "Node down and recovered
+alerts" to get the node alerts the site's operator gets. Changing the address tells the old one; removing it
+too. Setting, changing and removing the address, asking for a code and the tick need your password
+from the last 15 minutes (a pop-up asks when it is older), like the other changes here; a session made with
+a passkey alone gives the password first, and does not show the address until then. The address stays
+when you change your password or remove a passkey, so that the alert about it still reaches you, and
+goes with the user when they are deleted. A bridge that is down never stops a change from being made.
+The details are in [Uptime and alerts](Uptime-and-Alerts#alerts).
+
 **The account API.** `GET /api/account` says who is signed in, and never holds a secret. The
 changes are `POST /api/account/reauth`, `/password`, `/totp/setup`, `/totp/enable`,
 `/totp/disable`, `/recovery-codes`, `/sign-out-others`, `/devices/remove`,
 `/devices/remove-others`, `/passkeys/challenge`, `/passkeys/begin`, `/passkeys/finish`,
-`/passkeys/rename` and `/passkeys/remove`. `GET /api/account` also says whether passkeys are
+`/passkeys/rename` and `/passkeys/remove`, and, only with an LXMF bridge for users' addresses,
+`/lxmf/set` (`{address}`: sends a code, keeps the address once the bridge took it),
+`/lxmf/resend`, `/lxmf/confirm` (`{code}`), `/lxmf/remove` and `/lxmf/node-alerts` (`{enabled}`).
+`GET /api/account` has an `lxmf` object (`available`, and with it `set`, `address`, `confirmed`,
+`canNodeAlerts`, `nodeAlerts`, `codeExpiresAt`; `address` is null with `hidden: true` in a session made
+with a passkey alone that has not given the password). `GET /api/account` also says whether passkeys are
 available here (`passkeys.available`, with `reason: "no-address"` when `site.url` is not set), and
 lists them (`passkeys.signIn` says whether signing in with a passkey alone is on; `passkeys.list`: `id`, `name`, `created`, `lastUsed`, `synced`, and `here`, false for a
 passkey made for another address). Ids are short references, never the credential id or key. They
@@ -216,13 +244,16 @@ at start, `user` only, see [Managing users](Managing-Users#managing-users)),
 ended, `ended`). Turning on a first second factor (the app code, or a first passkey, with no
 other second factor on) adds `second-factor-first` as well (`role`, `method`: `totp` or
 `passkey`, and `nodeChangesFrom`: when the wait before node changes ends, see [Managing nodes](Managing-Nodes#managing-nodes)).
-Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
+The LXMF address adds `lxmf-address-set`, `lxmf-code-sent`, `lxmf-address-confirmed`, `lxmf-address-removed`
+and `lxmf-node-alerts` (`enabled`), each with the `user` and `lxmf`: the first 8 digits of the address, never the
+whole one or a code. Passkeys add `passkey-added` (`passkey`: its name, `first`: whether it is the
 user's first second step), `passkey-renamed` (`from`, `to`), `passkey-removed` (`passkey`, `with`,
 `ended`, `secondFactorOff`) and `passkey-counter-error` (`passkey`: a passkey answered right but
 its counter did not go up, see "Passkeys"; `step: "sign-in"` when it was a sign in with the passkey alone). `device-added` has `with: "passkey"` for a sign in with a passkey alone. A passkey is named by its name only: no credential id
 or key is ever in a line. Changes on the Users page add `user-created` (`role`, and `password`:
 `generated` or `typed`), `user-role-changed` (`from`, `to`), `user-deleted` (`role`),
-`user-password-reset` (`password`) and `user-second-factor-reset` (with `passkeys`: how many
+`user-password-reset` (`password`, and `passkeys`: how many passkeys the reset removed, only when
+the admin asked for that) and `user-second-factor-reset` (with `passkeys`: how many
 passkeys it removed); each of those has the admin
 who made it (`actor`), the `user` it was made to, how many of their sessions `ended`, and how
 the admin confirmed it (`with`). A change made with `scripts/users.js` is
@@ -306,6 +337,19 @@ is shown as "Passkey N", by its place in the list, and the passkey keeps working
 - The first second step of a user (the first passkey, or the app code) gives ten recovery codes,
   shown once, and signs every other session out. A second passkey changes neither.
 - Removing a passkey asks for the password and a second step, and signs every other session out.
+- **An alert when a passkey is added.** Someone who got hold of a password and a code can add a
+  passkey of their own, and it then signs in without either. The operator can ask to be told: list
+  `passkey_added` in `alerts.events` (it is not in the default list, so nothing changes without it;
+  see [Alerts](Uptime-and-Alerts#alerts)). Each passkey added by anyone sends a message to the
+  configured channels, for example `bob (manage) added a passkey named "Work laptop" at 2026-11-19
+  12:03 UTC.` It names the user, their role, the passkey's name and the time, and nothing else: no
+  credential id, no address, no secret. The name is typed by the user, so it is shown in quotes as a
+  JSON string (a `"` in it is escaped), and for Discord its Markdown is escaped as well. A user's
+  alerts are held to one in each `cooldown_minutes` (default 15); the passkeys added in between are
+  counted, and an alert goes out when the cooldown ends (or with the next add, if that comes first)
+  and says "2 more passkeys were added by this user since the last alert, and not announced". A channel that is
+  down, slow or refusing never fails or delays adding the passkey. The `passkey-added` line in
+  `audit.log` is written either way.
 - The Account page says when the browser cannot make passkeys. Users can still rename and remove
   the ones they have.
 
@@ -368,6 +412,24 @@ offered on the site's own address only (`site.url`).
   the answer is 429 with a wait of up to a day; the owner can still sign in with the password, which
   gives sessions with their own tries. The wait before node changes after a user's first second factor
   (see [Managing nodes](Managing-Nodes#managing-nodes)) is not shortened or started by it.
+- **Reads that need the password too.** A passkey someone else added would otherwise let them look
+  at what only managers and admins see. So a session made with a passkey alone has to give its
+  password once before it may read the **Manage** page's data (the nodes, a node's state, its list of
+  changes, the state of a Reticulum change), the **Users** list, or a node's **logs** (where they are
+  not public). Until then each of those answers 403 with `reauth: true`, the same answer the changes
+  get, and the page opens its password pop-up and loads once it is given. The pages themselves are
+  still served, since they hold nothing and have to be there to ask. Unlike a change, this is not a
+  15 minute window: once the password is given in this session, reads stay open for the life of that
+  session (changes still ask again after 15 minutes). The **status page** is held back the same way
+  for the sections that need a login: until the password is given, `/api/status` and `/api/stats` show
+  such a session the public view, as if signed out (`locked` lists what the password would open), and
+  `/api/status` adds `passwordNeeded: true` to `viewer`. The page then says "You signed in with a
+  passkey. Some details need your password too." with a button, **Enter your password to see
+  everything**, which opens the password pop-up and loads the numbers again once; it never opens by
+  itself and is not asked on every refresh. The Account page stays open to such a session, and a
+  session made with the password, or with the password and a passkey as the second step, is never asked. The website's own
+  reads of the nodes (the links it detects, the check of a Reticulum change) have no session and are
+  not affected.
 - **Known devices.** A browser signed in with a passkey alone is remembered as a device for passkey
   sign ins only. A password typed there is treated as from a new device (it gets the waits of the
   address and the name), and a password sign in on that browser makes a device of its own. Wrong
@@ -399,14 +461,18 @@ offered on the site's own address only (`site.url`).
 
 > **Warning: a passkey keeps signing in after a password change.** Changing or resetting the
 > password does not remove a passkey on its own, so a passkey that someone else added (with the
-> password and a phished code, say) still signs in afterwards. When you change your own password,
-> tick **Also remove my other passkeys** (see below). When an account may be in someone else's
-> hands, an admin should use **Reset two-step** (the Users page, or `scripts/users.js reset-2fa`),
-> which removes every passkey, and not only "Reset password": the Reset password window says so.
+> password and a phished code, say) still signs in afterwards. That is why **Also remove my other
+> passkeys** is ticked when you change your own password (see below), and **Also remove this user's
+> passkeys** is ticked when an admin resets a password (see [Managing users](Managing-Users#managing-users)).
+> `scripts/users.js reset-password NAME --remove-passkeys` does the same on the server. Unticked, or
+> from a script that does not ask for it, the passkeys stay. **Reset two-step** (the Users page, or
+> `scripts/users.js reset-2fa`) removes every passkey, the app code and the recovery codes.
 
 **Also remove my other passkeys.** The form that changes the password has a tick box with this
-name, off by default and shown only while you have passkeys. Tick it when you think someone else may
-have added a passkey. The change is confirmed as always (the current password and a second step).
+name, shown only while you have passkeys and **ticked by default**: a passkey that someone else
+planted would keep signing in after the change, so the safe choice is the one you get. Untick it to
+keep your other passkeys; the help under it says so. While it is ticked the page always asks for the
+removal, even if the box is hidden (a passkey added after the page was loaded goes too). The change is confirmed as always (the current password and a second step).
 When it is confirmed with a passkey, every passkey except that one is removed; when it is confirmed
 with a code from the app or a recovery code, all passkeys are removed. You can add them again
 afterwards. It is one write with the password change: both change or, if the write fails, neither (the answer
@@ -414,7 +480,10 @@ is 500 and says nothing was changed), and other sessions are signed out as
 for any password change, the page says how many passkeys were removed, and `audit.log` gets
 `passkeys-removed-with-password` with the count (never a passkey id). Left unticked, nothing changes
 but the password, and the page reminds you that passkeys still sign in. Nobody can ask for it
-without the same confirmation: the request is refused like any password change without it.
+without the same confirmation: the request is refused like any password change without it. The
+ticked box is only the page's default: the server removes passkeys only when the request says
+`removeOtherPasskeys: true` (the boolean; `"true"`, `1` and a missing field do not), so an older page
+or a script that sends nothing keeps them, as before.
 
 **Synced and device-bound.** Some passkeys are copied by the user's password manager or phone
 account to their other devices ("synced"); others stay on one device or security key

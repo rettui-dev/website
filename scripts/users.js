@@ -26,6 +26,7 @@
 //   node scripts/users.js create bob --role viewer --generate
 //   node scripts/users.js set-role bob manage
 //   node scripts/users.js reset-password bob --generate
+//   node scripts/users.js reset-password bob --generate --remove-passkeys
 //   node scripts/users.js reset-2fa alice
 //   node scripts/users.js delete bob
 //   node scripts/users.js backup /backups/users-2026-01-01.db
@@ -64,8 +65,11 @@ Commands:
   create NAME --role ROLE [--generate] [--must-change]
                                        a new website user; ROLE is ${ROLES.join(', ')}
   set-role NAME ROLE [--force]         another role for a website user
-  reset-password NAME [--generate] [--must-change]
-                                       a new password for a website user
+  reset-password NAME [--generate] [--must-change] [--remove-passkeys]
+                                       a new password for a website user.
+                                       Their passkeys keep working unless
+                                       --remove-passkeys removes them in the
+                                       same write as the password
   reset-2fa NAME                       turns off two-step sign-in: removes the
                                        app code, passkeys, recovery codes and
                                        known devices
@@ -104,17 +108,17 @@ with --must-change. --force lets the last admin go (only for recovery).
 `;
 
 const COMMANDS = { list: 0, create: 1, 'set-role': 2, 'reset-password': 1, 'reset-2fa': 1, delete: 1, backup: 1, check: 0, rekey: 0, 'retire-users-json': 0, 'gen-key': 0 };
-const FLAGS = { create: ['--generate', '--must-change', '--role'], 'reset-password': ['--generate', '--must-change'], 'set-role': ['--force'], delete: ['--force'], 'gen-key': ['--version'], 'retire-users-json': ['--delete'] };
+const FLAGS = { create: ['--generate', '--must-change', '--role'], 'reset-password': ['--generate', '--must-change', '--remove-passkeys'], 'set-role': ['--force'], delete: ['--force'], 'gen-key': ['--version'], 'retire-users-json': ['--delete'] };
 // The commands that change users. They took --server-stopped once, and still take it, ignored.
 const USER_CHANGES = ['create', 'set-role', 'reset-password', 'reset-2fa', 'delete'];
 // The commands that write to the store, and so need the key.
 const NEEDS_KEY = [...USER_CHANGES, 'rekey'];
 
-// Parses the arguments into {command, args, role, generate, mustChange, force, remove, serverStopped,
-// version, dataDir, config}. Throws UsageError on anything else, and in particular on an extra
+// Parses the arguments into {command, args, role, generate, mustChange, removePasskeys, force, remove,
+// serverStopped, version, dataDir, config}. Throws UsageError on anything else, and in particular on an extra
 // word, which could be a password.
 export function parseArgs(argv, env = {}) {
-  const out = { command: null, args: [], role: null, generate: false, mustChange: false, force: false, remove: false, serverStopped: false, version: null, dataDir: env.DATA_DIR || null, config: env.CONFIG_FILE || null, help: false };
+  const out = { command: null, args: [], role: null, generate: false, mustChange: false, removePasskeys: false, force: false, remove: false, serverStopped: false, version: null, dataDir: env.DATA_DIR || null, config: env.CONFIG_FILE || null, help: false };
   const flags = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -146,6 +150,7 @@ export function parseArgs(argv, env = {}) {
     if (f === '--server-stopped') out.serverStopped = true;
     if (f === '--generate') out.generate = true;
     if (f === '--must-change') out.mustChange = true;
+    if (f === '--remove-passkeys') out.removePasskeys = true;
     if (f === '--force') out.force = true;
     if (f === '--delete') out.remove = true;
   }
@@ -552,8 +557,14 @@ async function command(args, store, { stdin, stdout, stderr, hasher, cwd, dataDi
         store.localUser(name);
         const pw = await password();
         const passwordHash = await hash(pw);
-        await store.setPassword(name, passwordHash, { mustChangePassword: args.generate || args.mustChange });
-        stdout.write(`The password of ${store.lookup(name).name} is reset.\n`);
+        // Counted right before the write, for the line that says what happened to them.
+        const { passkeys } = store.secondFactors(name);
+        // Removed in the same write as the password, so that both change or neither does.
+        const { removedPasskeys } = await store.setPassword(name, passwordHash, { mustChangePassword: args.generate || args.mustChange, removeOtherPasskeys: args.removePasskeys ? { keep: null } : null });
+        const shown = store.lookup(name).name;
+        stdout.write(`The password of ${shown} is reset.\n`);
+        if (removedPasskeys !== null) stdout.write(`${removedPasskeys === 0 ? `${shown} had no passkeys to remove` : `${plural(removedPasskeys, 'passkey')} of ${shown} removed`}.\n`);
+        else if (passkeys > 0) stdout.write(`note: ${shown} still has ${plural(passkeys, 'passkey')}, which still sign in without the new password. Give --remove-passkeys to remove them (or run reset-2fa, which also turns off the app code).\n`);
         if (args.generate) showOnce(pw);
         break;
       }

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Monitor } from '../lib/monitor.js';
 import { loadConfig } from '../lib/config.js';
 import { createApp, LOGS_NOT_SERVED } from '../lib/app.js';
-import { createLogin } from '../lib/login.js';
+import { COOKIE, createLogin } from '../lib/login.js';
 import { hashPassword } from '../lib/password.js';
 import { LogsCache, fetchLogs, logsUrl, parseLogsQuery, sanitizeLogs } from '../lib/logs.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
@@ -264,7 +264,7 @@ ${nodeA}
   const server = createApp({ monitor, publicDir, ...(users ? { login } : {}) });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  return { monitor, calls, advance: (ms) => (clock += ms), port, close: () => (server.closeAllConnections(), new Promise((r) => server.close(r))) };
+  return { monitor, login, calls, advance: (ms) => (clock += ms), port, close: () => (server.closeAllConnections(), new Promise((r) => server.close(r))) };
 }
 
 function request(port, { method = 'GET', path: p, headers = {}, body }) {
@@ -582,4 +582,63 @@ test('logsUrl puts /logs beside stats.json, or under a node path', () => {
   assert.equal(logsUrl('https://stats.test/front/').href, 'https://stats.test/front/logs');
   assert.equal(logsUrl('https://stats.test/front/stats.json?x=1#y').href, 'https://stats.test/front/logs');
   assert.equal(logsUrl('https://stats.test').href, 'https://stats.test/logs');
+});
+
+// ---- a session made with a passkey alone ----
+
+const JSON_HEADERS = { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Rettui-Request': '1' };
+const reauth = (s, cookie, password) => request(s.port, { method: 'POST', path: '/api/account/reauth', headers: { ...JSON_HEADERS, Cookie: cookie }, body: JSON.stringify({ password }) });
+// A session as a sign in with a passkey alone makes it (it has not given the password).
+const passkeySession = (s) => `${COOKIE}=${s.login.sessions.create('Alice', { via: 'passkey' })}`;
+
+test('logs: a session made with a passkey alone is asked for the password first (403 with reauth), the node is not asked, and it reads after', async () => {
+  const s = await setup();
+  try {
+    const cookie = passkeySession(s);
+    for (const method of ['GET', 'HEAD']) {
+      const r = await request(s.port, { method, path: '/api/logs/a.test:1', headers: { Cookie: cookie } });
+      assert.equal(r.status, 403, method);
+      if (method === 'GET') assert.deepEqual(r.json(), { error: 'Enter your password to see this. You signed in with a passkey, which is not enough here.', reauth: true });
+    }
+    assert.equal(s.calls.length, 0);
+    // A wrong password opens nothing; the right one does, for the life of the session.
+    assert.equal((await reauth(s, cookie, 'not it')).status, 400);
+    assert.equal((await get(s, '/api/logs/a.test:1', cookie)).status, 403);
+    assert.equal((await reauth(s, cookie, 'correct horse battery')).status, 200);
+    const r = await get(s, '/api/logs/a.test:1?lines=50', cookie);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json().lines, [{ time: 't', level: 'info', text: 'from https://a.test/s' }]);
+    assert.equal(s.calls.length, 1);
+    // The status page answers such a session as a visitor, until the password is given: the status says
+    // so, and the details are asked for the password too.
+    const other = passkeySession(s);
+    const status = await get(s, '/api/status', other);
+    assert.equal(status.status, 200);
+    assert.equal(status.json().viewer.passwordNeeded, true);
+    assert.equal((await get(s, '/api/stats?host=a.test:1&range=6h', other)).status, 403);
+    assert.equal((await reauth(s, other, 'correct horse battery')).status, 200);
+    assert.equal((await get(s, '/api/stats?host=a.test:1&range=6h', other)).status, 200);
+    // An unknown host is a 404 as for anybody; a visitor without a session is a 401 as before.
+    assert.equal((await get(s, '/api/logs/nope.test:1', other)).status, 404);
+    assert.equal((await get(s, '/api/logs/a.test:1')).status, 401);
+  } finally {
+    await s.close();
+  }
+});
+
+test('logs: a session made with the password reads at once, and so does a passkey session where the logs are public anyway', async () => {
+  const s = await setup();
+  try {
+    assert.equal((await get(s, '/api/logs/a.test:1', await logIn(s))).status, 200);
+  } finally {
+    await s.close();
+  }
+  // public_logs: anyone reads them, so holding a passkey session back would protect nothing.
+  const p = await setup({ top: 'public_logs: true\nrequire_login: []\n' });
+  try {
+    assert.equal((await get(p, '/api/logs/a.test:1')).status, 200);
+    assert.equal((await get(p, '/api/logs/a.test:1', passkeySession(p))).status, 200);
+  } finally {
+    await p.close();
+  }
 });

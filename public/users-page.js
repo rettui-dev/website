@@ -175,9 +175,25 @@
 
   // Loads the list again; message, when given, is said once it is there (a success message said
   // before would be cleared).
-  function load(message) {
+  function fetchUsers() {
     return fetch('/api/users', { credentials: 'same-origin', cache: 'no-store' })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (b) { return { status: r.status, body: b }; }); });
+  }
+
+  // A session made with a passkey alone is told to give its password first (403 with reauth: true):
+  // the password dialog opens, and the list is read again once it is given.
+  function readUsers() {
+    return fetchUsers().then(function (r) {
+      if (r.status !== 403 || !r.body.reauth || !window.rettuiStepUp) return r;
+      return window.rettuiStepUp.password({ why: 'You signed in with a passkey. Enter your password to see and change users.' }).then(function (a) {
+        if (a && a.status === 200) return fetchUsers();
+        return a && a.status === 401 ? a : r;
+      });
+    });
+  }
+
+  function load(message) {
+    return readUsers()
       .then(function (r) {
         if (r.status === 200) {
           data = r.body;
@@ -266,7 +282,7 @@
   // ---- the dialog for a change to one user ----
   var KINDS = {
     role: { path: '/api/users/role', title: 'Change the role', go: 'Change role', why: function (u) { return u.name + ' is signed out everywhere, and signs in again with the new role.'; } },
-    password: { path: '/api/users/reset-password', title: 'Reset the password', go: 'Reset password', danger: true, why: function (u) { return 'The password of ' + u.name + ' stops working now, and they are signed out everywhere. They must choose a new one when they sign in with the one you set. Their passkeys still sign them in without a password. To stop those too, use Reset two-step sign-in, which removes them.'; } },
+    password: { path: '/api/users/reset-password', title: 'Reset the password', go: 'Reset password', danger: true, why: function (u, body) { return 'The password of ' + u.name + ' stops working now, and they are signed out everywhere. They must choose a new one when they sign in with the one you set. ' + (body && body.removePasskeys === true ? 'Their passkeys are removed too, so none of them can sign in without the password. Their app code and recovery codes stay; Reset two-step sign-in removes those too.' : 'Any passkeys they have still sign them in without a password. To stop those too, tick the box to remove their passkeys, or use Reset two-step sign-in, which removes them with the app code and recovery codes.'); } },
     factor: { path: '/api/users/reset-second-factor', title: 'Reset two-step sign-in', go: 'Reset two-step sign-in', danger: true, why: function (u) { return 'This turns off two-step sign-in for ' + u.name + ', removes their ' + removed(u) + ', and signs them out everywhere. Their password alone then signs them in, until they set it up again.'; } },
     delete: { path: '/api/users/delete', title: 'Delete user', go: 'Delete', danger: true, why: function (u) { return 'This deletes ' + u.name + ' and signs them out everywhere. It cannot be undone.'; } }
   };
@@ -287,6 +303,9 @@
     $('act-role-label').hidden = kind !== 'role';
     if (kind === 'role') $('act-role').value = user.role;
     $('act-pw').hidden = kind !== 'password';
+    // Ticked every time the dialog opens: a passkey someone added keeps working after a reset otherwise.
+    $('act-pk-row').hidden = kind !== 'password';
+    $('act-pk').checked = true;
     $('act-pw-generate').checked = true;
     syncAct();
     setError('act-error', '', ['act-password']);
@@ -317,6 +336,7 @@
         if (Array.from($('act-password').value).length < 12) { setError('act-error', 'The password must be at least 12 characters.', ['act-password']); $('act-password').focus(); return; }
         body.newPassword = $('act-password').value;
       } else body.generate = true;
+      if ($('act-pk').checked) body.removePasskeys = true;
     }
     // The choices are made: this dialog closes (the focus goes back to the row's button), and the
     // step-up dialog opens from there.
@@ -324,10 +344,17 @@
     run(p.kind, p.user, body);
   });
 
+  // What happened to the user's passkeys in a password reset, in words.
+  function passkeyNote(user, body, answer) {
+    var n = answer && typeof answer.removedPasskeys === 'number' ? answer.removedPasskeys : null;
+    if (n !== null) return n === 0 ? ' They had no passkeys to remove.' : n === 1 ? ' Their 1 passkey was removed.' : ' Their ' + n + ' passkeys were removed.';
+    return passkeysOf(user) > 0 ? ' Their passkeys were kept and still sign them in without a password.' : '';
+  }
+
   function run(kind, user, body) {
     var k = KINDS[kind];
     var title = kind === 'role' ? 'Make ' + user.name + ' ' + body.role : k.title + ': ' + user.name;
-    confirmed(k.path, body, { title: title, why: k.why(user), action: k.go, danger: k.danger }).then(function (r) {
+    confirmed(k.path, body, { title: title, why: k.why(user, body), action: k.go, danger: k.danger }).then(function (r) {
       if (!r) return;
       if (r.status !== 200) { say(errorOf(r)); return; }
       if (r.body.signedOut) {
@@ -335,7 +362,7 @@
         location.assign('/');
         return;
       }
-      var done = { role: user.name + ' now has the role ' + body.role + '.', password: 'The password of ' + user.name + ' is reset.', factor: 'Two-step sign-in of ' + user.name + ' is reset.', delete: user.name + ' is deleted.' };
+      var done = { role: user.name + ' now has the role ' + body.role + '.', password: 'The password of ' + user.name + ' is reset.' + passkeyNote(user, body, r.body), factor: 'Two-step sign-in of ' + user.name + ' is reset.', delete: user.name + ' is deleted.' };
       return load(done[kind]).then(function () {
         if (r.body.oneTimePassword) showOtp(user.name, r.body.oneTimePassword);
         else $('users-list-h').focus();

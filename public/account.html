@@ -77,9 +77,9 @@
         <label for="pw-again">New password again</label>
         <input id="pw-again" type="password" autocomplete="new-password" maxlength="1024" required aria-describedby="pw-error">
         <div id="pw-remove-box" class="acct-check" hidden>
-          <input id="pw-remove" type="checkbox" aria-describedby="pw-remove-help">
+          <input id="pw-remove" type="checkbox" checked aria-describedby="pw-remove-help">
           <label for="pw-remove">Also remove my other passkeys</label>
-          <p id="pw-remove-help" class="note">Every passkey except the one you use to confirm this change is removed. If you confirm with a code or a recovery code, all of them are removed. You can add them again afterwards. Tick this if you think someone else may have added a passkey.</p>
+          <p id="pw-remove-help" class="note">Every passkey except the one you use to confirm this change is removed. If you confirm with a code or a recovery code, all of them are removed. You can add them again afterwards. This is ticked so that a passkey someone else added cannot keep signing in after you change your password. Untick it to keep your other passkeys.</p>
         </div>
         <div class="login-actions"><button id="pw-submit" type="submit" class="primary">Change password</button></div>
       </form>
@@ -142,6 +142,40 @@
       </form>
       <p id="passkeys-full" class="note" hidden></p>
       <p id="passkeys-browser" class="note" hidden>This browser cannot make or use passkeys, so you cannot add one here. You can still rename or remove the ones you have.</p>
+    </section>
+
+    <section id="acct-lxmf" class="acct-card" data-after-password aria-labelledby="acct-lxmf-h" hidden>
+      <h2 id="acct-lxmf-h" tabindex="-1">LXMF alerts</h2>
+      <p class="note">Get a message at your own LXMF address when something changes about your account: a passkey added or removed, your password changed or reset, two-step sign-in turned off or reset, new recovery codes. Each says what happened and when, and which admin did it if one did. It never holds a passkey id, a secret or an IP address.</p>
+      <p id="lxmf-state" role="status"></p>
+      <p id="lxmf-hidden" class="note" hidden>Your password has not been given in this session, so the address is not shown. Setting, changing or removing it asks for your password.</p>
+      <form id="lxmf-set-form" class="acct-form" novalidate>
+        <p id="lxmf-set-error" class="login-error" role="alert"></p>
+        <label id="lxmf-address-label" for="lxmf-address">LXMF address</label>
+        <input id="lxmf-address" type="text" inputmode="text" autocomplete="off" maxlength="80" spellcheck="false" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-address-help lxmf-set-error">
+        <p id="lxmf-address-help" class="note">32 hex digits, for example 0123456789abcdef0123456789abcdef; angle brackets around it are fine. The website sends a 6-digit code to it, and you type the code back to confirm it. Nothing else is sent there until you do. A pop-up may ask for your password first.</p>
+        <div class="login-actions"><button id="lxmf-set" type="submit" class="primary">Send a code</button></div>
+      </form>
+      <form id="lxmf-confirm-form" class="acct-form" novalidate hidden>
+        <h3>Confirm the address</h3>
+        <p id="lxmf-confirm-error" class="login-error" role="alert"></p>
+        <label for="lxmf-code">Code sent to your LXMF address</label>
+        <input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" aria-describedby="lxmf-code-help lxmf-confirm-error">
+        <p id="lxmf-code-help" class="note">The code works for 15 minutes and ends after 5 wrong tries. A message can take a while to arrive over LXMF. You can have up to 3 codes an hour.</p>
+        <div class="login-actions">
+          <button id="lxmf-confirm" type="submit" class="primary">Confirm</button>
+          <button id="lxmf-resend" type="button">Send a new code</button>
+        </div>
+      </form>
+      <form id="lxmf-nodes-form" class="acct-form" novalidate hidden>
+        <p id="lxmf-nodes-error" class="login-error" role="alert"></p>
+        <div class="acct-check">
+          <input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">
+          <label for="lxmf-nodes">Node down and recovered alerts</label>
+          <p id="lxmf-nodes-help" class="note">Also get the node alerts the site's operator gets, such as an entry point going down and coming back. For admins and managers.</p>
+        </div>
+      </form>
+      <div id="lxmf-remove-box" class="login-actions" hidden><button id="lxmf-remove" type="button">Remove the address</button></div>
     </section>
 
     <section id="acct-recovery" class="acct-card" data-after-password aria-labelledby="acct-recovery-h" hidden>

@@ -5,6 +5,11 @@ Admins (role `admin`) manage users on the **Users** page, `/users`. The Account 
 admin who still has to change a password an admin set) `/users` answers 404 and `/api/users`
 401 or 403: the server decides, not the page.
 
+**Who can read it.** The page and its list are for admins. An admin whose session was made by
+signing in with a passkey alone has to give their password once before the list is sent (the
+list answers 403 with `reauth: true`, and the page opens its password pop-up and loads the list
+after it). See [Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone).
+
 **What the page shows.** Every user: name, role, where they come from (config file or website),
 what two-step sign-in is made of ("Off", or "On" with "app code" and the number of passkeys, like "On:
 app code, 2 passkeys"), how many known devices, last sign in and when they were made. No
@@ -22,11 +27,21 @@ password, hash, secret, passkey id or device id is ever sent. On a phone the tab
   demoted here (see below). An admin may give themselves another role.
 - **Reset the password** of a website user: a one-time or typed password, as above, which they
   must change at their next sign in. An admin changes their own password on the Account page.
-  **This does not stop a passkey.** A user with a passkey can still "Sign in with a passkey"
-  without the password (then they are asked to choose a new one). If the account may be in
-  someone else's hands, use Reset two-step as well. The Reset password window tells the admin so.
-  A user who changes their own password can tick "Also remove my other passkeys" (see
+  **A passkey does not need the password**, so a passkey that someone else added would keep
+  signing in after a reset. The Reset password window therefore has a box, **Also remove this
+  user's passkeys**, ticked every time it opens. Ticked, every passkey of that user is removed in
+  the same write as the password (both change or, if the write fails, neither), the user is signed
+  out everywhere as for any reset, `audit.log` gets the count in the `user-password-reset` line
+  (`passkeys`, never a passkey id), and the page says what happened ("Their 2 passkeys were
+  removed." or "They had no passkeys to remove."). Unticked, the passkeys stay, and the page says
+  so ("Their passkeys were kept and still sign them in without a password."). Their app code and
+  recovery codes stay either way: **Reset two-step** removes those too, and the passkeys, and works
+  for a user whose password is not reset. The server removes passkeys only when the request says
+  `removePasskeys: true` (the boolean), so a script that sends nothing keeps them. A user who
+  changes their own password has the same box, ticked, on the Account page (see
   [Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)).
+  On the server, `scripts/users.js reset-password NAME --remove-passkeys` does the same; without
+  the flag it prints a line saying the user's passkeys still sign in, when they have any.
 - **Reset two-step sign-in**, for someone who lost their phone or security key, or whose account
   may have been taken over: it turns the app
   code off, removes every passkey (so none can sign in on its own any more) and the recovery codes, and forgets every known device. The
@@ -67,6 +82,17 @@ their known devices. Destructive changes ask in a dialog first, saying what will
 **Users in the config file** are read-only here, marked "Managed by config": their name,
 password and role are changed in the config file. Only their second factor can be reset, and
 only if they are not an admin.
+
+**Changing a config user's password in the file keeps their passkeys.** The server reads the
+config file once, when it starts, and keeps the password hash of a config user in memory only: the
+user store never holds it (that is a rule of the store, so that a copy of `users.db` holds no
+password of theirs). So the server cannot tell that a hash changed, and a passkey that someone else
+added to that account still signs in after you change the password and restart. To remove it, run
+`node scripts/users.js reset-2fa NAME --config config.yaml` on the server (or with `CONFIG_FILE`
+set; see "The command line" below): it removes the passkeys, the app code and the recovery codes
+of that user and forgets their known devices. Do that whenever a config user's password is changed
+because it may have been seen by someone else. Nothing is done by the Users page for this: the
+Reset password button is not offered for a config user.
 
 **The last admin.** The last admin (counting the config file's admins too) can never be deleted
 or given another role, also not by themselves. An admin may give themselves another role, or
@@ -154,7 +180,7 @@ server ever started with a key, the command records its keys itself.)
       list                                  # role and two-step sign-in: app code, passkeys
       create NAME --role ROLE [--generate] [--must-change]
       set-role NAME ROLE [--force]
-      reset-password NAME [--generate] [--must-change]
+      reset-password NAME [--generate] [--must-change] [--remove-passkeys]
       reset-2fa NAME                        # app code, passkeys, recovery codes, known devices
       delete NAME [--force]
       backup FILE
@@ -166,8 +192,11 @@ server ever started with a key, the command records its keys itself.)
 `--data-dir` defaults to `DATA_DIR` (else `./data`), `--config` to `CONFIG_FILE`. With the config
 file its admins count for the last-admin rule, its names cannot be taken, and `reset-2fa` works
 for its users; without it, a note says so. `--generate` makes a one-time password, printed once,
-that must be changed at the next sign in (`--must-change` asks the same of a typed one). A
-password is never taken as an argument. `--force` lets the last admin be deleted or demoted, for
+that must be changed at the next sign in (`--must-change` asks the same of a typed one).
+`--remove-passkeys` (for `reset-password` only, off by default) removes every passkey of the user
+in the same write as the password, and says how many; without it the command prints "note: bob
+still has 2 passkeys, which still sign in without the new password" when the user has any, and
+leaves them. A password is never taken as an argument. `--force` lets the last admin be deleted or demoted, for
 recovery only. `backup`, `check`, `rekey`, `retire-users-json` and `gen-key` are described in
 [The user store](User-Store#the-user-store).
 `--server-stopped`, which older versions needed, is still accepted and ignored, with a note. An

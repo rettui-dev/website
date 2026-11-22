@@ -86,7 +86,7 @@ test('mistakes in the alerts section stop the start with a clear message', () =>
   bad(`${hook}unknown: 1`, /alerts has an unknown key "unknown"/);
   bad(`${hook}events: []`, /alerts\.events must be a list/);
   bad(`${hook}events: [down, down]`, /lists down twice/);
-  bad(`${hook}events: [explode]`, /alerts\.events\[1\] must be one of down, recovered, announce_queue/);
+  bad(`${hook}events: [explode]`, /alerts\.events\[1\] must be one of down, recovered, announce_queue, passkey_added/);
   bad(`${hook}events: [announce_queue, announce_queue]`, /lists announce_queue twice/);
   bad(`${hook}announce_queue_samples: 0`, /announce_queue_samples must be a whole number from 1 to 100/);
   bad(`${hook}announce_queue_samples: 2.5`, /announce_queue_samples must be a whole number/);
@@ -277,8 +277,12 @@ test('the alerts example in config.example.yaml is valid when uncommented', asyn
   const block = [];
   for (let i = at; i < lines.length && /^# ( |alerts:)/.test(lines[i]); i++) block.push(lines[i].slice(2));
   const c = loadConfig(`${nodes}${block.join('\n')}\n`);
-  assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'webhook', 'email']);
-  assert.equal(c.alerts.channels[1].format, 'apprise');
+  assert.deepEqual(c.alerts.channels.map((x) => x.type), ['webhook', 'webhook', 'webhook', 'email']);
+  // The LXMF bridge that takes users' own addresses, then the Apprise one.
+  assert.equal(c.alerts.channels[1].userAddresses, true);
+  assert.equal(c.alerts.channels[1].perAddressPerHour, 10);
+  assert.equal(c.alerts.channels[1].addressesPerHour, 50);
+  assert.equal(c.alerts.channels[2].format, 'apprise');
   assert.equal(c.alerts.cooldownMinutes, 15);
 });
 
@@ -308,4 +312,64 @@ test('announce_queue for a node without a stats_url gives a warning at start', a
   assert.deepEqual((await write(`${two}alerts:\n  ${hook.replace(/\n(?=.)/g, '\n  ')}`)).filter((w) => /announce_queue/.test(w)), []);
   const all = 'nodes:\n  - address: a.test:4242\n    stats_url: https://a.test/stats.json\n';
   assert.deepEqual((await write(`${all}alerts:\n  ${hook.replace(/\n(?=.)/g, '\n  ')}  events: [announce_queue]\n`)).filter((w) => /announce_queue/.test(w)), []);
+});
+
+test('passkey_added is accepted in events, is not in the default list, and is checked like the others', () => {
+  const hook = 'channels:\n  - type: webhook\n    url: https://h.example/x\n';
+  assert.deepEqual(loadConfig(withAlerts(hook)).alerts.events, ['down', 'recovered']);
+  assert.deepEqual(loadConfig(withAlerts(`${hook}events: [down, passkey_added]`)).alerts.events, ['down', 'passkey_added']);
+  assert.deepEqual(loadConfig(withAlerts(`${hook}events: [passkey_added]`)).alerts.events, ['passkey_added']);
+  bad(`${hook}events: [passkey_added, passkey_added]`, /lists passkey_added twice/);
+  bad(`${hook}events: [passkey-added]`, /alerts\.events\[1\] must be one of down, recovered, announce_queue, passkey_added/);
+  bad(`${hook}events: [Passkey_added]`, /must be one of/);
+});
+
+// ---- user_addresses: a webhook channel that is an LXMF bridge taking addresses the website names ----
+
+const SECRET = '0123456789abcdef0123';
+const bridge = (extra = '') => `channels:\n  - type: webhook\n    url: http://172.28.0.10:8742/alert\n    secret: ${SECRET}\n${extra.replace(/^/gm, '    ')}`;
+
+test('user_addresses: off by default, and then the channel has no trace of it', () => {
+  const c = loadConfig(withAlerts(bridge()));
+  assert.deepEqual(c.alerts.channels, [{ type: 'webhook', url: 'http://172.28.0.10:8742/alert', format: 'generic', secret: SECRET }]);
+  const off = loadConfig(withAlerts(bridge('user_addresses: false')));
+  assert.equal(off.alerts.channels[0].userAddresses, undefined);
+});
+
+test('user_addresses: true, with the limits it keeps to (the bridge defaults unless set), and a secret from a file', () => {
+  const on = loadConfig(withAlerts(bridge('user_addresses: true'))).alerts.channels[0];
+  assert.deepEqual(on, { type: 'webhook', url: 'http://172.28.0.10:8742/alert', format: 'generic', secret: SECRET, userAddresses: true, perAddressPerHour: 10, addressesPerHour: 50 });
+  const set = loadConfig(withAlerts(bridge('user_addresses: true\nper_address_per_hour: 6\naddresses_per_hour: 1000'))).alerts.channels[0];
+  assert.equal(set.perAddressPerHour, 6);
+  assert.equal(set.addressesPerHour, 1000);
+  const file = loadConfig(withAlerts('channels:\n  - type: webhook\n    url: http://172.28.0.10:8742/alert\n    secret_file: secrets/hook.secret\n    user_addresses: true')).alerts.channels[0];
+  assert.equal(file.userAddresses, true);
+  assert.equal(file.secretFile, 'secrets/hook.secret');
+});
+
+test('user_addresses: must be true or false, needs a signed generic webhook, and only one channel may have it', () => {
+  bad(bridge('user_addresses: yes please'), /alerts\.channels\[1\]\.user_addresses must be true or false/);
+  bad(bridge('user_addresses: 1'), /user_addresses must be true or false/);
+  bad(bridge('user_addresses: true\nformat: ntfy'), /user_addresses needs the generic format/);
+  bad('channels:\n  - type: webhook\n    url: http://172.28.0.10:8742/alert\n    user_addresses: true', /user_addresses needs a secret or secret_file/);
+  bad(`channels:\n  - type: webhook\n    url: http://172.28.0.10:8742/alert\n    secret: ${SECRET}\n    user_addresses: true\n  - type: webhook\n    url: http://172.28.0.11:8742/alert\n    secret: ${SECRET}\n    user_addresses: true`, /only one of alerts\.channels can have user_addresses: true/);
+  // One with it, others without, is fine.
+  const two = loadConfig(withAlerts(`channels:\n  - type: webhook\n    url: http://172.28.0.10:8742/alert\n    secret: ${SECRET}\n    user_addresses: true\n  - type: webhook\n    url: https://hooks.example/abc`));
+  assert.equal(two.alerts.channels.length, 2);
+  // An email channel has no such key.
+  bad('channels:\n  - type: email\n    host: mail.example.org\n    from: a@example.org\n    to: [b@example.org]\n    user_addresses: true', /unknown key "user_addresses"/);
+});
+
+test('user_addresses: the limits are whole numbers in range and need user_addresses', () => {
+  bad(bridge('user_addresses: true\nper_address_per_hour: 0'), /per_address_per_hour must be a whole number from 6 to 100/);
+  // Too small to give the codes and the account alerts each their share.
+  bad(bridge('user_addresses: true\nper_address_per_hour: 5'), /per_address_per_hour must be a whole number from 6 to 100/);
+  assert.equal(loadConfig(withAlerts(bridge('user_addresses: true\nper_address_per_hour: 6'))).alerts.channels[0].perAddressPerHour, 6);
+  bad(bridge('user_addresses: true\nper_address_per_hour: 101'), /per_address_per_hour must be a whole number from 6 to 100/);
+  bad(bridge('user_addresses: true\nper_address_per_hour: 2.5'), /per_address_per_hour must be a whole number/);
+  bad(bridge('user_addresses: true\naddresses_per_hour: 9'), /addresses_per_hour must be a whole number from 10 to 1000/);
+  assert.equal(loadConfig(withAlerts(bridge('user_addresses: true\naddresses_per_hour: 10'))).alerts.channels[0].addressesPerHour, 10);
+  bad(bridge('user_addresses: true\naddresses_per_hour: 1001'), /addresses_per_hour must be a whole number from 10 to 1000/);
+  bad(bridge('per_address_per_hour: 5'), /user_addresses is not true/);
+  bad(bridge('user_addresses: false\naddresses_per_hour: 5'), /user_addresses is not true/);
 });

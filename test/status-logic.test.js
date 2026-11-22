@@ -443,6 +443,34 @@ test('locked sections: what is hidden from a visitor, and when the page says so 
   assert.equal(hiddenHint, 'Some details are only shown to signed-in users.');
 });
 
+test('the line under the banner: a sign in for a visitor, the password for a passkey-only session, never a prompt by itself', () => {
+  const { accountOffer, passwordHint } = sandbox.statusLogic;
+  const locked = [{ locked: ['disk'], stats: { ok: true } }];
+  assert.equal(accountOffer({ name: null }, true, locked), 'signin');
+  assert.equal(accountOffer({ name: 'bob', passwordNeeded: true }, true, locked), 'password');
+  // Signed in with the password: nothing is hidden from them, and no line.
+  assert.equal(accountOffer({ name: 'bob' }, true, locked), null);
+  assert.equal(accountOffer({ name: 'bob', passwordNeeded: false }, true, locked), null);
+  assert.equal(accountOffer({ name: 'bob', passwordNeeded: 'yes' }, true, locked), null);
+  // Nothing hidden, no users, no answer yet: no line either way.
+  assert.equal(accountOffer({ name: 'bob', passwordNeeded: true }, true, [{ locked: [] }]), null);
+  assert.equal(accountOffer({ name: 'bob', passwordNeeded: true }, false, locked), null);
+  assert.equal(accountOffer(null, true, locked), null);
+  assert.equal(passwordHint, 'You signed in with a passkey. Some details need your password too.');
+});
+
+test('the status page asks for the password only from its buttons, then loads again once, and a 403 on the details says so', () => {
+  const js = fs.readFileSync(file, 'utf8');
+  const html = fs.readFileSync(path.join(path.dirname(file), 'status.html'), 'utf8');
+  assert.match(html, /<button id="account-password-btn" type="button" class="link-btn" hidden>Enter your password to see everything<\/button>/);
+  // The dialog is opened in one place, which only the two buttons call; and the data is read once after it.
+  assert.equal(js.match(/rettuiStepUp\.password\(\{ why: why \}\)/g)?.length, 1);
+  assert.equal(js.match(/enterPassword\(/g)?.length, 3, 'its definition and the two buttons');
+  assert.match(js, /if \(!a \|\| a\.status !== 200\) return false;\s+return load\(\)\.then\(/);
+  assert.match(js, /r\.status === 403\) \{\s+\/\/ A session made with a passkey alone/);
+  assert.match(js, /These details need your password, as you signed in with a passkey\. /);
+});
+
 test('day cells are told apart by level, with no data kept apart from zero', () => {
   assert.equal(dayLevel(100), 'ok');
   assert.equal(dayLevel(99.9), 'warn');
@@ -655,6 +683,7 @@ test('logs: a node view has one node, a combined view one entry for each member 
 
 test('logs: errors are said in plain words', () => {
   assert.equal(logsErrorText(401, {}), 'The logs need a login.');
+  assert.match(logsErrorText(403, { reauth: true }), /^The logs need your password, as you signed in with a passkey\. Press Refresh to enter it\.$/);
   assert.match(logsErrorText(404, { error: 'this node does not serve logs (needs a newer rettui and a stats token)' }), /does not serve logs/);
   assert.equal(logsErrorText(404, null), 'This node does not serve logs.');
   assert.match(logsErrorText(429, { error: 'Try again in 3 seconds.' }), /3 seconds/);
@@ -668,4 +697,11 @@ test('logs: the summary counts lines and says when older ones were left out', ()
   assert.equal(logsSummary({ level: 'warn', lines: [{}] }), '1 line, oldest first, at level warn and above.');
   assert.equal(logsSummary({ level: 'error', truncated: true, lines: [{}, {}] }), '2 lines, oldest first, at level error. Older lines were left out.');
   assert.equal(logsSummary({ level: '<b>', lines: [{}] }), '1 line, oldest first, at level info and above.');
+});
+
+test('logs: a 403 with reauth opens the password dialog and asks for the logs again after it, with its own timeout for each ask', () => {
+  const js = fs.readFileSync(file, 'utf8');
+  assert.match(js, /r\.status !== 403 \|\| !r\.body \|\| !r\.body\.reauth \|\| !window\.rettuiStepUp\) return r;/);
+  assert.match(js, /window\.rettuiStepUp\.password\(\{ why: 'You signed in with a passkey\. Enter your password to read the logs\.' \}\)/);
+  assert.match(js, /if \(!a \|\| a\.status !== 200\) return r;\s+ctl = new AbortController\(\);\s+timer = setTimeout/);
 });

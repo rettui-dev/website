@@ -441,11 +441,20 @@
   }
 
   var HIDDEN_HINT = 'Some details are only shown to signed-in users.';
+  var PASSWORD_HINT = 'You signed in with a passkey. Some details need your password too.';
 
   // Whether anything is kept from this visitor: the full details of a node, or a part of its row.
   // Only then does the page say so; what is kept is never named or drawn as a placeholder.
   function anyHidden(hosts) {
     return (hosts || []).some(function (h) { return detailsLocked(h) || rowLocks(h).length > 0; });
+  }
+
+  // What the line under the banner offers: 'password' to someone signed in with a passkey alone (the answer
+  // says passwordNeeded), 'signin' to a visitor, or null when nothing is hidden or the site has no users.
+  function accountOffer(viewer, enabled, hosts) {
+    if (!enabled || !viewer || !anyHidden(hosts)) return null;
+    if (viewer.name) return viewer.passwordNeeded === true ? 'password' : null;
+    return 'signin';
   }
 
   function detailsLocked(h) { return !!(h.locked && h.locked.indexOf('details') !== -1); }
@@ -2003,6 +2012,7 @@
   function logsErrorText(status, body) {
     var msg = body && typeof body.error === 'string' ? body.error : '';
     if (status === 401) return 'The logs need a login.';
+    if (status === 403) return 'The logs need your password, as you signed in with a passkey. Press Refresh to enter it.';
     if (status === 404) return msg || 'This node does not serve logs.';
     if (status === 429) return msg || 'Try again in a few seconds.';
     if (status === 400) return 'Those choices are not valid.';
@@ -2061,9 +2071,25 @@
     paintLogs();
     var ctl = new AbortController();
     var timer = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
-    fetch(logsPath(st.host, st.lines, st.level), { cache: 'no-store', signal: ctl.signal, credentials: 'same-origin' })
+    function ask() {
+      return fetch(logsPath(st.host, st.lines, st.level), { cache: 'no-store', signal: ctl.signal, credentials: 'same-origin' })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, ok: r.ok, body: body }; });
+        });
+    }
+    // A session made with a passkey alone is told to give its password first (403 with reauth: true):
+    // the password dialog opens (step-up.js), and the logs are asked for again once it is given.
+    ask()
       .then(function (r) {
-        return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, ok: r.ok, body: body }; });
+        if (r.status !== 403 || !r.body || !r.body.reauth || !window.rettuiStepUp) return r;
+        // The dialog is open for as long as the visitor takes: the timeout is for the request only.
+        clearTimeout(timer);
+        return window.rettuiStepUp.password({ why: 'You signed in with a passkey. Enter your password to read the logs.' }).then(function (a) {
+          if (!a || a.status !== 200) return r;
+          ctl = new AbortController();
+          timer = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+          return ask();
+        });
       })
       .then(function (r) {
         if (seq !== logsSeq) return;
@@ -2284,6 +2310,19 @@
           body.replaceChildren(p);
           return null;
         }
+        if (r.status === 403) {
+          // A session made with a passkey alone: the details need the password, asked for from a button.
+          if (seq !== detailSeq) return null;
+          detailData = null;
+          detailKey = '';
+          var ask = el('button', null, 'Enter your password to see everything');
+          ask.type = 'button';
+          ask.addEventListener('click', function () { enterPassword('You signed in with a passkey. Enter your password to see the details.'); });
+          var q = el('p', 'note', 'These details need your password, as you signed in with a passkey. ');
+          q.appendChild(ask);
+          body.replaceChildren(q);
+          return null;
+        }
         if (!r.ok) throw new Error('status ' + r.status);
         return r.json();
       })
@@ -2423,9 +2462,29 @@
     if (!box) return;
     var acc = window.rettuiAccount;
     if (acc) acc.sync(viewerNow && viewerNow.name ? viewerNow.name : null);
-    var show = !!(acc && acc.enabled() && viewerNow && !viewerNow.name && lastData && anyHidden(lastData.hosts));
-    if (show) setText('account-text', HIDDEN_HINT);
+    // Signed in with a passkey alone: the numbers are the public ones until the password is given, so the
+    // line offers the password, not a sign in. The dialog opens only from the button, never by itself.
+    var offer = accountOffer(viewerNow, !!(acc && acc.enabled()), lastData ? lastData.hosts : []);
+    var needPassword = offer === 'password';
+    var show = offer !== null;
+    if (show) setText('account-text', needPassword ? PASSWORD_HINT : HIDDEN_HINT);
+    document.getElementById('account-btn').hidden = needPassword;
+    var pw = document.getElementById('account-password-btn');
+    if (pw) pw.hidden = !needPassword;
     box.hidden = !show;
+  }
+
+  // The password dialog (step-up.js) for a session made with a passkey alone; once given, the page asks
+  // again, once, so that what the password opens is shown.
+  function enterPassword(why) {
+    if (!window.rettuiStepUp) return Promise.resolve(false);
+    return window.rettuiStepUp.password({ why: why }).then(function (a) {
+      if (!a || a.status !== 200) return false;
+      return load().then(function () {
+        if (dlg && dlg.open) loadDetail(true);
+        return true;
+      });
+    });
   }
 
   function openLogin(opener) {
@@ -2446,6 +2505,9 @@
   function setupLogin() {
     var acc = window.rettuiAccount;
     document.getElementById('account-btn').addEventListener('click', function (e) { openLogin(e.currentTarget); });
+    document.getElementById('account-password-btn').addEventListener('click', function () {
+      enterPassword('You signed in with a passkey. Enter your password to see everything on this page.');
+    });
     if (!acc) return;
     acc.onChange(viewerChanged);
     // The button may find out that the site has users after the first answer of the page.
@@ -2599,7 +2661,7 @@
       peerSpan: peerSpan, peerSyncText: peerSyncText, peerNextText: peerNextText, peerFailureText: peerFailureText, peerStateText: peerStateText, peerTypeText: peerTypeText, peerProblems: peerProblems,
       peerShortAddress: peerShortAddress, peerLabel: peerLabel, peerVisible: peerVisible, peerSummaryLine: peerSummaryLine, peerColumns: peerColumns, peerCell: peerCell,
       clampLines: clampLines, logsPath: logsPath, logLevelWord: logLevelWord, logLineParts: logLineParts, logsHosts: logsHosts, logsErrorText: logsErrorText, logsSummary: logsSummary,
-      linkGroups: linkGroups, linkChips: linkChips, linkQualifier: linkQualifier, linksSignature: linksSignature, idOf: idOf, rowLocks: rowLocks, anyHidden: anyHidden, hiddenHint: HIDDEN_HINT, detailsLocked: detailsLocked,
+      linkGroups: linkGroups, linkChips: linkChips, linkQualifier: linkQualifier, linksSignature: linksSignature, idOf: idOf, rowLocks: rowLocks, anyHidden: anyHidden, accountOffer: accountOffer, passwordHint: PASSWORD_HINT, hiddenHint: HIDDEN_HINT, detailsLocked: detailsLocked,
       dayLevel: dayLevel, dayDate: dayDate, dayTitle: dayTitle, uptimeLabel: uptimeLabel, incidentSpan: incidentSpan };
     return;
   }

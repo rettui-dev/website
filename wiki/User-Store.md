@@ -24,6 +24,16 @@ the config file](Managing-Users)). Their second factor, kept in the store, is en
 
 **Signing in with a passkey alone changes nothing in the store.** It finds the user from the credential id and the user handle the store already keeps, so there is no new field and no new schema version (see [Passkeys](Accounts-and-Second-Factor#passkeys)).
 
+**Users' LXMF alert addresses change nothing in the schema either.** A user's own LXMF address (see
+[Uptime and alerts](Uptime-and-Alerts#alerts)), whether it is confirmed and the node alerts tick are
+one row of the `meta` table each, under the key `lxmf|store|<name>` (`lxmf|config|<name>` for a user
+in the config file), holding a short JSON text. The schema version and every table are as before,
+so an older release opens the database and ignores these rows. A row also holds the user's creation
+time, and is read only for the user it was made for: if an older release deletes a user, the row it leaves
+behind is not given to a new user of the same name. A row that cannot be read is no address, never an
+unreadable store. The address is not secret, so it is stored as plain text; it is in backups of
+`users.db` like everything else in it.
+
 **What the key does not protect.**
 
 - **The pepper protects reading, not writing.** Someone who can only read `users.db` learns

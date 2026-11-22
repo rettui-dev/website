@@ -984,3 +984,82 @@ test('cli: the repository and the image leave database files and backups out', a
     for (const want of ['*.db', '*.db-wal', '*.db-shm', 'backups/']) assert.ok(lines.includes(want), `${f}: ${want}`);
   }
 });
+
+// ---- reset-password and passkeys ----
+
+const passkeyRecord = (label) => ({
+  id: crypto.randomBytes(32).toString('base64url'),
+  publicKey: crypto.randomBytes(77).toString('base64url'),
+  counter: 0,
+  transports: ['internal'],
+  name: label,
+  backupEligible: true,
+  backedUp: true,
+  rpId: 'status.example.org',
+});
+
+// A data folder with bob, who has two passkeys.
+async function bobWithPasskeys() {
+  const dir = await tmp();
+  assert.equal((await cli(dir, ['create', 'bob', '--role', 'viewer', '--generate'])).code, 0);
+  const store = await reopen(dir);
+  await store.addPasskey('bob', passkeyRecord('Phone'));
+  await store.addPasskey('bob', passkeyRecord('Planted'));
+  return dir;
+}
+
+test('cli: reset-password takes --remove-passkeys, and the help says what it does', () => {
+  assert.equal(parseArgs(['reset-password', 'bob', '--remove-passkeys']).removePasskeys, true);
+  assert.equal(parseArgs(['reset-password', 'bob']).removePasskeys, false);
+  // Only for reset-password.
+  for (const command of ['reset-2fa', 'create', 'delete', 'set-role']) {
+    const argv = command === 'create' ? ['create', 'bob', '--role', 'viewer', '--remove-passkeys'] : command === 'set-role' ? ['set-role', 'bob', 'viewer', '--remove-passkeys'] : [command, 'bob', '--remove-passkeys'];
+    assert.throws(() => parseArgs(argv), /unknown option/, command);
+  }
+});
+
+test('cli: reset-password says the passkeys still work when the flag is not given, and leaves them', async () => {
+  const dir = await bobWithPasskeys();
+  const r = await cli(dir, ['reset-password', 'bob', '--generate']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /The password of bob is reset\./);
+  assert.match(r.out, /note: bob still has 2 passkeys, which still sign in without the new password\. Give --remove-passkeys to remove them/);
+  assert.equal((await reopen(dir)).passkeys('bob').length, 2);
+  // One passkey is said in the singular; a user without any gets no such line.
+  const one = await bobWithPasskeys();
+  const store = await reopen(one);
+  await store.removePasskey('bob', store.passkeys('bob')[0].ref);
+  assert.match((await cli(one, ['reset-password', 'bob', '--generate'])).out, /bob still has 1 passkey, which/);
+  const none = await tmp();
+  await cli(none, ['create', 'carol', '--role', 'viewer', '--generate']);
+  const plain = await cli(none, ['reset-password', 'carol', '--generate']);
+  assert.equal(plain.code, 0, plain.err);
+  assert.doesNotMatch(plain.out, /passkey/);
+});
+
+test('cli: reset-password --remove-passkeys removes every passkey with the password, and says how many', async () => {
+  const dir = await bobWithPasskeys();
+  const r = await cli(dir, ['reset-password', 'bob', '--generate', '--remove-passkeys']);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /The password of bob is reset\.\n2 passkeys of bob removed\./);
+  assert.doesNotMatch(r.out, /still has/);
+  const store = await reopen(dir);
+  assert.equal(store.passkeys('bob').length, 0);
+  assert.equal(store.secondFactorEnabled('bob'), false);
+  const otp = /One-time password for bob: (\S+)/.exec(r.out)[1];
+  assert.equal(await verifyPassword(otp, store.find('bob').phc, fakeHasher, pepperOf(store, 'bob')), true);
+  // Again, with none left.
+  assert.match((await cli(dir, ['reset-password', 'bob', '--generate', '--remove-passkeys'])).out, /bob had no passkeys to remove\./);
+});
+
+test('cli: reset-password --remove-passkeys changes nothing when the password is refused', async () => {
+  const dir = await bobWithPasskeys();
+  const r = await cli(dir, ['reset-password', 'bob', '--remove-passkeys'], { input: 'short' });
+  assert.equal(r.code, 1);
+  assert.equal((await reopen(dir)).passkeys('bob').length, 2);
+  // A user from the config file has no password here, so nothing is removed either.
+  const cfg = await configFile(dir);
+  const config = await cli(dir, ['reset-password', 'alice', '--generate', '--remove-passkeys'], { config: cfg });
+  assert.equal(config.code, 1);
+  assert.match(config.err, /config file/);
+});

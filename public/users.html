@@ -125,6 +125,11 @@
       </fieldset>
       <label for="act-password" id="act-password-label" hidden>Their new password</label>
       <input id="act-password" type="password" autocomplete="new-password" maxlength="1024" hidden aria-describedby="act-error">
+      <div id="act-pk-row" class="acct-check" hidden>
+        <input id="act-pk" type="checkbox" checked aria-describedby="act-pk-help">
+        <label for="act-pk">Also remove this user's passkeys</label>
+        <p id="act-pk-help" class="note">A passkey signs in without the password, so one that someone else added keeps working after a reset. Ticked, every passkey of this user is removed with the password. Their app code and recovery codes stay: Reset two-step removes those too.</p>
+      </div>
       <div class="login-actions">
         <button id="act-go" type="submit" class="primary">Next</button>
         <button id="act-cancel" type="button">Cancel</button>

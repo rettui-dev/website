@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import { Alerter, alertText, alertSubject, spanText, utcTime, sendWebhook, webhookBody, createQueueWatch, createAlerter, appriseType, MAX_ATTEMPTS } from '../lib/alerts.js';
+import { Alerter, alertText, alertSubject, spanText, utcTime, sendWebhook, webhookBody, createQueueWatch, createAlerter, appriseType, escapeDiscord, MAX_ATTEMPTS } from '../lib/alerts.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -756,4 +756,300 @@ test('a retry that was waiting when the alerter stops is dropped', async () => {
   wake();
   await a.idle();
   assert.equal(fetchFn.calls.length, 1);
+});
+
+// ---- the passkey alert ----
+
+const PK = { user: 'bob', role: 'manage', passkey: 'Work laptop', at: T0 + 30_000 };
+const bodies = (fetchFn) => fetchFn.calls.map((c) => JSON.parse(c.init.body));
+
+test('passkey alert: the words name the user, the role, the label and the time, and nothing else', () => {
+  const e = { type: 'passkey_added', ...PK, more: 0 };
+  assert.equal(alertText(e), 'bob (manage) added a passkey named "Work laptop" at 2026-11-19 12:03 UTC.');
+  assert.equal(alertText({ ...e, more: 1 }), 'bob (manage) added a passkey named "Work laptop" at 2026-11-19 12:03 UTC. 1 more passkey was added by this user since the last alert, and not announced.');
+  assert.match(alertText({ ...e, more: 4 }), /4 more passkeys were added by this user/);
+  assert.match(alertText({ ...e, role: null }), /^bob \(unknown role\) added/);
+  assert.equal(alertSubject(e), '[rettui] bob added a passkey');
+  assert.equal(appriseType(e), 'warning');
+});
+
+test('passkey alert: each format, and the label is only text (no ping, no escape out of the message)', async () => {
+  const label = '@everyone <!channel> & <b>x</b>';
+  const e = { type: 'passkey_added', ...PK, passkey: label, more: 0 };
+  const text = alertText(e);
+  const generic = JSON.parse(webhookBody('generic', e, text));
+  assert.deepEqual(Object.keys(generic).sort(), ['event', 'message', 'notAnnounced', 'passkey', 'role', 'sentAt', 'user']);
+  assert.deepEqual([generic.event, generic.user, generic.role, generic.passkey, generic.notAnnounced], ['passkey_added', 'bob', 'manage', label, 0]);
+  assert.equal(generic.sentAt, new Date(PK.at).toISOString());
+  // Discord: the label has its Markdown escaped (here the ">" of the tags), and no one is pinged.
+  assert.deepEqual(JSON.parse(webhookBody('discord', e, text)), { content: text.replaceAll('>', '\\>'), allowed_mentions: { parse: [] } });
+  assert.equal(JSON.parse(webhookBody('slack', e, text)).text, text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'));
+  assert.doesNotMatch(JSON.parse(webhookBody('slack', e, text)).text, /<!channel>|<b>/);
+  assert.equal(webhookBody('ntfy', e, text), text);
+  assert.deepEqual(JSON.parse(webhookBody('apprise', e, text)), { title: '[rettui] bob added a passkey', body: text, type: 'warning' });
+  // ntfy: fixed ASCII headers, never the label.
+  const fetchFn = fakeFetch();
+  await sendWebhook({ url: 'https://ntfy.example/topic', format: 'ntfy' }, { ...e, passkey: 'Zürich ✓' }, 'x', { fetchFn });
+  const { headers } = fetchFn.calls[0].init;
+  assert.equal(headers.Title, 'A passkey was added');
+  for (const v of Object.values(headers)) assert.match(v, /^[\x20-\x7e]*$/);
+});
+
+test('passkey alert: sent once to every channel when asked for, and never a credential id, an address or a secret', async () => {
+  const { a, fetchFn, logs } = make({ events: ['passkey_added'] });
+  a.notifyPasskey(PK);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 1);
+  const [b] = bodies(fetchFn);
+  assert.equal(b.event, 'passkey_added');
+  assert.equal(b.message, 'bob (manage) added a passkey named "Work laptop" at 2026-11-19 12:03 UTC.');
+  // The signature is there (the channel has a secret); nothing of the secret or the URL is in the body or the log.
+  assert.match(fetchFn.calls[0].init.headers['X-Rettui-Signature'], /^sha256=[0-9a-f]{64}$/);
+  assert.equal(fetchFn.calls[0].init.body.includes(SECRET), false);
+  assert.deepEqual(logs, []);
+  // Two channels: each gets it.
+  const two = make({ events: ['passkey_added'], channels: [{ type: 'webhook', url: 'https://a.test/h', format: 'slack' }, { type: 'webhook', url: 'https://b.test/h', format: 'discord' }] });
+  two.a.notifyPasskey(PK);
+  await two.a.idle();
+  assert.deepEqual(two.fetchFn.calls.map((c) => c.url), ['https://a.test/h', 'https://b.test/h']);
+});
+
+test('passkey alert: off unless passkey_added is in events (the default list leaves it out), and the node events are not touched', async () => {
+  for (const events of [undefined, ['down', 'recovered'], ['announce_queue']]) {
+    const { a, fetchFn } = make(events ? { events } : {});
+    a.notifyPasskey(PK);
+    await a.idle();
+    assert.equal(fetchFn.calls.length, 0, JSON.stringify(events));
+  }
+  // With only passkey_added, a node going down sends nothing.
+  const { a, fetchFn } = make({ events: ['passkey_added'] });
+  a.notify(down());
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test('passkey alert: at most one per user in each cooldown, the rest counted and said in the next one', async () => {
+  let t = T0;
+  const { a, fetchFn } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN, now: () => t });
+  const add = (user, at) => {
+    t = at;
+    a.notifyPasskey({ ...PK, user, at });
+  };
+  add('bob', T0);
+  add('bob', T0 + 1 * MIN);
+  add('Bob', T0 + 2 * MIN);
+  add('bob', T0 + 14 * MIN);
+  // Another user has a cooldown of their own.
+  add('carol', T0 + 3 * MIN);
+  await a.idle();
+  assert.deepEqual(bodies(fetchFn).map((b) => [b.user, b.notAnnounced]), [['bob', 0], ['carol', 0]]);
+  // After the cooldown the next one goes out and says how many were held back.
+  add('bob', T0 + 15 * MIN);
+  await a.idle();
+  assert.deepEqual(bodies(fetchFn).map((b) => [b.user, b.notAnnounced]), [['bob', 0], ['carol', 0], ['bob', 3]]);
+  assert.match(bodies(fetchFn)[2].message, /3 more passkeys were added by this user/);
+  // The count starts over.
+  add('bob', T0 + 31 * MIN);
+  await a.idle();
+  assert.equal(bodies(fetchFn)[3].notAnnounced, 0);
+});
+
+test('passkey alert: a flood is bounded (one alert, the count kept) and a cooldown of 0 announces every one', async () => {
+  const { a, fetchFn } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN });
+  for (let i = 0; i < 500; i++) a.notifyPasskey(PK);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 1);
+  const none = make({ events: ['passkey_added'], cooldownMs: 0 });
+  for (let i = 0; i < 3; i++) none.a.notifyPasskey(PK);
+  await none.a.idle();
+  assert.equal(none.fetchFn.calls.length, 3);
+  // A clock that went back is not a cooldown that never ends.
+  const back = make({ events: ['passkey_added'], cooldownMs: 15 * MIN });
+  back.a.notifyPasskey({ ...PK, at: T0 + 60 * MIN });
+  back.a.notifyPasskey({ ...PK, at: T0 });
+  await back.a.idle();
+  assert.equal(back.fetchFn.calls.length, 2);
+});
+
+test('passkey alert: the memory of users is bounded', async () => {
+  const { a } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN });
+  for (let i = 0; i < 10_050; i++) a.notifyPasskey({ ...PK, user: `user${i}` });
+  assert.ok(a.passkeyState.size <= 10_000);
+});
+
+test('passkey alert: a failing channel never throws, never waits, retries like a node alert and logs no secret', async () => {
+  const { a, logs } = make({ events: ['passkey_added'], fetchFn: async () => { throw new Error(`boom ${SECRET} ${URL_SECRET}`); } });
+  const before = Date.now();
+  assert.doesNotThrow(() => a.notifyPasskey(PK));
+  assert.ok(Date.now() - before < 50);
+  // Bad input is swallowed, not thrown.
+  assert.doesNotThrow(() => a.notifyPasskey(null));
+  assert.doesNotThrow(() => a.notifyPasskey({}));
+  await a.idle();
+  assert.match(logs.join('\n'), /giving up/);
+  assert.equal(logs.join('\n').includes(SECRET), false);
+  assert.equal(logs.join('\n').includes('TOKEN-IN-THE-PATH'), false);
+});
+
+test('passkey alert: an email carries the plain text and the subject', async () => {
+  const s = await fakeSmtp({ mode: 'starttls', auth: { user: 'u', pass: 'mail-password-xyz' } });
+  try {
+    const { a, logs } = make({
+      events: ['passkey_added'],
+      channels: [{ type: 'email', host: '127.0.0.1', port: s.port, security: 'starttls', from: 'status@example.org', to: ['ops@example.org'], username: 'u', password: 'mail-password-xyz', auth: 'login' }],
+      mailOptions: { tlsOptions: TRUST, timeoutMs: 3000 },
+    });
+    a.notifyPasskey(PK);
+    await a.idle();
+    assert.deepEqual(logs, []);
+    const [head, body] = s.log.messages[0].split('\r\n\r\n');
+    assert.match(head, /Subject: \[rettui\] bob added a passkey/);
+    assert.equal(Buffer.from(body.replace(/\r\n/g, ''), 'base64').toString(), 'bob (manage) added a passkey named "Work laptop" at 2026-11-19 12:03 UTC.');
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey alert: stop drops it, like the others', async () => {
+  const { a, fetchFn } = make({ events: ['passkey_added'] });
+  a.stop();
+  a.notifyPasskey(PK);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 0);
+});
+
+test('passkey alert: the label is shown as a JSON string in every text, so a quote cannot fake the rest of the sentence', () => {
+  const label = 'x" at 2020-01-01 00:00 UTC. Nothing to see here. "';
+  const e = { type: 'passkey_added', ...PK, passkey: label, more: 0 };
+  const text = alertText(e);
+  assert.equal(text, `bob (manage) added a passkey named ${JSON.stringify(label)} at 2026-11-19 12:03 UTC.`);
+  assert.equal(text.includes('named "x" at'), false);
+  for (const format of ['slack', 'ntfy', 'apprise', 'generic']) {
+    const body = webhookBody(format, e, text);
+    const shown = format === 'ntfy' ? body : (JSON.parse(body).text ?? JSON.parse(body).body ?? JSON.parse(body).message);
+    assert.match(shown, /named "x\\" at 2020-01-01/, format);
+  }
+  assert.equal(alertText({ ...e, passkey: 'plain' }), 'bob (manage) added a passkey named "plain" at 2026-11-19 12:03 UTC.');
+  assert.equal(alertText({ ...e, passkey: 'a\\b' }).includes('"a\\\\b"'), true);
+});
+
+test('passkey alert: for Discord the label also has its Markdown escaped (no masked link, no bold, no quote)', () => {
+  const label = '[click](https://evil.example) **bold** _i_ ~~s~~ `c` ||spoiler|| > quote \\ #h';
+  const e = { type: 'passkey_added', ...PK, passkey: label, more: 0 };
+  const { content, allowed_mentions: mentions } = JSON.parse(webhookBody('discord', e, alertText(e)));
+  assert.deepEqual(mentions, { parse: [] });
+  assert.equal(escapeDiscord('a*b_c~d`e|f>g[h]i(j)k\\l#m'), 'a\\*b\\_c\\~d\\`e\\|f\\>g\\[h\\]i\\(j\\)k\\\\l\\#m');
+  // No Markdown character of the label is left bare: each is behind a backslash.
+  const named = content.slice(content.indexOf('named ') + 6, content.indexOf(' at 2026'));
+  assert.equal(named.replace(/\\./g, ''), '"' + 'click' + 'https://evil.example' + ' bold i s c spoiler  quote  h' + '"');
+  assert.doesNotMatch(named, /(^|[^\\])(\\\\)*[[\]()*_~`|>#]/);
+  // The words around the label stay as they are, and the other formats do not escape it.
+  assert.match(content, /^bob \(manage\) added a passkey named /);
+  assert.equal(JSON.parse(webhookBody('discord', { ...e, passkey: 'Work laptop' }, 'x')).content, 'bob (manage) added a passkey named "Work laptop" at 2026-11-19 12:03 UTC.');
+});
+
+test('passkey alert: adds held in the cooldown are announced when it ends, by a timer for each user that does not keep the process alive', async () => {
+  let t = T0;
+  const timers = [];
+  const cleared = [];
+  const { a, fetchFn } = make({
+    events: ['passkey_added'],
+    cooldownMs: 15 * MIN,
+    now: () => t,
+    setTimer: (fn, ms) => (timers.push({ fn, ms }), timers.length),
+    clearTimer: (id) => cleared.push(id),
+  });
+  const add = (user, passkey, at) => {
+    t = at;
+    a.notifyPasskey({ ...PK, user, passkey, at });
+  };
+  add('bob', 'First', T0);
+  assert.equal(timers.length, 0, 'nothing held, no timer');
+  add('bob', 'Planted', T0 + 4 * MIN);
+  add('Bob', 'Planted 2', T0 + 5 * MIN);
+  // One timer for the user, set for the end of the cooldown, not one per held add.
+  assert.deepEqual(timers.map((x) => x.ms), [11 * MIN]);
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 1);
+  // The cooldown ends: the latest held add goes out with the count of the other.
+  t = T0 + 15 * MIN;
+  timers[0].fn();
+  await a.idle();
+  const sent = bodies(fetchFn);
+  assert.equal(sent.length, 2);
+  assert.deepEqual([sent[1].user, sent[1].passkey, sent[1].notAnnounced], ['Bob', 'Planted 2', 1]);
+  assert.match(sent[1].message, /1 more passkey was added by this user/);
+  // A new cooldown started with it: the next add is held again, with a new timer; the old one fires for nothing.
+  add('bob', 'Later', T0 + 16 * MIN);
+  assert.equal(timers.length, 2);
+  timers[0].fn();
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 2);
+  // A single held add is announced as itself, without a count.
+  t = T0 + 30 * MIN;
+  timers[1].fn();
+  await a.idle();
+  assert.deepEqual([bodies(fetchFn)[2].passkey, bodies(fetchFn)[2].notAnnounced], ['Later', 0]);
+});
+
+test('passkey alert: an add after the cooldown clears the timer and says the count itself, and stop clears every timer', async () => {
+  let t = T0;
+  const set = [];
+  const cleared = [];
+  const { a, fetchFn } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN, now: () => t, setTimer: (fn) => (set.push(fn), set.length), clearTimer: (id) => cleared.push(id) });
+  const add = (user, at) => {
+    t = at;
+    a.notifyPasskey({ ...PK, user, at });
+  };
+  add('bob', T0);
+  add('bob', T0 + MIN);
+  add('carol', T0);
+  add('carol', T0 + MIN);
+  assert.equal(set.length, 2);
+  add('bob', T0 + 20 * MIN);
+  await a.idle();
+  assert.ok(cleared.includes(1), 'the timer of bob is cleared by his next add');
+  assert.deepEqual(bodies(fetchFn).map((b) => [b.user, b.notAnnounced]), [['bob', 0], ['carol', 0], ['bob', 1]]);
+  // The timer that was cleared would fire for nothing.
+  set[0]();
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 3);
+  // Stop: timers are cleared, and a timer that still fires sends nothing.
+  cleared.length = 0;
+  a.stop();
+  assert.ok(cleared.includes(2));
+  t = T0 + 40 * MIN;
+  set[1]();
+  await a.idle();
+  assert.equal(fetchFn.calls.length, 3);
+});
+
+test('passkey alert: the real timer is unref\'d and the memory of users, with its timers, stays bounded', async () => {
+  const handles = [];
+  const { a } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN });
+  // The default timer does not keep the process alive.
+  const realSet = globalThis.setTimeout;
+  globalThis.setTimeout = (...args) => {
+    const h = realSet(...args);
+    handles.push(h);
+    return h;
+  };
+  try {
+    a.notifyPasskey(PK);
+    a.notifyPasskey(PK);
+  } finally {
+    globalThis.setTimeout = realSet;
+  }
+  assert.equal(handles.length, 1);
+  assert.equal(handles[0].hasRef(), false);
+  a.stop();
+  // Past the cap the oldest user is forgotten and its timer cleared.
+  const cleared = [];
+  const { a: big } = make({ events: ['passkey_added'], cooldownMs: 15 * MIN, setTimer: (fn) => ({ fn }), clearTimer: (h) => cleared.push(h) });
+  for (let i = 0; i < 10_050; i++) {
+    big.notifyPasskey({ ...PK, user: `user${i}` });
+    big.notifyPasskey({ ...PK, user: `user${i}` });
+  }
+  assert.ok(big.passkeyState.size <= 10_000);
+  assert.ok(cleared.filter((h) => h !== null).length >= 50, 'the timers of the forgotten users are cleared');
 });

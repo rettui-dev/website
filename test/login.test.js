@@ -8,7 +8,7 @@ import { Keyring } from '../lib/keys.js';
 import { Busy, CODE_MAX_WAIT_MS, CODE_USER_FREE, DEVICE_AUDIT_MS, DEVICE_BURST, DEVICE_INTERVAL_MS, MAX_QUEUED_HASHES, NAME_BACKLOG, NAME_BURST, NAME_INTERVAL_MS, NET48_FREE, NET56_FREE, NameBucket, Sessions, Throttle, clientIp, cookieValue, createLogin, deviceHash, hashGate, ipKey, isFormType, netKeys, newDeviceId, normalIp, proxyMatcher, sameOrigin, untrustedProxy, viaHttps, waitText } from '../lib/login.js';
 import { DEFAULTS, hashPassword, parsePhc } from '../lib/password.js';
 import { LOGIN_WRITE_MS, MAX_DEVICES, MAX_PASSKEY_DEVICES, UserStore } from '../lib/users.js';
-import { ACTION_WINDOW_MS, REAUTHS_PER_SESSION, REAUTHS_PER_USER } from '../lib/account.js';
+import { ACTION_WINDOW_MS, REAUTHS_PER_SESSION, REAUTHS_PER_USER, needsPassword } from '../lib/account.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
 import { DEVICE_USER_CEILING, LOGIN_DEFAULTS, MAX_PASSKEY_SESSIONS_PER_USER, PASSKEY_AUDIT_MS, PASSKEY_SIGNIN_BURST, PASSKEY_SIGNIN_INTERVAL_MS, SIGNIN_BEGIN_BURST, SIGNIN_BEGIN_INTERVAL_MS, SIGNIN_CHALLENGES_MAX, SIGNIN_CHALLENGES_PER_ADDRESS, SIGNIN_NET48_BURST, SIGNIN_NET56_BURST, SIGNIN_NET56_INTERVAL_MS } from '../lib/login.js';
 import { CHALLENGE_MS, NO_PASSKEYS, createPasskeys } from '../lib/passkeys.js';
@@ -1994,4 +1994,21 @@ test('passkey sign in: 1,000 sign ins of an admin write one passkey-sign-in audi
   const carol = await ctx.l.signIn('carol', { epoch: ctx.l.epochOf('carol'), ip: '198.51.100.7', via: 'passkey', ref });
   assert.ok(carol);
   assert.equal(lines().length, 3);
+});
+
+test('sessions: only a session made with a passkey alone is held back from reads that need the password, until it is given', () => {
+  const sessions = new Sessions({ idleMs: 60_000, maxAgeMs: 600_000, max: 10 });
+  const byPassword = sessions.map.get(sessions.create('bob'));
+  const byPasskey = sessions.map.get(sessions.create('bob', { via: 'passkey' }));
+  assert.equal(byPassword.passwordGiven, true);
+  assert.equal(byPasskey.passwordGiven, false);
+  assert.equal(needsPassword(byPassword), false);
+  assert.equal(needsPassword(byPasskey), true);
+  // Given in this session (reauth sets it): open for the rest of the session, however old the sign in.
+  byPasskey.passwordGiven = true;
+  byPasskey.authAt = 1;
+  assert.equal(needsPassword(byPasskey), false);
+  // Only the boolean true counts, and a record without the field (kept from before) is a passkey one held back.
+  for (const v of [undefined, false, 1, 'true', null]) assert.equal(needsPassword({ via: 'passkey', passwordGiven: v }), true, String(v));
+  assert.equal(needsPassword({ via: 'password' }), false);
 });

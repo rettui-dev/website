@@ -21,6 +21,8 @@ import { createAudit, createFailureLog } from '../lib/audit.js';
 import { RECENT_AUTH_MS } from '../lib/account.js';
 import { MANAGE_CONFIRM_READS_PER_USER, MANAGE_READS_PER_NODE, MANAGE_WRITES_PER_USER, cleanAudit, cleanReticulum, cleanState, skewText } from '../lib/manage-api.js';
 import { createManageClient } from '../lib/manage.js';
+import { COOKIE } from '../lib/login.js';
+import { LINKS_ACTOR, LinkWatcher } from '../lib/links.js';
 import { sampleReticulum, startManageNode } from './helpers/manage-node.js';
 import { base32Decode, totp } from '../lib/totp.js';
 import { fakeHasher } from './helpers/fake-hasher.js';
@@ -1672,6 +1674,83 @@ test('a stamping refusal is worded and bounded like rate_limited: a missing, hug
       assert.match(r.json().error, /announce stamp.*Nothing was changed\. Try again in /);
       assert.doesNotMatch(r.text, /NODE WORDS/);
     }
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- a session made with a passkey alone ----
+
+// A session as a sign in with a passkey alone makes it: it has not given the password.
+const passkeySession = (s, name) => `${COOKIE}=${s.login.sessions.create(name, { via: 'passkey' })}`;
+const reauth = (s, cookie, password) => api(s, '/api/account/reauth', { password }, cookie);
+
+test('passkey-only session: every manage read is a 403 with reauth and asks no node, until the password is given in this session', async () => {
+  client = fakeClient();
+  const s = await setup();
+  try {
+    const pk = passkeySession(s, 'bob');
+    const reads = ['/api/manage', `/api/manage/node?host=${HOST}`, `/api/manage/audit?host=${HOST}`, `/api/manage/confirm?host=${HOST}`];
+    for (const path of reads) {
+      for (const method of ['GET', 'HEAD']) {
+        const r = await get(s, path, pk, method);
+        assert.equal(r.status, 403, `${method} ${path}`);
+        if (method === 'GET') assert.equal(r.json().reauth, true, path);
+        assert.equal(r.text.includes('Hilltop'), false);
+      }
+    }
+    assert.equal(client.calls.length, 0);
+    // A wrong password opens nothing.
+    assert.equal((await reauth(s, pk, 'not it')).status, 400);
+    assert.equal((await get(s, '/api/manage', pk)).status, 403);
+    assert.equal((await reauth(s, pk, BOB)).status, 200);
+    assert.equal((await get(s, '/api/manage', pk)).status, 200);
+    const node = await get(s, reads[1], pk);
+    assert.equal(node.status, 200, node.text);
+    assert.equal((await get(s, reads[2], pk)).status, 200);
+    assert.equal((await get(s, reads[3], pk)).status, 200);
+    assert.deepEqual(client.calls.map((c) => [c[1], c[2]]), [['GET', '/manage/v1/state'], ['GET', '/manage/v1/audit?limit=50']]);
+    // Past the 15 minutes the reads stay open for this session.
+    s.clock.t += RECENT_AUTH_MS + 60_000;
+    const later = await get(s, '/api/manage', pk);
+    assert.equal(later.status, 200);
+    assert.equal(later.json().recentSignIn, false);
+    assert.equal((await get(s, reads[1], pk)).status, 200);
+    // The page is served to it (it holds nothing, and asks for the password).
+    assert.equal((await get(s, '/manage', passkeySession(s, 'bob'))).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test('passkey-only session: a viewer or an admin the same way, a session made with the password not at all, and the links watcher\'s own reads are not touched', async () => {
+  client = fakeClient();
+  const s = await setup();
+  try {
+    // A viewer has no manage role: the role answer comes first, with or without a password.
+    const v = passkeySession(s, 'victor');
+    assert.equal((await get(s, '/api/manage', v)).json().reauth, undefined);
+    assert.equal((await get(s, '/api/manage', v)).status, 403);
+    // An admin of the config file.
+    const a = passkeySession(s, 'alice');
+    assert.equal((await get(s, '/api/manage', a)).json().reauth, true);
+    assert.equal((await reauth(s, a, ALICE)).status, 200);
+    assert.equal((await get(s, '/api/manage', a)).status, 200);
+    // A password session reads at once.
+    const b = await logIn(s, 'bob', BOB);
+    for (const path of ['/api/manage', `/api/manage/node?host=${HOST}`, `/api/manage/audit?host=${HOST}`, `/api/manage/confirm?host=${HOST}`]) assert.equal((await get(s, path, b)).status, 200, path);
+    // While a passkey-only session is held back, the links watcher still reads each node as its own
+    // actor, through the client: it has no session, so nothing here applies to it.
+    const held = passkeySession(s, 'bob');
+    assert.equal((await get(s, '/api/manage', held)).status, 403);
+    client.calls.length = 0;
+    client.answer = () => ({ ok: true, status: 200, body: { reticulum: { revision: 'a'.repeat(32), shared_instance: false, truncated: false, sections: [], editable: [] } } });
+    client.has = () => true;
+    const watcher = new LinkWatcher({ client, entries: [{ key: HOST, name: 'Hilltop', host: 'a.test', port: 1, manageHost: 'a.test', statsHost: null }], now: () => s.clock.t });
+    await watcher.refresh();
+    assert.deepEqual(client.calls.map((c) => [c[0], c[1], c[2], c[3]]), [[HOST, 'GET', '/manage/v1/state', LINKS_ACTOR]]);
+    assert.equal(watcher.detected(HOST).readable, true);
+    assert.equal((await get(s, '/api/manage', held)).status, 403, 'and the session is still held back');
   } finally {
     await s.close();
   }

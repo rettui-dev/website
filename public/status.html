@@ -20,6 +20,7 @@
 <script src="/theme.js"></script>
 <script src="/passkey.js" defer></script>
 <script src="/account.js" defer></script>
+<script src="/step-up.js" defer></script>
 <script src="/netmap.js" defer></script>
 <script src="/status.js" defer></script>
 </head>
@@ -52,6 +53,7 @@
   <div id="account" class="account" hidden>
     <p id="account-text" class="account-text"></p>
     <button id="account-btn" type="button" class="link-btn">Sign in</button>
+    <button id="account-password-btn" type="button" class="link-btn" hidden>Enter your password to see everything</button>
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
   <details id="netmap" class="netmap" open hidden>

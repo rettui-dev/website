@@ -14,6 +14,9 @@
 // is shown in the dialog, which stays open; anything else closes it, and ask() resolves with the
 // answer (null when the visitor gave up).
 //
+// window.rettuiStepUp.password({title, why, action}) is the same dialog for the password alone, for a
+// page that was told to ask for it first.
+//
 // opts.opens (a list of texts) and opts.acknowledge (the words of a checkbox): for a change that
 // opens something up, the dialog lists what, and Confirm does nothing until the box is ticked.
 (function () {
@@ -299,6 +302,21 @@
   }
 
   window.rettuiStepUp = {
+    // For a read the server holds back from a session made with a passkey alone (403 with reauth:
+    // true: the manage and users pages, node logs): the same dialog with the password only, which is
+    // sent to POST /api/account/reauth. opts: {title, why, action}. Resolves with the server's answer
+    // ({status, body}; 200 means the password is given in this session), or null when the visitor
+    // gave up.
+    password: function (opts) {
+      return window.rettuiStepUp.ask({
+        title: opts.title || 'Confirm it is you',
+        why: opts.why,
+        action: opts.action || 'Continue',
+        secondFactor: false,
+        methods: [],
+        send: function (fields) { return post('/api/account/reauth', { password: fields.password }); }
+      });
+    },
     // opts: {title, why, action, secondFactor, send}. Resolves with the answer, or null.
     ask: function (opts) {
       return new Promise(function (resolve) {

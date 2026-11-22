@@ -14,6 +14,11 @@ of the node must pass that on.
 - **Who sees it.** Logs can hold addresses and other private things, so they are never public by
   omission: `require_login` has no say in them, and a list with or without sections (even `[]`) never
   exposes them. Only a logged-in visitor reads them, and only when they may see the node's `details`.
+  A session made by signing in with a passkey alone gives its password first (403 with `reauth: true`
+  until then, and the Logs tab opens the password pop-up and asks again after it. The details of a node
+  (`/api/stats`) are the same for such a session: 403 with `reauth: true` where a visitor gets 401; see
+  [Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)). Logs that
+  are public (`public_logs`) are open to everyone, so they ask nothing of anyone.
   To show a node's logs to everybody, set `public_logs: true` on that node, or at the top level for
   all nodes (a node's own value wins; default `false`). The server logs a warning at start for each
   node that has it. The details still apply: a node with `public_details: false`, or `details` locked,

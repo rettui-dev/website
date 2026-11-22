@@ -68,7 +68,10 @@ tab, no "log in" box in a row. The Logs tab, the Full details button of a node w
 locked, and the sections above are left out altogether. Where something is hidden, the status page
 says so once, in one line under the banner ("Some details are only shown to signed-in users." and a
 Sign in link), and the Overview of the details says the same; a site or visitor with nothing hidden
-gets no line. The logs of a node are never said to exist to a visitor who may not read them, so they
+gets no line. A session made with a passkey alone that has not given its password counts as signed out
+for these sections, and its line says "You signed in with a passkey. Some details need your password
+too." with the button **Enter your password to see everything** (see
+[Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)). The logs of a node are never said to exist to a visitor who may not read them, so they
 are not counted as hidden. A proxy's group line leaves out a sum
 (message store, peered nodes, disk) as soon as one of its nodes, or the proxy, has that section
 locked, since the sum would give the node's number away. A node whose details are locked is left
@@ -76,7 +79,8 @@ out of the combined view, as with `public_details: false`. `public_details: fals
 `public_disk_figures` still apply to logged-in users: a login shows what is locked, never what
 is private.
 
-With users, `/api/status` has `viewer` (`{name}`, `null` without a login) and each host has
+With users, `/api/status` has `viewer` (`{name}`, `null` without a login; `{name, passwordNeeded: true}`
+for a passkey-only session that has not given its password, which is shown the public view) and each host has
 `locked`, the sections this visitor cannot see (empty once logged in); a detail answer with
 something left out has `locked` too. Both answers then carry `Cache-Control: private, no-store`
 and `Vary: Cookie`, so no shared cache keeps one visitor's answer for another.

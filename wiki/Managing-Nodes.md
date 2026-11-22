@@ -150,7 +150,11 @@ and nobody else, and passes the request path and query on exactly as they came: 
 the signature over them, so a proxy that rewrites them makes every request fail.
 
 **Safeguards.** Looking needs a session with the role `manage` or `admin`, asked again on every
-request. Each user may read each node 120 times an hour (the state and the list of changes,
+request. A session made by signing in with a passkey alone must also give its password once first:
+until then every read (the list of nodes, a node's state, its list of changes, the state of a
+Reticulum change) answers 403 with `reauth: true`, and the page asks for the password in a pop-up and
+loads after it. It stays open for the life of that session, unlike a change, which asks again
+after 15 minutes (see [Accounts and second factor](Accounts-and-Second-Factor#signing-in-with-a-passkey-alone)). Each user may read each node 120 times an hour (the state and the list of changes,
 polling during a restart included); then 429 with `Retry-After`. Every change needs, all at once:
 the role; a sign in from the last 15 minutes (else the page asks for the password again); two-step
 sign-in turned on for the account (without it the answer is 403 with `code:

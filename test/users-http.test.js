@@ -854,3 +854,134 @@ test('a change made by the command line while the server runs is picked up: the 
     await s.close();
   }
 });
+
+// ---- a password reset that removes the user's passkeys ----
+
+const passkeyRecord = (label) => ({
+  id: crypto.randomBytes(32).toString('base64url'),
+  publicKey: crypto.randomBytes(77).toString('base64url'),
+  counter: 0,
+  transports: ['internal'],
+  name: label,
+  backupEligible: true,
+  backedUp: true,
+  rpId: 'status.example.org',
+});
+
+// Carol (an admin) signed in, and bob with two passkeys.
+async function carolAndBobWithPasskeys() {
+  const s = await setup({ carol: true });
+  await s.store.addPasskey('bob', passkeyRecord('Phone'));
+  await s.store.addPasskey('bob', passkeyRecord('Planted'));
+  assert.equal(s.store.passkeys('bob').length, 2);
+  return { s, c: await logIn(s, 'carol', CAROL) };
+}
+
+test('reset password: removePasskeys true removes every passkey in the same write, ends their sessions, says how many and writes the count', async () => {
+  const { s, c } = await carolAndBobWithPasskeys();
+  try {
+    // Two passkeys make two-step sign-in on: bob's sign in has a second step now, and none after the reset.
+    assert.equal((await logIn(s, 'bob', BOB)).r.json().secondFactor, true);
+    const r = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: CAROL }, c.cookie);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json().removedPasskeys, 2);
+    assert.ok(r.json().oneTimePassword);
+    assert.equal(s.store.passkeys('bob').length, 0);
+    assert.equal(s.store.secondFactorEnabled('bob'), false);
+    // The new password signs in, with no second step, and must be changed.
+    assert.equal((await logIn(s, 'bob', r.json().oneTimePassword)).r.json().mustChangePassword, true);
+    const line = (await auditLines(s)).find((l) => l.event === 'user-password-reset');
+    assert.equal(line.passkeys, 2);
+    assert.equal(line.actor, 'carol');
+    assert.equal(line.user, 'bob');
+    // No credential id or key in the log.
+    const text = await fs.readFile(s.audit.file, 'utf8');
+    assert.equal(text.includes('publicKey'), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('reset password: without the flag, or with anything but the boolean true, the passkeys stay (an old page or a script)', async () => {
+  const { s, c } = await carolAndBobWithPasskeys();
+  try {
+    for (const flag of [undefined, false, 'true', 1, 'yes', null, [true], { a: 1 }]) {
+      const body = { name: 'bob', newPassword: `a typed password ${String(JSON.stringify(flag))}`, password: CAROL };
+      if (flag !== undefined) body.removePasskeys = flag;
+      const r = await api(s, '/api/users/reset-password', body, c.cookie);
+      assert.equal(r.status, 200, `${JSON.stringify(flag)}: ${r.text}`);
+      assert.equal(Object.hasOwn(r.json(), 'removedPasskeys'), false);
+      assert.equal(s.store.passkeys('bob').length, 2, JSON.stringify(flag));
+    }
+    const lines = (await auditLines(s)).filter((l) => l.event === 'user-password-reset');
+    assert.equal(lines.length, 8);
+    assert.equal(lines.some((l) => Object.hasOwn(l, 'passkeys')), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('reset password: a user without passkeys says 0 removed; the app code and recovery codes stay', async () => {
+  const { s, c } = await carolAndBobWithPasskeys();
+  try {
+    const first = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: CAROL }, c.cookie);
+    assert.equal(first.json().removedPasskeys, 2);
+    // Turn the app code on for bob through the store, then reset again with the flag.
+    const secret = await s.store.beginTotp('bob');
+    const codes = await s.store.enableTotp('bob', totp(base32Decode(secret), s.clock.t));
+    assert.ok(codes.length > 0);
+    s.clock.t += 60_000;
+    const again = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: CAROL }, c.cookie);
+    assert.equal(again.status, 200, again.text);
+    assert.equal(again.json().removedPasskeys, 0);
+    assert.equal(s.store.secondFactors('bob').totp, true);
+    assert.equal(s.store.factorRecord('bob').recoveryCodes.length, codes.length);
+    assert.equal((await auditLines(s)).filter((l) => l.event === 'user-password-reset').at(-1).passkeys, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('reset password: the flag changes nothing without the admin\'s password, from a non-admin, or for an admin or config user', async () => {
+  const { s, c } = await carolAndBobWithPasskeys();
+  try {
+    // A wrong password for the admin, and none at all.
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: 'not carols' }, c.cookie)).status, 400);
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true }, c.cookie)).status, 400);
+    // Nobody signed in, and a user who is not an admin.
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: CAROL })).status, 401);
+    await s.store.createUser({ name: 'dave', role: 'viewer', passwordHash: await hashPassword(DAVE, undefined, fakeHasher, s.store.currentPepper()) });
+    const d = await logIn(s, 'dave', DAVE);
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: DAVE }, d.cookie)).status, 403);
+    assert.equal(s.store.passkeys('bob').length, 2);
+    assert.equal((await logIn(s, 'bob', BOB)).r.status, 200, 'the password is still bob\'s');
+    // An admin (carol herself, alice in the config file) is not reset here, flag or not.
+    await s.store.addPasskey('carol', passkeyRecord('Carols'));
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'carol', generate: true, removePasskeys: true, password: CAROL }, c.cookie)).status, 409);
+    assert.equal((await api(s, '/api/users/reset-password', { name: 'alice', generate: true, removePasskeys: true, password: CAROL }, c.cookie)).status, 409);
+    assert.equal(s.store.passkeys('carol').length, 1);
+    assert.equal((await auditLines(s)).some((l) => l.event === 'user-password-reset'), false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('reset password: when the write fails, the password and the passkeys are both as they were, and nobody is signed out', async () => {
+  const { s, c } = await carolAndBobWithPasskeys();
+  try {
+    const put = s.store.db.put.bind(s.store.db);
+    // The write that takes passkeys away fails; one that only changes the password would not.
+    s.store.db.put = (kind, rec) => {
+      if (rec.name === 'bob' && (rec.credentials ?? []).length < 2) throw new Error('disk full');
+      return put(kind, rec);
+    };
+    const r = await api(s, '/api/users/reset-password', { name: 'bob', generate: true, removePasskeys: true, password: CAROL }, c.cookie);
+    assert.equal(r.status, 500, r.text);
+    s.store.db.put = put;
+    assert.equal(s.store.passkeys('bob').length, 2);
+    assert.equal((await logIn(s, 'bob', BOB)).r.status, 200);
+    assert.equal((await auditLines(s)).some((l) => l.event === 'user-password-reset'), false);
+  } finally {
+    await s.close();
+  }
+});

@@ -1240,10 +1240,11 @@ test('account page: after a password change the page says passkeys still sign in
   }
 });
 
-test('account page: the box "also remove my other passkeys" shows only with passkeys, is off by default, and sends the flag only when ticked', async () => {
+test('account page: the box "also remove my other passkeys" shows only with passkeys, is ticked by default, and sends the flag whenever it is ticked, seen or not', async () => {
   const run = async (account, tick, answer) => {
     const p = await accountPage({ account, routes: { 'POST /api/account/password': [200, answer] } });
-    if (tick) p.$('pw-remove').checked = true;
+    // The page file says checked; the test's DOM does not read attributes, so the default is set here.
+    p.$('pw-remove').checked = tick;
     p.$('pw-next').value = 'a long new password';
     p.$('pw-again').value = 'a long new password';
     p.$('pw-form').fire('submit');
@@ -1253,20 +1254,27 @@ test('account page: the box "also remove my other passkeys" shows only with pass
   const withKeys = { ...ACCOUNT, canChangePassword: true, passkeys: { ...ACCOUNT.passkeys, signIn: true, list: [KEY, { ...KEY, id: 'other' }] } };
   const html = await read('account.html');
   assert.match(html, /<input id="pw-remove" type="checkbox"/);
-  assert.doesNotMatch(/<input id="pw-remove"[^>]*checked/.exec(html)?.[0] ?? '', /checked/);
+  assert.match(/<input id="pw-remove"[^>]*>/.exec(html)?.[0] ?? '', /\schecked[\s>]/);
+  assert.match(html, /Untick it to keep your other passkeys\./);
   const off = await run(withKeys, false, { ok: true });
   assert.equal(off.p.$('pw-remove-box').hidden, false);
-  assert.equal(off.p.$('pw-remove').checked, false);
   assert.equal(Object.hasOwn(off.body, 'removeOtherPasskeys'), false);
+  // Once the password is changed the box is ticked again for next time.
+  assert.equal(off.p.$('pw-remove').checked, true);
   const on = await run(withKeys, true, { ok: true, removedPasskeys: 1 });
   assert.equal(on.body.removeOtherPasskeys, true);
   assert.match(on.p.$('acct-status').textContent, /Your password is changed\. You are signed out everywhere else\. 1 passkey was removed\./);
   const many = await run(withKeys, true, { ok: true, removedPasskeys: 3 });
   assert.match(many.p.$('acct-status').textContent, /3 passkeys were removed\./);
-  // Without passkeys there is nothing to remove: the box is hidden and never sent.
-  const none = await run({ ...ACCOUNT, canChangePassword: true, passkeys: { ...ACCOUNT.passkeys, list: [] } }, true, { ok: true });
+  // Without passkeys listed the box is hidden, and still sent while ticked: a passkey planted after the page
+  // was loaded is removed too. Unticked, it is not sent.
+  const empty = { ...ACCOUNT, canChangePassword: true, passkeys: { ...ACCOUNT.passkeys, list: [] } };
+  const none = await run(empty, true, { ok: true });
   assert.equal(none.p.$('pw-remove-box').hidden, true);
-  assert.equal(Object.hasOwn(none.body, 'removeOtherPasskeys'), false);
+  assert.equal(none.body.removeOtherPasskeys, true);
+  assert.equal(none.p.$('pw-remove').checked, true);
+  const noneOff = await run(empty, false, { ok: true });
+  assert.equal(Object.hasOwn(noneOff.body, 'removeOtherPasskeys'), false);
 });
 
 test('account page: a later passkey has no codes and no sign out; a user with a second step confirms with it; no name is sent when none is typed', async () => {
@@ -1462,6 +1470,192 @@ test('account page: changes ask the step-up with the methods the server lists, a
   assert.match(both.asked[0].why, /Your passkeys and recovery codes still work/);
 });
 
+// ---- the LXMF alerts card of the account page ----
+
+const LXMF_OFF = { available: true, set: false, hidden: false, address: null, confirmed: false, canNodeAlerts: false, nodeAlerts: false, codeExpiresAt: null };
+const LXMF_A = '0123456789abcdef0123456789abcdef';
+const withLxmf = (lxmf, extra = {}) => ({ ...ACCOUNT, ...extra, lxmf });
+
+test('account page: the LXMF alerts card is there only when the server says so, and not while the password has to be changed', async () => {
+  const absent = await accountPage();
+  assert.equal(absent.$('acct-lxmf').hidden, true, 'an older server sends nothing about it');
+  const off = await accountPage({ account: withLxmf({ available: false }) });
+  assert.equal(off.$('acct-lxmf').hidden, true);
+  const on = await accountPage({ account: withLxmf(LXMF_OFF) });
+  assert.equal(on.$('acct-lxmf').hidden, false);
+  assert.equal(on.$('lxmf-state').textContent, 'No address is set.');
+  assert.equal(on.$('lxmf-address-label').textContent, 'LXMF address');
+  assert.equal(on.$('lxmf-set').textContent, 'Send a code');
+  assert.equal(on.$('lxmf-confirm-form').hidden, true);
+  assert.equal(on.$('lxmf-nodes-form').hidden, true);
+  assert.equal(on.$('lxmf-remove-box').hidden, true);
+  const must = await accountPage({ account: withLxmf(LXMF_OFF, { mustChangePassword: true }) });
+  assert.equal(must.$('acct-lxmf').hidden, true);
+});
+
+test('account page: an address waiting for its code shows the confirm form and until when the code works; a confirmed one shows the node alerts box for admins and managers only', async () => {
+  const waiting = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' }) });
+  assert.equal(waiting.$('lxmf-state').textContent, `Waiting for the code for ${LXMF_A}. Nothing is sent there until you confirm it.`);
+  assert.equal(waiting.$('lxmf-confirm-form').hidden, false);
+  assert.match(waiting.$('lxmf-code-help').textContent, /^The code works until .* and ends after 5 wrong tries\./);
+  assert.equal(waiting.$('lxmf-nodes-form').hidden, true, 'not before it is confirmed');
+  assert.equal(waiting.$('lxmf-remove-box').hidden, false);
+  assert.equal(waiting.$('lxmf-address-label').textContent, 'A different LXMF address');
+  const lapsed = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A }) });
+  assert.match(lapsed.$('lxmf-code-help').textContent, /^No code is waiting: send a new one\./);
+  const manager = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: true }, { role: 'manage' }) });
+  assert.equal(manager.$('lxmf-state').textContent, `Alerts go to ${LXMF_A}.`);
+  assert.equal(manager.$('lxmf-confirm-form').hidden, true);
+  assert.equal(manager.$('lxmf-nodes-form').hidden, false);
+  assert.equal(manager.$('lxmf-nodes').checked, true);
+  const viewer = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true }) });
+  assert.equal(viewer.$('lxmf-nodes-form').hidden, true);
+  // A session made with a passkey alone has not given its password: no address is shown.
+  const hidden = await accountPage({ account: withLxmf({ ...LXMF_OFF, set: true, hidden: true, confirmed: true }) });
+  assert.equal(hidden.$('lxmf-hidden').hidden, false);
+  assert.match(hidden.$('lxmf-state').textContent, /^An address is set\. It is not shown until you give your password in this session\.$/);
+  assert.equal(hidden.$('lxmf-state').textContent.includes(LXMF_A), false);
+});
+
+test('account page: setting an address is checked here first, then sent; the server\'s refusals (the bridge, the limits) are shown as they are', async () => {
+  const sent = [];
+  let answer = [200, { ok: true, address: LXMF_A, codeSent: true }];
+  const p = await accountPage({ account: withLxmf(LXMF_OFF), routes: { 'POST /api/account/lxmf/set': (o) => (sent.push(JSON.parse(o.body)), answer) } });
+  for (const bad of ['', 'hello', LXMF_A.slice(1), `${LXMF_A}0`]) {
+    p.$('lxmf-address').value = bad;
+    p.$('lxmf-set-form').fire('submit');
+    await settle();
+    assert.equal(p.$('lxmf-set-error').textContent, 'An LXMF address is 32 hex digits, such as 0123456789abcdef0123456789abcdef.', bad);
+    assert.equal(p.$('lxmf-address').attrs['aria-invalid'], 'true');
+  }
+  assert.deepEqual(sent, []);
+  // Angle brackets and capitals go to the server, which normalises them.
+  answer = [502, { error: 'The alert bridge has addresses named by the website turned off, so it cannot send to your address. Ask whoever runs this site to turn on website_recipients in the bridge.', code: 'bridge-off' }];
+  p.$('lxmf-address').value = ` <${LXMF_A.toUpperCase()}> `;
+  p.$('lxmf-set-form').fire('submit');
+  await settle();
+  assert.deepEqual(sent, [{ address: `<${LXMF_A.toUpperCase()}>` }]);
+  assert.match(p.$('lxmf-set-error').textContent, /turned off, so it cannot send to your address/);
+  assert.equal(p.$('lxmf-set').disabled, false);
+  assert.equal(p.$('lxmf-set').textContent, 'Send a code');
+  answer = [429, { error: 'You asked for 3 codes in the last hour, the most allowed. Try again in 40 minutes.', retryAfter: 2400 }];
+  p.$('lxmf-set-form').fire('submit');
+  await settle();
+  assert.equal(p.$('lxmf-set-error').textContent, 'You asked for 3 codes in the last hour, the most allowed. Try again in 40 minutes.');
+  // It worked: the field is cleared, the page is loaded again, and the focus is on the code.
+  answer = [200, { ok: true, address: LXMF_A, codeSent: true }];
+  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' });
+  p.$('lxmf-set-form').fire('submit');
+  await settle();
+  assert.equal(p.$('lxmf-address').value, '');
+  assert.equal(p.$('lxmf-confirm-form').hidden, false);
+  assert.equal(p.$('acct-status').textContent, 'A code was sent to your LXMF address. Type it below to confirm the address.');
+  assert.equal(FakeElement.active.id, 'lxmf-code');
+  assert.equal(p.log.find((l) => l.url.endsWith('/lxmf/set')).headers['X-Rettui-Request'], '1');
+});
+
+test('account page: a change asks for the password again when the sign in is too old, and sends nothing more until it is given', async () => {
+  let tries = 0;
+  const p = await accountPage({
+    account: withLxmf(LXMF_OFF),
+    routes: {
+      'POST /api/account/lxmf/set': () => (++tries === 1 ? [403, { error: 'Enter your password again to do this.', reauth: true }] : [200, { ok: true }]),
+      'POST /api/account/reauth': [200, { ok: true }],
+    },
+  });
+  // The reauth dialog is built by the page; its form takes the password and sends it.
+  p.$('lxmf-address').value = LXMF_A;
+  p.$('lxmf-set-form').fire('submit');
+  await settle();
+  const reauth = p.log.filter((l) => l.method === 'POST').map((l) => l.url);
+  assert.deepEqual(reauth, ['/api/account/lxmf/set']);
+  assert.equal(tries, 1, 'the dialog is open and waits for the password; the set is not sent again before');
+});
+
+test('account page: confirming checks the 6 digits here, sends the code, and says plainly when it is wrong, ended or run out; a new code can be asked for', async () => {
+  const sent = [];
+  let answer = [400, { error: 'That code is not right. You have 4 tries left for this code.', field: 'code', reason: 'wrong' }];
+  const p = await accountPage({
+    account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, codeExpiresAt: '2026-11-20T10:15:00.000Z' }),
+    routes: {
+      'POST /api/account/lxmf/confirm': (o) => (sent.push(JSON.parse(o.body)), answer),
+      'POST /api/account/lxmf/resend': () => [200, { ok: true, codeSent: true }],
+    },
+  });
+  for (const bad of ['', '12345', '1234567', 'abcdef']) {
+    p.$('lxmf-code').value = bad;
+    p.$('lxmf-confirm-form').fire('submit');
+    await settle();
+    assert.equal(p.$('lxmf-confirm-error').textContent, 'Enter the 6 digits that were sent to your LXMF address.', bad);
+  }
+  assert.deepEqual(sent, []);
+  p.$('lxmf-code').value = '123 456';
+  p.$('lxmf-confirm-form').fire('submit');
+  await settle();
+  assert.deepEqual(sent, [{ code: '123456' }]);
+  assert.equal(p.$('lxmf-confirm-error').textContent, 'That code is not right. You have 4 tries left for this code.');
+  assert.equal(p.$('lxmf-code').value, '', 'a wrong code is cleared');
+  assert.equal(FakeElement.active.id, 'lxmf-code');
+  answer = [400, { error: 'That code has run out. Send a new code.', field: 'code', reason: 'expired' }];
+  p.$('lxmf-code').value = '654321';
+  p.$('lxmf-confirm-form').fire('submit');
+  await settle();
+  assert.equal(p.$('lxmf-confirm-error').textContent, 'That code has run out. Send a new code.');
+  // A new code.
+  p.$('lxmf-resend').fire('click');
+  await settle();
+  assert.equal(p.$('lxmf-confirm-error').textContent, '');
+  assert.equal(p.$('acct-status').textContent, 'A new code was sent to your LXMF address. The old one no longer works.');
+  assert.equal(p.$('lxmf-resend').disabled, false);
+  // The right code: confirmed, and the page is loaded again.
+  answer = [200, { ok: true }];
+  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true }, { role: 'manage' });
+  p.$('lxmf-code').value = '111111';
+  p.$('lxmf-confirm-form').fire('submit');
+  await settle();
+  assert.equal(p.$('lxmf-confirm-form').hidden, true);
+  assert.equal(p.$('lxmf-nodes-form').hidden, false);
+  assert.equal(p.$('acct-status').textContent, 'Your LXMF address is confirmed. Alerts about your account now go there.');
+  assert.equal(FakeElement.active.id, 'acct-lxmf-h');
+});
+
+test('account page: removing the address and the node alerts box send what they say, and show what the server has when it refuses', async () => {
+  const sent = [];
+  let nodes = [200, { ok: true }];
+  const p = await accountPage({
+    account: withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true }, { role: 'manage' }),
+    routes: {
+      'POST /api/account/lxmf/node-alerts': (o) => (sent.push(JSON.parse(o.body)), nodes),
+      'POST /api/account/lxmf/remove': [200, { ok: true }],
+    },
+  });
+  // Ticked: sent, said, and the page is loaded again from the server.
+  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: true }, { role: 'manage' });
+  p.$('lxmf-nodes').checked = true;
+  p.$('lxmf-nodes').fire('change');
+  await settle();
+  assert.deepEqual(sent, [{ enabled: true }]);
+  assert.equal(p.$('acct-status').textContent, 'Node down and recovered alerts now go to your LXMF address too.');
+  assert.equal(p.$('lxmf-nodes').checked, true);
+  assert.equal(p.$('lxmf-nodes').disabled, false);
+  // Refused: the box goes back to what the server has, and says why.
+  nodes = [403, { error: 'Only admins and managers can get node alerts.' }];
+  p.state.account = withLxmf({ ...LXMF_OFF, set: true, address: LXMF_A, confirmed: true, canNodeAlerts: true, nodeAlerts: false }, { role: 'manage' });
+  p.$('lxmf-nodes').checked = true;
+  p.$('lxmf-nodes').fire('change');
+  await settle();
+  assert.equal(p.$('lxmf-nodes-error').textContent, 'Only admins and managers can get node alerts.');
+  assert.equal(p.$('lxmf-nodes').checked, false);
+  // Removed.
+  p.state.account = withLxmf(LXMF_OFF, { role: 'manage' });
+  p.$('lxmf-remove').fire('click');
+  await settle();
+  assert.equal(p.$('lxmf-state').textContent, 'No address is set.');
+  assert.equal(p.$('lxmf-remove-box').hidden, true);
+  assert.equal(p.$('acct-status').textContent, 'Your LXMF address is removed. No more alerts go there.');
+  assert.equal(p.$('lxmf-remove').disabled, false);
+});
+
 test('users page: the passkey count and kinds show, and the reset says what it removes', async () => {
   const js = await read('users-page.js');
   const dom = makeDom({ prebuilt: true });
@@ -1523,8 +1717,10 @@ test('users page: the passkey count and kinds show, and the reset says what it r
   assert.equal(labels('zed').includes('Delete zed'), false);
   assert.ok(labels('bob').includes('Delete bob'));
   assert.ok(labels('bob').includes('Reset the password of bob'));
-  // The password reset dialog says the passkeys still sign the user in, and where they are removed.
-  assert.match(await read('users-page.js'), /Their passkeys still sign them in without a password\. To stop those too, use Reset two-step sign-in, which removes them\./);
+  // The password reset dialog says what happens to the passkeys, with the box ticked and unticked, and
+  // that Reset two-step sign-in is the way to remove the rest.
+  assert.match(js, /Any passkeys they have still sign them in without a password\. To stop those too, tick the box to remove their passkeys, or use Reset two-step sign-in, which removes them with the app code and recovery codes\./);
+  assert.match(js, /Their passkeys are removed too, so none of them can sign in without the password\. Their app code and recovery codes stay; Reset two-step sign-in removes those too\./);
   const note = row('zed').all().find((e) => /users-admin-note/.test(e.className ?? ''));
   assert.match(note.textContent, /^Admins are reset, demoted and deleted on the server: scripts\/users\.js reset-password, reset-2fa, set-role or delete\.$/);
   assert.equal(row('bob').all().some((e) => /users-admin-note/.test(e.className ?? '')), false);
@@ -2924,4 +3120,185 @@ test('every page has the same 1400px header and footer, and the wide pages lay t
   assert.match(css, /\.acct-page h1 \{ margin: 0 0 8px; font-size: 22px; \}/);
   // The cells the phone layout reads still have their labels.
   assert.match(await read('users-page.js'), /cell\(tr, 'Actions', undefined, 'users-actions'\)/);
+});
+
+// ---- the users page: the reset password dialog and its passkey box ----
+
+// Runs users-page.js; ask: what the step-up dialog does; routes over the defaults. stepUp.password
+// is what the page calls when the server says the password must be given first.
+async function usersPage({ users, routes = {}, ask, password } = {}) {
+  const dom = makeDom({ prebuilt: true });
+  const log = [];
+  const asked = [];
+  const passwords = [];
+  const net = router({ 'GET /api/users': [200, users], ...routes }, log);
+  const context = {
+    document: dom.document,
+    window: {
+      rettuiStepUp: {
+        ask: (o) => (asked.push(o), ask ? ask(o) : o.send({ password: 'pw' })),
+        password: (o) => (passwords.push(o), password ? password(o) : Promise.resolve({ status: 200, body: { ok: true } })),
+      },
+    },
+    fetch: net.fetch,
+    navigator: {},
+    location: { assign() {} },
+    JSON, Promise, Array, Object, Date,
+  };
+  vm.runInNewContext(await read('users-page.js'), context);
+  await settle();
+  const posts = () => log.filter((l) => l.method === 'POST').map((l) => ({ url: l.url, body: JSON.parse(l.body) }));
+  return { ...dom, log, asked, passwords, posts };
+}
+
+const PK_USERS = {
+  me: 'alice',
+  secondFactor: false,
+  stepUpMethods: [],
+  roles: ['admin', 'manage', 'viewer'],
+  users: [
+    { name: 'alice', role: 'admin', source: 'config', secondFactor: false, totp: false, passkeys: 0, devices: 0 },
+    { name: 'bob', role: 'viewer', source: 'store', secondFactor: true, totp: false, passkeys: 2, devices: 0 },
+    { name: 'erin', role: 'viewer', source: 'store', secondFactor: false, totp: false, passkeys: 0, devices: 0 },
+  ],
+};
+
+const resetButton = (p, name) => p.byId('users-rows').all().find((e) => e.attrs['aria-label'] === `Reset the password of ${name}`);
+
+test('users page: the reset password dialog has the passkey box, ticked every time it opens, and sends removePasskeys true only while it is ticked', async () => {
+  const html = await read('users.html');
+  assert.match(/<input id="act-pk"[^>]*>/.exec(html)?.[0] ?? '', /\schecked[\s>]/);
+  assert.match(html, /<label for="act-pk">Also remove this user's passkeys<\/label>/);
+  assert.match(html, /<p id="act-pk-help" class="note">[^<]*Reset two-step removes those too\.<\/p>/);
+  assert.match(html, /aria-describedby="act-pk-help"/);
+  const p = await usersPage({ users: PK_USERS, routes: { 'POST /api/users/reset-password': [200, { ok: true, removedPasskeys: 2, oneTimePassword: 'abcd-efgh' }] } });
+  // Only the password dialog has the box.
+  const open = () => resetButton(p, 'bob').fire('click');
+  open();
+  assert.equal(p.byId('act-pk-row').hidden, false);
+  assert.equal(p.byId('act-pk').checked, true);
+  assert.match(p.byId('act-why').textContent, /Any passkeys they have still sign them in without a password\. To stop those too, tick the box/);
+  p.byId('act-form').fire('submit');
+  await settle();
+  assert.deepEqual(p.posts()[0], { url: '/api/users/reset-password', body: { name: 'bob', generate: true, removePasskeys: true, password: 'pw' } });
+  // The step-up dialog says what the box means.
+  assert.match(p.asked[0].why, /Their passkeys are removed too, so none of them can sign in without the password\./);
+  assert.match(p.asked[0].why, /Reset two-step sign-in removes those too\./);
+  assert.match(p.byId('users-status').textContent, /^The password of bob is reset\. Their 2 passkeys were removed\.$/);
+  // Unticked: not sent at all, and the words say they stay.
+  p.byId('users-otp-done').fire('click');
+  open();
+  assert.equal(p.byId('act-pk').checked, true, 'ticked again for the next one');
+  p.byId('act-pk').checked = false;
+  p.byId('act-form').fire('submit');
+  await settle();
+  const second = p.posts()[1];
+  assert.equal(Object.hasOwn(second.body, 'removePasskeys'), false);
+  assert.match(p.asked[1].why, /^The password of bob stops working now.*Any passkeys they have still sign them in without a password\./);
+});
+
+test('users page: what the reset says about the passkeys, for one, none and a user that had none', async () => {
+  const run = async (answer, name = 'bob', untick = false) => {
+    const p = await usersPage({ users: PK_USERS, routes: { 'POST /api/users/reset-password': [200, answer] } });
+    resetButton(p, name).fire('click');
+    if (untick) p.byId('act-pk').checked = false;
+    p.byId('act-form').fire('submit');
+    await settle();
+    return p.byId('users-status').textContent;
+  };
+  assert.equal(await run({ ok: true, removedPasskeys: 1 }), 'The password of bob is reset. Their 1 passkey was removed.');
+  assert.equal(await run({ ok: true, removedPasskeys: 0 }, 'erin'), 'The password of erin is reset. They had no passkeys to remove.');
+  // An older server that does not say, with the box unticked: the passkeys were kept, said plainly.
+  assert.equal(await run({ ok: true }, 'bob', true), 'The password of bob is reset. Their passkeys were kept and still sign them in without a password.');
+  assert.equal(await run({ ok: true }, 'erin', true), 'The password of erin is reset.');
+});
+
+test('users page: Reset two-step is still there and still says it removes the passkeys', async () => {
+  const p = await usersPage({ users: PK_USERS, routes: { 'POST /api/users/reset-second-factor': [200, { ok: true }] } });
+  const reset = p.byId('users-rows').all().find((e) => e.attrs['aria-label'] === 'Reset the two-step sign-in of bob');
+  reset.fire('click');
+  await settle();
+  assert.match(p.asked[0].why, /removes their 2 passkeys, recovery codes and known devices/);
+  assert.equal(Object.hasOwn(p.posts()[0].body, 'removePasskeys'), false);
+});
+
+// ---- reads that need the password: the users page, the manage page and the logs ----
+
+test('users page: a 403 with reauth opens the password dialog and loads the list after it; giving up shows the words, not a list', async () => {
+  let reads = 0;
+  const route = () => (++reads === 1 ? [403, { error: 'Enter your password to see this.', reauth: true }] : [200, PK_USERS]);
+  const p = await usersPage({ users: PK_USERS, routes: { 'GET /api/users': route } });
+  assert.equal(p.passwords.length, 1);
+  assert.match(p.passwords[0].why, /^You signed in with a passkey\. Enter your password/);
+  assert.equal(reads, 2);
+  assert.equal(p.byId('users').hidden, false);
+  assert.equal(p.byId('users-rows').children.length, 3);
+  // Given up: the answer is shown as it is, and nothing is listed.
+  const gave = await usersPage({ users: PK_USERS, routes: { 'GET /api/users': [403, { error: 'Enter your password to see this.', reauth: true }] }, password: () => Promise.resolve(null) });
+  assert.equal(gave.passwords.length, 1);
+  assert.equal(gave.byId('users').hidden, true);
+  assert.equal(gave.byId('users-status').textContent, 'Enter your password to see this.');
+  // A session that ended while the dialog was open is told so.
+  const ended = await usersPage({ users: PK_USERS, routes: { 'GET /api/users': [403, { reauth: true }] }, password: () => Promise.resolve({ status: 401, body: { signIn: true } }) });
+  assert.equal(ended.byId('users-status').textContent, 'Your session has ended. Sign in again to manage users.');
+  // An admin-only refusal (no reauth) never opens the dialog.
+  const plainNo = await usersPage({ users: PK_USERS, routes: { 'GET /api/users': [403, { error: 'Only admins can manage users.' }] } });
+  assert.equal(plainNo.passwords.length, 0);
+  assert.equal(plainNo.byId('users-status').textContent, 'Only admins can manage users.');
+});
+
+test('manage page: a 403 with reauth opens the password dialog and loads the nodes after it, for the list of nodes and the node alike', async () => {
+  const gated = (ok) => {
+    let first = true;
+    return () => (first ? ((first = false), [403, { error: 'Enter your password to see this.', reauth: true }]) : ok);
+  };
+  const passwords = [];
+  // With the dialog: each read is sent again once the password is given.
+  const dom = makeDom({ prebuilt: true });
+  const { fetch, log } = router({ 'GET /api/manage': gated([200, MANAGE]), [`GET ${NODE_URL}`]: gated([200, nodeState()]), [`GET ${AUDIT_URL}`]: [200, ENTRIES] });
+  const window = { setTimeout: () => 1, clearTimeout() {}, rettuiStepUp: { ask: () => Promise.resolve(null), password: (o) => (passwords.push(o), Promise.resolve({ status: 200, body: { ok: true } })) } };
+  vm.runInNewContext(await read('manage-page.js'), { document: dom.document, window, fetch });
+  await settle();
+  assert.equal(passwords.length, 2);
+  assert.match(passwords[0].why, /^You signed in with a passkey\. Enter your password to see and manage nodes\./);
+  assert.deepEqual(log.filter((l) => l.method === 'GET').map((l) => l.url), ['/api/manage', '/api/manage', NODE_URL, NODE_URL, AUDIT_URL]);
+  assert.equal(dom.byId('manage').hidden, false);
+  assert.equal(dom.byId('manage-node-h').textContent, 'Hilltop (a.test:1)');
+  assert.equal(dom.byId('manage-error').textContent, '');
+  // Given up: no dialog loop, the words are shown.
+  const dom2 = makeDom({ prebuilt: true });
+  const net2 = router({ 'GET /api/manage': [403, { error: 'Enter your password to see this.', reauth: true }] });
+  const window2 = { setTimeout: () => 1, clearTimeout() {}, rettuiStepUp: { ask: () => Promise.resolve(null), password: () => Promise.resolve(null) } };
+  vm.runInNewContext(await read('manage-page.js'), { document: dom2.document, window: window2, fetch: net2.fetch });
+  await settle();
+  assert.equal(dom2.byId('manage-status').textContent, 'Enter your password to see this.');
+  assert.equal(dom2.byId('manage').hidden, true);
+});
+
+test('step-up: password() is the same dialog with the password alone, sent to /api/account/reauth, wrong passwords shown in it', async () => {
+  const dom = makeDom();
+  const log = [];
+  const answers = [[400, { field: 'password', error: 'Wrong password.' }], [200, { ok: true }]];
+  const net = router({ 'POST /api/account/reauth': () => answers.shift() }, log);
+  const window = {};
+  vm.runInNewContext(await read('step-up.js'), { window, document: dom.document, fetch: net.fetch, JSON, Promise });
+  const asking = window.rettuiStepUp.password({ why: 'You signed in with a passkey.' });
+  const $ = (id) => dom.byId(id);
+  assert.equal($('stepup-title').textContent, 'Confirm it is you');
+  assert.match($('stepup-why').textContent, /^You signed in with a passkey\. Enter your password\.$/);
+  assert.equal($('stepup-code').hidden, true);
+  assert.equal($('stepup-recovery').hidden, true);
+  assert.equal($('stepup-use-passkey').hidden, true);
+  $('stepup-password').value = 'nope';
+  $('stepup-form').fire('submit');
+  await settle();
+  assert.equal($('stepup-error').textContent, 'Wrong password.');
+  $('stepup-password').value = 'right';
+  $('stepup-form').fire('submit');
+  await settle();
+  const answer = await asking;
+  assert.deepEqual(plain(answer), { status: 200, body: { ok: true } });
+  assert.deepEqual(log.map((l) => [l.url, JSON.parse(l.body)]), [['/api/account/reauth', { password: 'nope' }], ['/api/account/reauth', { password: 'right' }]]);
+  // The status page loads it for the logs, and every page that reads behind the gate loads it.
+  for (const name of ['status.html', 'users.html', 'manage.html']) assert.match(await read(name), /<script src="\/step-up\.js" defer><\/script>/, name);
 });

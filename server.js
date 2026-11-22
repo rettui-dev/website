@@ -7,6 +7,7 @@ import { createApp } from './lib/app.js';
 import { createManageClient, forgetManageSecrets } from './lib/manage.js';
 import { LinkWatcher, linkEntries } from './lib/links.js';
 import { createAlerter } from './lib/alerts.js';
+import { createLxmfAlerts } from './lib/lxmf-alerts.js';
 import { createLogin } from './lib/login.js';
 import { NO_PASSKEYS, createPasskeys, passkeyOriginProblem } from './lib/passkeys.js';
 import { StoreError, UserStore, storeHasUsers } from './lib/users.js';
@@ -113,9 +114,13 @@ store.watch();
 // Checked now rather than at the first login, so a wrong Node.js is noticed at once.
 if ((users.length || store.hasLocalUsers()) && !argon2Available()) throw new Error(`users need Node.js 24.7 or later for Argon2id (this is ${process.version})`);
 
-// Messages for the operator when a node goes down or comes back; only the monitor sends them.
-const alerts = createAlerter(alertSettings, nodes);
-if (alerts) console.log(`alerts: ${alertSettings.channels.map((c) => c.type).join(', ')} for ${alertSettings.events.join(', ')}`);
+// Messages for the operator when a node goes down or comes back (sent by the monitor), and when a
+// user adds a passkey (sent by the account API, with passkey_added in alerts.events).
+// A webhook channel with user_addresses (an LXMF bridge) also lets each user set their own address.
+const userChannel = alertSettings?.channels.find((c) => c.userAddresses === true);
+const lxmf = userChannel ? createLxmfAlerts({ channel: userChannel, store, issuer: site.name ?? 'rettui status' }) : null;
+const alerts = createAlerter(alertSettings, nodes, { lxmf });
+if (alerts) console.log(`alerts: ${alertSettings.channels.map((c) => c.type).join(', ')} for ${alertSettings.events.join(', ')}${lxmf ? '; users can set their own LXMF address' : ''}`);
 
 const monitor = new Monitor({ alerts, targets, dataDir, statsUrls, nodes, tokens, publicDetails: defaults.publicDetails, publicDiskFigures: defaults.publicDiskFigures, publicLogs: defaults.publicLogs, requireLogin: defaults.requireLogin, sampleIntervalMs, logsEnabled: true });
 await monitor.load();
@@ -160,7 +165,7 @@ if (manage && !(users.length || store.hasLocalUsers())) console.warn(`warning: $
 // The waits after a first second factor, before node changes (factor-hold.js).
 const holds = createFactorHolds({ dataDir });
 await holds.load();
-const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site, manage, holds });
+const server = createApp({ monitor, publicDir: path.join(here, 'public'), login: createLogin({ users, store, settings: login, audit, failures, passkeys }), releases, mode: siteMode, site, manage, holds, alerts });
 server.listen(port, host, () => console.log(`listening on http://${host}:${port}, ${siteMode === 'status' ? 'status-only site, ' : ''}data in ${dataDir}`));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

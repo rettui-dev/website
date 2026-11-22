@@ -216,3 +216,57 @@ test('the Reticulum change panel: a labelled region, its states read out, its er
   // The checks are list items with text, inside the same status region.
   assert.match(js, /list\.appendChild\(el\('li', null, String\(c\.interface\) \+ ': ' \+ words\)\)/);
 });
+
+test('the passkey boxes of the password change and the password reset are labelled checkboxes, ticked by default, with help that is read with them and no inline style', async () => {
+  for (const [name, box, row] of [['account.html', 'pw-remove', 'pw-remove-box'], ['users.html', 'act-pk', 'act-pk-row']]) {
+    const html = await read(name);
+    const input = new RegExp(`<input id="${box}" type="checkbox"([^>]*)>`).exec(html)?.[1] ?? '';
+    assert.match(input, /\schecked(\s|$)/, `${name}: ticked by default`);
+    assert.match(input, new RegExp(`aria-describedby="${box}-help"`), name);
+    assert.match(html, new RegExp(`<label for="${box}">[^<]+</label>`), name);
+    assert.match(html, new RegExp(`<p id="${box}-help" class="note">`), name);
+    // Laid out by the style sheet's .acct-check (a 24px box), never by a style attribute.
+    assert.match(html, new RegExp(`<div id="${row}" class="acct-check" hidden>`), name);
+    assert.doesNotMatch(html, /\sstyle=/, name);
+  }
+});
+
+test('the status page password button: a real button with its words, hidden until the page needs it, in the line that is read as text, no inline script or style', async () => {
+  const html = await read('status.html');
+  assert.match(html, /<div id="account" class="account" hidden>\s*<p id="account-text" class="account-text"><\/p>\s*<button id="account-btn" type="button" class="link-btn">Sign in<\/button>\s*<button id="account-password-btn" type="button" class="link-btn" hidden>Enter your password to see everything<\/button>/);
+  assert.doesNotMatch(html, /\sstyle=|\sonclick=/);
+  const js = await read('status.js');
+  // It is only shown by setAccount, and the dialog opens only from a click on it (or the details' own button).
+  assert.match(js, /pw\.hidden = !needPassword;/);
+  assert.match(js, /getElementById\('account-password-btn'\)\.addEventListener\('click'/);
+  // The button in the details is a real button with its words.
+  assert.match(js, /el\('button', null, 'Enter your password to see everything'\);\s+ask\.type = 'button';/);
+});
+
+test('the LXMF alerts card is a named region that is hidden until the server says it is there, with labelled fields, help that is read with them, errors that are read out and no inline style or script', async () => {
+  const html = await read('account.html');
+  const card = /<section id="acct-lxmf"[^>]*aria-labelledby="([^"]+)"[^>]*hidden>([\s\S]*?)<\/section>/.exec(html);
+  assert.ok(card, 'a hidden section with a name');
+  assert.match(html, new RegExp(`<h2 id="${card[1]}" tabindex="-1">LXMF alerts</h2>`));
+  const inner = card[2];
+  // The state is a status line; the page moves the focus to the heading after a change.
+  assert.match(inner, /<p id="lxmf-state" role="status"><\/p>/);
+  // Every field has a visible label of its own, and its help and error are read with it.
+  assert.match(inner, /<label id="lxmf-address-label" for="lxmf-address">[^<]+<\/label>\s*<input id="lxmf-address" type="text"[^>]*aria-describedby="lxmf-address-help lxmf-set-error"/);
+  assert.match(inner, /<label for="lxmf-code">[^<]+<\/label>\s*<input id="lxmf-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="\[0-9\]\{6\}" maxlength="6"[^>]*aria-describedby="lxmf-code-help lxmf-confirm-error"/);
+  assert.match(inner, /<input id="lxmf-nodes" type="checkbox" aria-describedby="lxmf-nodes-help lxmf-nodes-error">\s*<label for="lxmf-nodes">Node down and recovered alerts<\/label>/);
+  for (const id of ['lxmf-set-error', 'lxmf-confirm-error', 'lxmf-nodes-error']) assert.match(inner, new RegExp(`<p id="${id}" class="login-error" role="alert"></p>`), id);
+  for (const id of ['lxmf-address-help', 'lxmf-code-help', 'lxmf-nodes-help']) assert.match(inner, new RegExp(`<p id="${id}" class="note">`), id);
+  // The text fields are left alone by password managers, the buttons have their words, the checkbox sits in the same grid as the others.
+  for (const [tag] of inner.matchAll(/<input\b[^>]*type="text"[^>]*>/g)) for (const a of ['data-bwignore="true"', 'data-1p-ignore="true"', 'data-lpignore="true"']) assert.ok(tag.includes(a), `${a} on ${tag}`);
+  for (const [, b] of inner.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)) assert.ok(b.trim().length > 0);
+  assert.match(inner, /<div class="acct-check">\s*<input id="lxmf-nodes"/);
+  // The words the card says about what is sent: what and when, never an id, a secret or an address.
+  assert.match(inner, /never holds a passkey id, a secret or an IP address/);
+  assert.doesNotMatch(inner, /\sstyle=|\sonclick=|\sonchange=/);
+  const js = await read('account-page.js');
+  // The script only sets text, and the node alerts box says what happened (the status line is polite).
+  assert.doesNotMatch(js, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+  assert.match(js, /\$\('lxmf-state'\)\.textContent = state;/);
+  assert.match(js, /\$\('acct-lxmf-h'\)\.focus\(\);/);
+});
