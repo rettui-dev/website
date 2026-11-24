@@ -1,0 +1,169 @@
+# Example config for the status page. Set CONFIG_FILE to its path.
+# It replaces the STATUS_TARGETS and STATS_URLS environment variables; setting
+# both is an error. See "Config file" in wiki/Configuration.md.
+# Optional: tokens that make the nodes send their peer lists, so a group's peers
+# heard is counted exactly (see "Exact peer counts" in wiki/Node-Stats.md). Give each node
+# its own token, kept in its own file and not in this one. A relative path is
+# relative to this file; with Docker mount the folder next to the config:
+#   ./secrets:/config/secrets:ro   (files secrets/front.token, secrets/back.token, ...)
+# Remove the # from the stats_token_file lines below once the files exist; a missing
+# file stops the server at start.
+# Optional privacy settings. A node can override either one.
+# public_details: false      # no Details view (and no /api/stats) for the nodes; default true
+# public_disk_figures: true  # also show exact free and total disk space; default false,
+#                            # when only a level (ok, high, full) and the used share rounded to 5 are shown
+# Optional: people who can log in to see more (see "Logins" in wiki/Logins.md). Without
+# users (here or in the user store, users.db in DATA_DIR) there is no login and nothing is locked. Make a password_hash with
+#   npm run hash-password -- --name alice
+# (in Docker: docker compose run --rm -it website node scripts/hash-password.js --name alice)
+# users:
+#   - name: alice
+#     password_hash: '$argon2id$v=19$m=19456,t=2,p=1$...$...'
+#     role: admin          # optional: admin, manage or viewer (default viewer)
+# Password hashes here are never peppered (the server cannot rewrite this file): keep it private,
+# or move admins into the user store, whose passwords are peppered with the user store key.
+# An admin opens the Users page (/users) to manage the users kept in the user store. There must be
+# an admin for that page to exist: set role: admin here, or make one with
+#   node scripts/users.js create NAME --role admin
+# (see "Managing users" in wiki/Managing-Users.md). Users here stay read-only on that page.
+# Each user can turn on two-step sign-in (an app code, TOTP, and/or passkeys) on their account page
+# (/account); that is kept in the user store in DATA_DIR, not here (see "Accounts and second factor"
+# and "Passkeys" in wiki/Accounts-and-Second-Factor.md). Passkeys need site.url below.
+# Any users at all need the user store key, set in USERS_KEY_FILE (see "The user store key" in
+# wiki/User-Store.md); without it the server does not start.
+# What a visitor without a login does not see. With users and no rule, all of these, links (the
+# links between nodes on the map and the cards) included. A list you write replaces that default
+# and so does a node's own require_login: leave out links and those visitors see them.
+# require_login: [details, storage, peers, disk, versions, links]
+# Find the links between your nodes by reading each managed node's Reticulum config (default false).
+# Needs manage_url on the nodes and at least one user. Turning it on publishes, to everyone who may
+# see links, which node dials which, and whether that interface is on (never an address or an
+# interface name). See "Links between nodes" in wiki/Connecting-Nodes.md.
+# detect_links: true
+# The Logs tab of a node's Full details (its recent log lines, fetched with the node's stats token
+# from a node started with --stats-logs; see "Node logs" in wiki/Node-Stats.md) is not one of these sections:
+# it always needs a login, whatever require_login says. To show a node's logs to everybody, set
+# public_logs: true at the top or on the node (default false; the server warns at start).
+# public_logs: false
+# login:
+#   idle_timeout_minutes: 60
+#   max_age_hours: 12
+#   max_sessions: 1000
+#   # The reverse proxy's address or network (CIDR, like 172.18.0.0/16), so failed logins are
+#   # counted per visitor, not per proxy. List only networks nothing untrusted connects from.
+#   trusted_proxies: [172.18.0.1]
+#   # Signing in with a passkey alone, without name and password ("Sign in with a passkey").
+#   # Needs site.url. Default true.
+#   passkey_sign_in: true
+# Optional: a message when a node goes down or comes back, or a user adds a passkey (see "Alerts" in wiki/Uptime-and-Alerts.md).
+# A webhook (https, or http for private addresses; "ntfy", "discord", "slack" and "apprise" formats too) and/or
+# email over SMTPS or STARTTLS. Keep each secret in its own file, relative to this one, and not here;
+# a missing file stops the server at start. A node counts as down after 2 failed checks in a row.
+# alerts:
+#   channels:
+#     - type: webhook
+#       url: https://hooks.example.org/rettui
+#       secret_file: secrets/hook.secret    # signs each request: X-Rettui-Signature: sha256=...
+#     # The LXMF bridge (bridges/lxmf). With user_addresses each user can also set their own LXMF address on the
+#     # account page, for alerts about their account (the bridge needs website_recipients = true; see "Users' own
+#     # LXMF addresses" in wiki/Uptime-and-Alerts.md). It needs a secret, and only one channel may have it.
+#     - type: webhook
+#       url: http://172.28.0.10:8742/alert
+#       secret_file: secrets/hook.secret
+#       user_addresses: true
+#       per_address_per_hour: 10            # default 10 (6 to 100); the bridge's per_recipient_per_hour or lower
+#       addresses_per_hour: 50              # default 50 (10 to 1000); the bridge's recipients_per_hour or lower
+#       #   (codes take up to half of it for new addresses, node alerts all but 5, account alerts all of it)
+#     # Telegram, Matrix, Pushover...: through an Apprise API container that holds their URLs
+#     # (a fixed private IP, because plain http is not allowed for a service name; no login in the URL).
+#     - type: webhook
+#       format: apprise
+#       url: http://172.28.0.20:8000/notify/rettui
+#     - type: email
+#       host: smtp.example.org
+#       security: starttls                  # or tls (SMTPS)
+#       username: alerts
+#       password_file: secrets/mail.password
+#       from: status@example.org
+#       to: [ops@example.org]
+#   events: [down, recovered]               # add announce_queue (needs rettui 2.1.0 on the node) for full queues
+#                                           # add passkey_added for a message each time a user adds a passkey
+#                                           # (user, role, the passkey's name and the time; never an id or an address)
+#   announce_queue_samples: 3               # stats samples in a row with a full queue before an alert
+#   cooldown_minutes: 15                    # a node that flaps is not announced again within this time;
+#                                           # a user's passkey_added alerts are held to one in this time, the rest counted
+#   repeat_minutes: 0                       # 0 = no reminders while a node stays down
+# Optional: serve only the status page, without the rettui project pages (see "Status-only
+# site" in wiki/Configuration.md). Default full. The environment variable SITE_MODE is for use without this file.
+# site_mode: status
+# Optional: a name, logo, links and texts of your own on the status page. Plain text only.
+# site:
+#   name: Acme Mesh                 # 1 to 48 characters
+#   logo: site/logo.png             # png, jpg, webp or svg, up to 512 KiB; relative to this file
+#   description: Public entry points of the Acme backbone.   # up to 200 characters
+#   footer: Run by volunteers.      # up to 200 characters
+#   url: https://status.acme.example   # https address of this site, no path: for the feed's own links.
+#                                      # It is also the passkey address: https (or http://localhost for
+#                                      # testing). Changing it later stops existing passkeys working.
+#   links:                          # up to 6, http or https, no user name or password
+#     - { label: Join us, url: "https://acme.example/join" }
+nodes:
+  # A proxy ("front door"): it passes visitors on to the nodes in proxy_for.
+  # The page groups those nodes under it and adds a combined view.
+  - address: rns.rettui.dev:4242
+    name: Front door
+    stats_url: https://rns.rettui.dev/stats.json
+    # stats_token_file: secrets/door.token
+    proxy_for:
+      - front.rns.rettui.dev:4242
+      - back.rns.rettui.dev:4242
+      - side.rns.rettui.dev:4242
+    # Whether the proxy's own numbers are added to the group's (default false).
+    # Leave it false if the proxy's stats already include the nodes behind it.
+    count_own: false
+    # public_details: false
+
+  - address: front.rns.rettui.dev:4242
+    name: Front
+    stats_url: https://front.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/front.token
+    # Optional: manage this node from the website (settings and a Reticulum restart, for users with the
+    # manage or admin role), for a node started with --manage-listen and --manage-secret-file.
+    # manage_url is the address of that listener only (no path, query or fragment; http is allowed for
+    # the private addresses the node listens on: loopback, 10/8, 172.16/12, 192.168/16, 100.64/10,
+    # fc00::/7 and fe80::/10; https otherwise). Run the link over a WireGuard tunnel or a
+    # TLS proxy: plain http is signed, so nobody can change it on the way, but anyone on the way can
+    # read every answer. The secret is 32 to 256 printable ASCII characters without spaces, quotes or
+    # backslashes, in a file of its own that only its owner can read or write (chmod 600: a file the group or
+    # others can read or write stops the server at start), relative to this one and different for every node;
+    # the node reads the same file. A URL without a secret file, or the reverse, stops the server at
+    # start, and so do two nodes with the same secret. While any node has a manage_url, admins need
+    # two-step sign-in on to change users.
+    # manage_url: http://10.200.0.2:8750
+    # manage_secret_file: secrets/front.manage
+    # manage_confirm_seconds: 300     # 60 to 900, default 300: how long a node waits for a confirmation
+    # Optional: the external backbone peers this node connects out to, drawn as grey boxes on the
+    # network map (up to 8 per node). The address is only shown: it is never checked.
+    # upstreams:
+    #   - name: Example backbone hub
+    #     address: hub.example.org:4965
+    #   - name: Another peer
+    # Optional: links to other monitored nodes, drawn as arrows on the network map and listed on the
+    # cards (up to 8 per node). With detect_links: true the website also finds links by itself: for a
+    # node with a manage_url it reads the node's Reticulum config now and then (every 5 minutes; see
+    # "Links between nodes" in wiki/Connecting-Nodes.md). Declare a link here for a node without
+    # management, or one that config does not show. "to" is the name or the address of another node in this file; "direction" is
+    # dials (this node connects out to it, the default) or unknown. What the node's config shows wins
+    # over what is declared here. Only the other node is published: no interface name and no address.
+    # links:
+    #   - to: Back
+    #   - to: side.rns.rettui.dev:4242
+    #     direction: unknown
+  - address: back.rns.rettui.dev:4242
+    name: Back
+    stats_url: https://back.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/back.token
+  - address: side.rns.rettui.dev:4242
+    name: Side
+    stats_url: https://side.rns.rettui.dev/stats.json
+    # stats_token_file: secrets/side.token

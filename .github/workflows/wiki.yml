@@ -1,0 +1,60 @@
+name: Wiki
+
+# Publishes wiki/ to the repository's GitHub wiki when it changes on main or
+# dev (the wiki shows the latest pages pushed). The pages are written and
+# reviewed here, beside the code they describe; the wiki becomes a copy of
+# wiki/ (pages removed here are removed there).
+#
+# The wiki must exist first: turn on Wikis (Settings > General > Features)
+# and create its first page (any text; this replaces it).
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One publish at a time, in order.
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only this job writes to the wiki, so only it gets the write token.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Copy wiki/ to the wiki
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if ! git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.wiki.git" published; then
+            echo "::error::No wiki to publish to. Turn on Wikis (Settings > General > Features), create its first page, then run this again."
+            exit 1
+          fi
+          find published -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -r wiki/. published/
+          cd published
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki is up to date."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Update from ${REPOSITORY}@${SHA::7}"
+          git push

@@ -109,6 +109,23 @@ test('snapshot reports status, uptime and overall state', async () => {
   assert.equal(s.hosts[1].uptimePercent, 0);
 });
 
+test('overall is up only when every entry point, proxied ones too, has been checked and is up', async () => {
+  const dir = await tmp();
+  const targets = [{ host: 'p.test', port: 1 }, { host: 'a.test', port: 2 }, { host: 'b.test', port: 3 }];
+  const nodes = new Map([['p.test:1', { name: null, proxyFor: ['a.test:2', 'b.test:3'], proxiedBy: null, countOwn: false }]]);
+  let down = '';
+  const m = new Monitor({ targets, nodes, dataDir: dir, probeFn: async (host) => (host === down ? { up: false, ms: 1, error: 'x' } : { up: true, ms: 1 }) });
+  await m.checkAll();
+  assert.equal(m.snapshot().overall, 'up');
+  down = 'b.test';
+  await m.checkAll();
+  assert.equal(m.snapshot().overall, 'degraded');
+  // Some not checked yet is not "all reachable".
+  const early = new Monitor({ targets, dataDir: await tmp(), probeFn: async () => ({ up: true, ms: 1 }) });
+  early.history.get('p.test:1').push([Date.now(), 1, 1]);
+  assert.equal(early.snapshot().overall, 'unknown');
+});
+
 test('a throwing probe is recorded as down, not a crash', async () => {
   const dir = await tmp();
   const m = new Monitor({
@@ -152,7 +169,20 @@ test('save leaves no temporary file behind and creates the data dir', async () =
   const dir = path.join(await tmp(), 'nested', 'data');
   const m = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: dir, probeFn: fake([{ up: true, ms: 1 }]) });
   await m.checkAll();
-  assert.deepEqual(await fs.readdir(dir), ['history.json']);
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.json', 'uptime.json']);
+});
+
+test('flush waits for a save that is running and writes what came after it', async () => {
+  const dir = await tmp();
+  const m = new Monitor({ targets: [{ host: 'a.test', port: 1 }], dataDir: dir, probeFn: fake([{ up: true, ms: 5 }]) });
+  await m.checkAll();
+  m.history.get('a.test:1').push([1, 1, 7]);
+  const running = m.save();
+  m.history.get('a.test:1').push([2, 1, 8]);
+  await m.flush();
+  await running;
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'history.json'), 'utf8'));
+  assert.deepEqual(saved.hosts['a.test:1'].slice(-2), [[1, 1, 7], [2, 1, 8]]);
 });
 
 test('save failure is logged, not thrown', async () => {

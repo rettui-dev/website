@@ -1,0 +1,95 @@
+{
+  "comment": "Fixed WebAuthn vectors, made once by test/helpers/soft-authenticator.js from the keys below (test keys, used nowhere else). The Ed25519 ones are deterministic and are made again, byte for byte, by the tests.",
+  "origin": "https://passkeys.example",
+  "rpId": "passkeys.example",
+  "userId": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+  "credentials": {
+    "es256": {
+      "alg": -7,
+      "privateKey": {
+        "kty": "EC",
+        "x": "zUgMRV58JAndw0XN3No2bP7Hm7jfLeBnFcSKY2RuAY0",
+        "y": "63LMogZ5KWQ8SOixEGGrrWlZIAApak_hzz2Cd_j5XkM",
+        "crv": "P-256",
+        "d": "TRisKG-aTU9w2OxiMURxBocZ95ijWrKSjgi-8jDirls"
+      },
+      "id": "ERERERERERERERERERERERERERERERERERERERERERE",
+      "publicKey": "pQECAyYgASFYIM1IDEVefCQJ3cNFzdzaNmz-x5u43y3gZxXEimNkbgGNIlgg63LMogZ5KWQ8SOixEGGrrWlZIAApak_hzz2Cd_j5XkM",
+      "fmt": "none",
+      "counter": 5,
+      "registrationChallenge": "EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI",
+      "registration": {
+        "id": "ERERERERERERERERERERERERERERERERERERERERERE",
+        "rawId": "ERERERERERERERERERERERERERERERERERERERERERE",
+        "type": "public-key",
+        "response": {
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiRWhJU0VoSVNFaElTRWhJU0VoSVNFaElTRWhJU0VoSVNFaElTRWhJU0VoSSIsIm9yaWdpbiI6Imh0dHBzOi8vcGFzc2tleXMuZXhhbXBsZSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+          "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YVik1anGOQkJKSq80GoZvVvdxyXwBR7IC5qEaoatJoDJ9fJFAAAABQAAAAAAAAAAAAAAAAAAAAAAIBERERERERERERERERERERERERERERERERERERERERERpQECAyYgASFYIM1IDEVefCQJ3cNFzdzaNmz-x5u43y3gZxXEimNkbgGNIlgg63LMogZ5KWQ8SOixEGGrrWlZIAApak_hzz2Cd_j5XkM",
+          "transports": [
+            "internal"
+          ]
+        },
+        "clientExtensionResults": {},
+        "authenticatorAttachment": "platform"
+      },
+      "assertionChallenge": "ExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExM",
+      "assertionCounter": 6,
+      "assertion": {
+        "id": "ERERERERERERERERERERERERERERERERERERERERERE",
+        "rawId": "ERERERERERERERERERERERERERERERERERERERERERE",
+        "type": "public-key",
+        "response": {
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiRXhNVEV4TVRFeE1URXhNVEV4TVRFeE1URXhNVEV4TVRFeE1URXhNVEV4TSIsIm9yaWdpbiI6Imh0dHBzOi8vcGFzc2tleXMuZXhhbXBsZSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+          "authenticatorData": "1anGOQkJKSq80GoZvVvdxyXwBR7IC5qEaoatJoDJ9fIFAAAABg",
+          "signature": "MEUCIG499sRoQ3Dh00OY1DLPo7-7bnPSQ72p5cLkMoPGzmxXAiEA09PKEQSxJ_5kKvsvwAIfUgguddt3_ORsXBK043oBKhM",
+          "userHandle": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU"
+        },
+        "clientExtensionResults": {},
+        "authenticatorAttachment": "platform"
+      }
+    },
+    "ed25519": {
+      "alg": -8,
+      "privateKey": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "f66q7ujjkMhLd391A2mKSgz3iiMDEM-mYbbCK3X3x1U",
+        "d": "lPte812WzQX18GynMFzhq8q6s2IKHSx1LG1Z1nPtOfU"
+      },
+      "id": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "publicKey": "pAEBAycgBiFYIH-uqu7o45DIS3d_dQNpikoM94ojAxDPpmG2wit198dV",
+      "fmt": "packed",
+      "counter": 0,
+      "registrationChallenge": "IyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyM",
+      "registration": {
+        "id": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+        "rawId": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+        "type": "public-key",
+        "response": {
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiSXlNakl5TWpJeU1qSXlNakl5TWpJeU1qSXlNakl5TWpJeU1qSXlNakl5TSIsIm9yaWdpbiI6Imh0dHBzOi8vcGFzc2tleXMuZXhhbXBsZSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+          "attestationObject": "o2NmbXRmcGFja2VkZ2F0dFN0bXSiY2FsZydjc2lnWECnJY4zCTl5PMSDTuAh46lFHNSb8hka90nYVmDlLuIEUBqp5iahBu0B-WoJ9jo970klFgl4EKAXYEy_lbcNJNUGaGF1dGhEYXRhWIHVqcY5CQkpKrzQahm9W93HJfAFHsgLmoRqhq0mgMn18l0AAAAAAAAAAAAAAAAAAAAAAAAAAAAgIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiKkAQEDJyAGIVggf66q7ujjkMhLd391A2mKSgz3iiMDEM-mYbbCK3X3x1U",
+          "transports": [
+            "internal"
+          ]
+        },
+        "clientExtensionResults": {},
+        "authenticatorAttachment": "platform"
+      },
+      "assertionChallenge": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ",
+      "assertionCounter": 0,
+      "assertion": {
+        "id": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+        "rawId": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+        "type": "public-key",
+        "response": {
+          "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiSkNRa0pDUWtKQ1FrSkNRa0pDUWtKQ1FrSkNRa0pDUWtKQ1FrSkNRa0pDUSIsIm9yaWdpbiI6Imh0dHBzOi8vcGFzc2tleXMuZXhhbXBsZSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+          "authenticatorData": "1anGOQkJKSq80GoZvVvdxyXwBR7IC5qEaoatJoDJ9fIdAAAAAA",
+          "signature": "wuee9DJLizZsTTeSogt3-wjccN-6LvM3cpqSY8s15UmEXYOYn6ukZJdB8Xno3i-92u3LM2wuTAGBgaEca0UMDA",
+          "userHandle": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU"
+        },
+        "clientExtensionResults": {},
+        "authenticatorAttachment": "platform"
+      }
+    }
+  }
+}

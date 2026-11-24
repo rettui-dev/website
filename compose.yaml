@@ -7,8 +7,55 @@ services:
     environment:
       DATA_DIR: /data
       # STATUS_TARGETS: "rns.rettui.dev:4242,front.rns.rettui.dev:4242"
+      # Node stats (optional, host:port=url pairs; each host must be a target):
+      # STATS_URLS: "rns.rettui.dev:4242=https://rns.rettui.dev/stats.json,front.rns.rettui.dev:4242=https://front.rns.rettui.dev/stats.json,back.rns.rettui.dev:4242=https://back.rns.rettui.dev/stats.json,side.rns.rettui.dev:4242=https://side.rns.rettui.dev/stats.json"
+      # Or describe the nodes in a YAML file instead (see config.example.yaml). It
+      # replaces STATUS_TARGETS and STATS_URLS; setting both is an error.
+      # CONFIG_FILE: /config/config.yaml
+      # Without a config file, per-node token files: host:port=path (see "Exact peer counts").
+      # STATS_TOKEN_FILES: "front.rns.rettui.dev:4242=/config/secrets/front.token"
+      # What the page publishes (see "What is public" in wiki/Public-Data-and-Stats-API.md). Only true or false;
+      # an empty value is an error. Not with CONFIG_FILE: set public_details and
+      # public_disk_figures in the file instead.
+      # PUBLIC_DETAILS: "false"       # no Details view and no /api/stats for any node
+      # PUBLIC_DISK_FIGURES: "true"   # exact free and total disk space (default: a level only)
+      # Alerts (webhook or email when a node goes down) also need CONFIG_FILE: see "Alerts" in wiki/Uptime-and-Alerts.md.
+      # The webhook secret and the mail password go in files under ./secrets, not in the config.
+      # Downloads page: the repositories it lists (default rettui-dev/rettui,rettui-dev/rngit-rs),
+      # and an optional GitHub token that only raises the API rate limit. Keep the token in a file.
+      # RELEASE_REPOS: "rettui-dev/rettui,rettui-dev/rngit-rs"
+      # GITHUB_TOKEN_FILE: /config/secrets/github.token
+      # The https address the site is served at (no path), for the absolute links in /feed.xml. It is also the
+      # passkey address: https (or http://localhost for testing); changing it later stops existing passkeys
+      # working (see "Passkeys" in wiki/Accounts-and-Second-Factor.md). Not with CONFIG_FILE: use site.url in the file.
+      # SITE_URL: "https://rettui.example"
+      # A status-only site (no rettui project pages, no GitHub requests): set site_mode: status in the
+      # config file, or without one SITE_MODE: "status". Branding goes in the file's site: section.
+      # SITE_MODE: "status"
+      # Users in the config file and require_login need CONFIG_FILE. The cookie is Secure, so serve the
+      # site over HTTPS through a reverse proxy; see "Logins" in wiki/Logins.md.
+      # Users need the user store key (see "The user store key" in wiki/User-Store.md). Make it once,
+      # outside the data volume, and give it to the container as a secret (below):
+      #   mkdir -p secrets && (umask 077; docker compose run --rm -T --no-deps website node scripts/users.js gen-key > secrets/users.key)
+      #   sudo chown 1000 secrets/users.key && sudo chmod 400 secrets/users.key
+      # USERS_KEY_FILE: /run/secrets/users_key
+      # With users only in the user store and no CONFIG_FILE, the reverse proxy's address or network
+      # (CIDR, like 172.18.0.0/16, only one nothing untrusted connects from), so failed logins are
+      # counted per visitor, not per proxy (in the file: login.trusted_proxies):
+      # LOGIN_TRUSTED_PROXIES: "172.18.0.1"
+    # The user store key (see USERS_KEY_FILE above). Never put it in the data volume.
+    # secrets:
+    #   - users_key
     volumes:
+      # A named local volume: the user store is a SQLite database, which must not be on NFS,
+      # SMB or a volume shared between hosts.
       - status-data:/data
+      # - ./config.yaml:/config/config.yaml:ro
+      # One token file per node, each readable by the server only (chmod 600). In
+      # config.yaml write stats_token_file: secrets/front.token (relative to the config).
+      # - ./secrets:/config/secrets:ro
+      # The site logo (site.logo: site/logo.png in config.yaml), read once at start.
+      # - ./site:/config/site:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -20,3 +67,7 @@ services:
 
 volumes:
   status-data:
+
+# secrets:
+#   users_key:
+#     file: ./secrets/users.key

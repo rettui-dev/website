@@ -2,65 +2,56 @@
 
 The website for [rettui](https://github.com/rettui-dev/rettui): a home page and a
 status page that checks the project's Reticulum entry points. It has the same look
-as rettui's web UI (colours, Fira Code Nerd Font, dark and light themes).
+as rettui's web UI (colours, Fira Sans and Fira Code, dark and light themes).
 
 It is plain HTML, CSS and JavaScript, served by a small Node.js server
-(`server.js`) with no dependencies and no build step. The server also probes the
-hosts and keeps their history.
+(`server.js`) with no build step and two dependencies (`yaml`, and `@simplewebauthn/server` for
+passkeys, see [Accounts and Second Factor](wiki/Accounts-and-Second-Factor.md)). The server also probes the hosts, keeps their history and can fetch
+their node stats.
 
-## Pages
+## Run it
 
-- `/` is the home page.
-- `/status` shows, for each host, whether it is up, the connect time, when it was last
-  checked, its uptime and a bar of the last 90 checks. It refreshes itself.
-- `/api/status` is the same data as JSON.
-- `/healthz` answers `ok` (used by the Docker health check).
-
-## Run locally
-
-Needs Node.js 22 or later.
+Needs Node.js 24.7 or later.
 
     npm start        # http://localhost:8080
     npm test
 
-## Docker
+With Docker (port 8080; history and the user store are kept in the `status-data` volume):
 
     docker compose up -d --build
 
-This serves the site on port 8080. History is kept in the `status-data` volume, so it
-survives restarts. The container runs as an unprivileged user with a read-only root
-file system; only `/data` is writable.
+To list your own nodes, point `CONFIG_FILE` at a YAML file (start from
+`config.example.yaml`). See [Installing and Running](wiki/Installing-and-Running.md) and
+[Configuration](wiki/Configuration.md) for everything else.
 
-Without compose:
+## Documentation
 
-    docker build -t rettui-website .
-    docker run -d -p 8080:8080 -v status-data:/data --read-only rettui-website
+The full documentation is in [`wiki/`](wiki/Home.md), and is published to the GitHub wiki.
 
-## Settings
+Getting started
 
-All optional, set in the environment (or `environment:` in `compose.yaml`).
+- [Installing and Running](wiki/Installing-and-Running.md): run locally or in Docker
+- [Configuration](wiki/Configuration.md): environment variables, the config file, status-only mode, branding
+- [Pages and Themes](wiki/Pages-and-Themes.md): every page and endpoint, Join, Downloads, release feed, accessibility
 
-| Variable         | Default                           | Meaning                                                  |
-| ---------------- | --------------------------------- | -------------------------------------------------------- |
-| `PORT`           | `8080`                            | Port to listen on.                                       |
-| `HOST`           | `0.0.0.0`                         | Address to listen on.                                    |
-| `DATA_DIR`       | `./data` (`/data` in Docker)      | Where `history.json` is kept.                            |
-| `STATUS_TARGETS` | the four hosts in `lib/monitor.js` | Comma separated `host:port` list to monitor.             |
+Running a status site
 
-A bad value (for example a `STATUS_TARGETS` entry that is not `host:port`) stops the
-server at start with a message.
+- [Node Stats](wiki/Node-Stats.md): what the website reads from nodes, groups, the network map
+- [Uptime and Alerts](wiki/Uptime-and-Alerts.md): the 90 day record, incidents, webhook and email alerts
+- [Public Data and Stats API](wiki/Public-Data-and-Stats-API.md): what visitors see, and the public JSON API
 
-## Add a monitored host
+Logins and users
 
-Either set `STATUS_TARGETS`, for example
-`STATUS_TARGETS=rns.rettui.dev:4242,other.example:4242`, or edit `DEFAULT_TARGETS` in
-`lib/monitor.js`. Restart the server. A host removed from the list loses its saved history.
+- [Logins](wiki/Logins.md): users in the config file, what is locked, sessions
+- [Accounts and Second Factor](wiki/Accounts-and-Second-Factor.md): the account page, app codes, passkeys
+- [Managing Users](wiki/Managing-Users.md): the Users page and `scripts/users.js`
+- [User Store](wiki/User-Store.md): the user database, its key and backups
 
-## How checking works
+Nodes
 
-Every 30 seconds the server opens a TCP connection to each host (5 second timeout) and
-closes it again. Up means the connection was made; the connect time is shown. The
-hosts come only from the configuration; nothing a visitor sends is ever probed.
-Up to 2880 checks per host (24 hours) are kept, and uptime is calculated over those.
+- [Managing Nodes](wiki/Managing-Nodes.md): change node settings and restart Reticulum from the Manage page
 
-The fonts are Fira Code Nerd Font under the SIL Open Font License (`public/fonts/OFL.txt`).
+Guides
+
+- [Connecting Nodes](wiki/Connecting-Nodes.md): set up a node's stats page and remote management end to end
+- [WireGuard for Nodes](wiki/WireGuard-for-Nodes.md): a private network for the nodes' links and the website's link to each node

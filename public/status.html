@@ -6,37 +6,105 @@
 <title>Status - rettui</title>
 <meta name="description" content="Reachability of the rettui Reticulum entry points">
 <meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+<meta property="og:site_name" content="rettui">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Status - rettui">
+<meta property="og:description" content="Reachability of the rettui Reticulum entry points">
 <link rel="icon" type="image/png" href="/brand/icon.png">
 <link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
 <link rel="stylesheet" href="/site.css">
 <script src="/theme.js"></script>
+<script src="/passkey.js" defer></script>
+<script src="/account.js" defer></script>
+<script src="/step-up.js" defer></script>
+<script src="/netmap.js" defer></script>
 <script src="/status.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
     <nav class="links" aria-label="Site">
       <a href="/">Home</a>
       <a href="/status" aria-current="page">Status</a>
+      <a href="/join">Join</a>
+      <a href="/downloads">Downloads</a>
       <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
       <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
     </nav>
     <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
   </div>
 </header>
-<main class="wrap">
+<main id="main" tabindex="-1" class="wrap wide">
   <div id="banner" class="banner unknown">
-    <h1 id="banner-title" role="status" aria-live="polite">Checking...</h1>
+    <h1 id="banner-title">Checking...</h1>
     <p id="banner-sub">Loading the status of the Reticulum entry points.</p>
+    <p id="banner-live" class="sr-only" role="status"></p>
+  </div>
+  <div id="account" class="account" hidden>
+    <p id="account-text" class="account-text"></p>
+    <button id="account-btn" type="button" class="link-btn">Sign in</button>
+    <button id="account-password-btn" type="button" class="link-btn" hidden>Enter your password to see everything</button>
   </div>
   <noscript><p class="note">The status page needs JavaScript to show the checks.</p></noscript>
+  <details id="netmap" class="netmap" open hidden>
+    <summary>Network map <span id="netmap-summary" class="netmap-count"></span></summary>
+    <div id="netmap-chart" class="netmap-chart"></div>
+    <p class="note netmap-note">The frame with a double border and the tag Proxy is the proxy, the front door; the boxes inside it are the nodes it passes visitors to. Dashed lines go to external backbone peers that a node connects out to; those are listed by the operator and are not checked. A line is grey when either end is down. When the map is too narrow or too crowded, it shows one node at a time: pick a node with the buttons above the map. Its proxy is above it, joined by a solid line, the nodes that dial it are on the left (on a phone, under it), the nodes it dials on the right, and its external peers below.<span id="netmap-legend-links" hidden> Arrows between nodes: the node at the dot dials the node at the arrowhead; once the link is up, traffic flows both ways. A solid arrow was found in the node's config. An outlined arrow was declared by the operator. A dotted line with a bar is turned off in the dialling node's config. A line with two slashes has a node that is down. A line with a hollow circle at each end is linked in a direction we do not know.</span></p>
+    <p id="netmap-phone-note" class="note" hidden>Links between nodes are listed on each node's card.</p>
+    <details class="netmap-listbox">
+      <summary>Show as list</summary>
+      <ul id="netmap-list" class="netmap-list"></ul>
+    </details>
+  </details>
+  <p class="note">Each entry point is checked with a TCP connection every 30 seconds. A node counts as down after two failed checks in a row. The 90 day bar has one cell per day (UTC). Use More on a row for details, or Full details for graphs.<span id="links-legend" hidden> "Dials" lists the nodes this node connects out to; "Dialled by" lists the nodes that connect in; once a link is up, traffic flows both ways. "Declared" means the operator listed the link. "Turned off" means the dialling node has that interface switched off.</span></p>
   <ul id="hosts" class="hosts"><li class="host loading">Loading entry points...</li></ul>
-  <p class="note">Each host is tried with a TCP connection from the server every 30 seconds. Uptime is over the last 24 hours of checks; the bar shows the last 90, oldest on the left. This page refreshes itself.</p>
+  <section id="incidents" class="incidents" aria-labelledby="incidents-title">
+    <h2 id="incidents-title">Recent incidents</h2>
+    <p id="incidents-empty" class="note">Loading incidents...</p>
+    <ul id="incident-list" class="incident-list" hidden></ul>
+    <p id="incidents-more" class="note" hidden></p>
+  </section>
+  <dialog id="detail" class="detail" aria-labelledby="detail-title">
+    <div class="detail-top">
+      <div class="detail-head">
+        <h2 id="detail-title">Details</h2>
+        <button id="detail-close" type="button">Close</button>
+      </div>
+      <div class="detail-controls">
+        <div id="detail-viewbar" class="viewbar" hidden>
+          <label for="detail-view">View</label>
+          <select id="detail-view"></select>
+        </div>
+        <div id="detail-range" class="range" role="group" aria-label="Time range">
+          <button type="button" data-range="6h" aria-pressed="false">6 h</button>
+          <button type="button" data-range="24h" aria-pressed="true">24 h</button>
+          <button type="button" data-range="7d" aria-pressed="false">7 d</button>
+        </div>
+      </div>
+      <div id="detail-tabs" class="tabs" role="tablist" aria-label="Sections"></div>
+      <div class="section-pick">
+        <label for="detail-section">Section</label>
+        <select id="detail-section"></select>
+      </div>
+    </div>
+    <div id="detail-body" class="detail-body" role="tabpanel" tabindex="0"></div>
+  </dialog>
 </main>
 <footer>
   <div class="wrap">
     <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
     <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
     <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
     <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>

@@ -1,0 +1,640 @@
+// The sign in button in the header, on every page, and the sign in dialog it opens. Without users
+// the server says so (GET /api/session) and the button stays hidden. Signing in and out are the same
+// POST /login and /logout the status page has always used; the page stays where it is, so the visitor
+// is back on it as soon as the dialog closes. A user with two-step sign-in gets a second step in the
+// same dialog: a passkey (a button the visitor presses, POST /login/passkey; browsers want a click
+// before they show a passkey prompt), the code from their app, or a recovery code (POST /login/code).
+// The server says which of them this user has. A visitor with a passkey that works on its own can also
+// press "Sign in with a passkey" instead of typing a name and password (POST /login/passkey/begin, the
+// browser's passkey prompt, then POST /login/passkey/finish); no name is sent at all. Signed in, the name in
+// the header links to the account page. The status page asks for the dialog too
+// (window.rettuiAccount.open) and reloads its numbers when the viewer changes.
+(function () {
+  'use strict';
+  var box = document.getElementById('signin');
+  var btn = document.getElementById('signin-btn');
+  var nameEl = document.getElementById('signin-name');
+  if (!box || !btn || !nameEl) return;
+
+  var enabled = false;
+  var name = null;
+  var dlg = null;
+  var opener = null;
+  var afterSignIn = null;
+  var busy = false;
+  var listeners = [];
+  // The token of the second step, while the dialog asks for a code; which way it asks ('passkey', 'code'
+  // or 'recovery'); the ways the server offers this user ('passkey', 'totp', 'recovery'); the options
+  // for the passkey prompt; and a word about a passkey that cannot be used here.
+  var pending = null;
+  var mode = 'code';
+  var methods = ['totp', 'recovery'];
+  var passkeyOptions = null;
+  var passkeyNote = '';
+  // Whether the dialog offers a passkey on its own (the server allows it, this is the address passkeys
+  // were made for, and the browser has WebAuthn), and the run of the press that is under way, if any.
+  var passkeyAlone = false;
+  var aloneRun = null;
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // Spoken, not shown: the buttons change in place, so a screen reader is told.
+  var live = el('p', 'sr-only');
+  live.id = 'account-live';
+  live.setAttribute('role', 'status');
+  document.body.appendChild(live);
+
+  function paint() {
+    box.hidden = !enabled;
+    if (!enabled) return;
+    nameEl.hidden = !name;
+    nameEl.textContent = '';
+    if (name) {
+      // The name is the way to the account page.
+      var link = el('a', 'signin-link', name);
+      link.href = '/account';
+      link.title = name;
+      if (location.pathname === '/account' || location.pathname === '/account/') link.setAttribute('aria-current', 'page');
+      nameEl.appendChild(link);
+    }
+    btn.textContent = name ? 'Sign out' : 'Sign in';
+    // The name starts with the visible words, so voice control can say what it sees.
+    if (name) btn.setAttribute('aria-label', 'Sign out ' + name);
+    else btn.setAttribute('aria-label', 'Sign in');
+    btn.setAttribute('data-state', name ? 'in' : 'out');
+  }
+
+  // Tells whoever listens (the status page) that the viewer changed; they may return a promise.
+  function changed() {
+    return Promise.all(listeners.map(function (fn) {
+      try { return fn(name); } catch (e) { return null; }
+    }));
+  }
+
+  function refocus(back) {
+    if (back && back.isConnected && back.offsetParent !== null) back.focus();
+    else if (btn.offsetParent !== null) btn.focus();
+  }
+
+  function setError(text) {
+    var e = document.getElementById('login-error');
+    e.textContent = text;
+    var bad = text ? 'true' : 'false';
+    document.getElementById('login-name').setAttribute('aria-invalid', bad);
+    document.getElementById('login-password').setAttribute('aria-invalid', bad);
+  }
+
+  // A word about the passkey button, in the same line as the password errors, but about no field.
+  function setPasskeyError(text) {
+    document.getElementById('login-error').textContent = text;
+    document.getElementById('login-name').setAttribute('aria-invalid', 'false');
+    document.getElementById('login-password').setAttribute('aria-invalid', 'false');
+  }
+
+  function setCodeError(text) {
+    document.getElementById('login-code-error').textContent = text;
+    var bad = text ? 'true' : 'false';
+    document.getElementById('login-code').setAttribute('aria-invalid', bad);
+    document.getElementById('login-recovery').setAttribute('aria-invalid', bad);
+  }
+
+  // The server only takes these with the X-Rettui-Request header, which a form on another site cannot send.
+  function post(path, fields) {
+    return fetch(path, { method: 'POST', body: new URLSearchParams(fields), headers: { 'X-Rettui-Request': '1' }, credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, body: body }; });
+      });
+  }
+
+  // The dialog shows one step at a time: the password, or the second step.
+  function showStep(codeStep) {
+    document.getElementById('login-form').hidden = codeStep;
+    document.getElementById('login-code-form').hidden = !codeStep;
+    dlg.setAttribute('aria-labelledby', codeStep ? 'login-code-title' : 'login-title');
+    if (!codeStep) {
+      pending = null;
+      methods = ['totp', 'recovery'];
+      passkeyOptions = null;
+      passkeyNote = '';
+      setMode('code');
+    }
+  }
+
+  function passkeyReady() {
+    return methods.indexOf('passkey') >= 0 && passkeyOptions !== null && Boolean(window.rettuiPasskey) && window.rettuiPasskey.supported();
+  }
+
+  function offered(which) {
+    if (which === 'passkey') return passkeyReady();
+    return methods.indexOf(which === 'code' ? 'totp' : 'recovery') >= 0;
+  }
+
+  // The first way the server offers, in the order passkey, app code, recovery code.
+  function firstMode() {
+    return ['passkey', 'code', 'recovery'].filter(offered)[0] || 'code';
+  }
+
+  var WHY = {
+    passkey: 'Use the passkey you saved for this site. Your device asks you to confirm it is you.',
+    code: 'Enter the 6-digit code from your authenticator app.',
+    recovery: 'Enter one of your recovery codes. Each one works once.'
+  };
+
+  function setMode(which) {
+    mode = which;
+    var code = document.getElementById('login-code');
+    var rec = document.getElementById('login-recovery');
+    code.value = '';
+    rec.value = '';
+    document.getElementById('login-code-label').hidden = which !== 'code';
+    code.hidden = which !== 'code';
+    document.getElementById('login-recovery-label').hidden = which !== 'recovery';
+    rec.hidden = which !== 'recovery';
+    document.getElementById('login-passkey').hidden = which !== 'passkey';
+    document.getElementById('login-code-submit').hidden = which === 'passkey';
+    document.getElementById('login-use-passkey').hidden = which === 'passkey' || !offered('passkey');
+    document.getElementById('login-use-code').hidden = which === 'code' || !offered('code');
+    document.getElementById('login-use-recovery').hidden = which === 'recovery' || !offered('recovery');
+    document.getElementById('login-code-why').textContent = WHY[which] + (which !== 'passkey' && passkeyNote ? ' ' + passkeyNote : '');
+    setCodeError('');
+  }
+
+  // Puts the cursor where the visitor goes next in the mode the step is in.
+  function focusStep() {
+    document.getElementById(mode === 'passkey' ? 'login-passkey' : mode === 'recovery' ? 'login-recovery' : 'login-code').focus();
+  }
+
+  // A user whose password an admin set can only change it, on the account page: they are sent there.
+  function mustChange(flag) {
+    if (flag !== true || location.pathname === '/account' || location.pathname === '/account/') return false;
+    location.assign('/account');
+    return true;
+  }
+
+  // A sign in that is complete: the dialog closes and whoever listens hears of it.
+  function signedIn(body) {
+    if (mustChange(body.mustChangePassword)) return Promise.resolve();
+    var pass = document.getElementById('login-password');
+    pass.value = '';
+    name = typeof body.name === 'string' ? body.name : null;
+    var then = afterSignIn;
+    var back = opener;
+    afterSignIn = null;
+    opener = null;
+    dlg.close();
+    paint();
+    live.textContent = 'Signed in as ' + name + '.';
+    return changed().then(function () {
+      if (then) then();
+      else refocus(back);
+    });
+  }
+
+  // A sign in that finished after the dialog was closed: the same as signedIn, without the dialog.
+  function lateSignIn(body) {
+    if (mustChange(body.mustChangePassword)) return Promise.resolve();
+    name = typeof body.name === 'string' ? body.name : null;
+    paint();
+    live.textContent = 'Signed in as ' + name + '.';
+    return changed();
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (busy) return;
+    var user = document.getElementById('login-name');
+    var pass = document.getElementById('login-password');
+    if (!user.value.trim() || !pass.value) {
+      setError('Enter your name and password.');
+      (user.value.trim() ? pass : user).focus();
+      return;
+    }
+    var button = document.getElementById('login-submit');
+    busy = true;
+    button.disabled = true;
+    button.textContent = 'Signing in...';
+    setError('');
+    var ok = false;
+    var second = false;
+    post('/login', { name: user.value, password: pass.value })
+      .then(function (r) {
+        if (r.status === 200 && r.body.ok) {
+          ok = true;
+          return signedIn(r.body);
+        }
+        if (r.status === 200 && r.body.secondFactor && typeof r.body.pending === 'string') {
+          second = true;
+          pass.value = '';
+          pending = r.body.pending;
+          methods = Array.isArray(r.body.methods) ? r.body.methods.filter(function (m) { return typeof m === 'string'; }) : ['totp', 'recovery'];
+          passkeyOptions = r.body.passkey && typeof r.body.passkey === 'object' ? r.body.passkey : null;
+          passkeyNote = '';
+          if (r.body.passkeyUnavailable === true) passkeyNote = 'Your passkey does not work at this address.';
+          else if (methods.indexOf('passkey') >= 0 && !passkeyReady()) passkeyNote = 'This browser cannot use your passkey.';
+          showStep(true);
+          setMode(firstMode());
+          // Wrong codes hold the code step back for a while: the server says how long.
+          if (typeof r.body.notice === 'string') setCodeError(r.body.notice);
+          focusStep();
+          return null;
+        }
+        setError(r.body && r.body.error ? r.body.error : 'Could not sign in. Try again.');
+        return null;
+      })
+      .catch(function () { setError('Could not reach the server. Try again.'); })
+      .then(function () {
+        busy = false;
+        button.disabled = false;
+        button.textContent = 'Sign in';
+        if (!ok && !second && dlg.open) {
+          pass.value = '';
+          pass.focus();
+        }
+      });
+  }
+
+  function submitCode(e) {
+    e.preventDefault();
+    if (busy || mode === 'passkey') return;
+    var useRecovery = mode === 'recovery';
+    var input = document.getElementById(useRecovery ? 'login-recovery' : 'login-code');
+    var value = input.value.replace(/\s+/g, '');
+    if (!useRecovery && !/^[0-9]{6}$/.test(value)) {
+      setCodeError('Enter the 6 digits your app shows.');
+      input.focus();
+      return;
+    }
+    if (useRecovery && !value) {
+      setCodeError('Enter a recovery code.');
+      input.focus();
+      return;
+    }
+    var button = document.getElementById('login-code-submit');
+    busy = true;
+    button.disabled = true;
+    button.textContent = 'Checking...';
+    setCodeError('');
+    var fields = { pending: pending || '' };
+    fields[useRecovery ? 'recovery' : 'code'] = value;
+    var ok = false;
+    post('/login/code', fields)
+      .then(function (r) {
+        if (r.status === 200 && r.body.ok) {
+          ok = true;
+          return signedIn(r.body);
+        }
+        var text = r.body && r.body.error ? r.body.error : 'Could not sign in. Try again.';
+        if (r.body && r.body.restart) {
+          // The second step is over: back to the name and password.
+          showStep(false);
+          setError(text);
+          document.getElementById('login-password').focus();
+          return null;
+        }
+        setCodeError(text);
+        return null;
+      })
+      .catch(function () { setCodeError('Could not reach the server. Try again.'); })
+      .then(function () {
+        busy = false;
+        button.disabled = false;
+        button.textContent = 'Sign in';
+        if (!ok && dlg.open && pending) {
+          input.value = '';
+          input.focus();
+        }
+      });
+  }
+
+  // The passkey button: the browser asks for the passkey, and the answer goes to the server. A cancelled
+  // prompt never reaches the server, so it counts as nothing there.
+  function usePasskey() {
+    if (busy || mode !== 'passkey' || !passkeyReady()) return;
+    var button = document.getElementById('login-passkey');
+    busy = true;
+    button.disabled = true;
+    button.textContent = 'Waiting for your passkey...';
+    setCodeError('');
+    var ok = false;
+    window.rettuiPasskey.get(passkeyOptions)
+      .then(function (credential) {
+        return post('/login/passkey', { pending: pending || '', credential: JSON.stringify(credential) }).then(function (r) {
+          if (r.status === 200 && r.body.ok) {
+            ok = true;
+            return signedIn(r.body);
+          }
+          var text = r.body && r.body.error ? r.body.error : 'Could not sign in. Try again.';
+          if (r.body && r.body.restart) {
+            showStep(false);
+            setError(text);
+            document.getElementById('login-password').focus();
+            return null;
+          }
+          // A wrong passkey comes with fresh options for the next try.
+          if (r.body && r.body.passkey && typeof r.body.passkey === 'object') passkeyOptions = r.body.passkey;
+          setCodeError(text);
+          return null;
+        }, function () { setCodeError('Could not reach the server. Try again.'); });
+      }, function (err) {
+        setCodeError(window.rettuiPasskey.cancelled(err)
+          ? 'The passkey was not used. Try again, or use another way to sign in.'
+          : 'Could not use the passkey. Try again, or use another way to sign in.');
+      })
+      .then(function () {
+        busy = false;
+        button.disabled = false;
+        button.textContent = 'Use your passkey';
+        if (!ok && dlg.open && pending && mode === 'passkey') button.focus();
+      });
+  }
+
+  var NO_PASSKEY_USED = 'No passkey was used. If yours did not show up, sign in with your name and password, then add a passkey on your account page.';
+
+  // Gives the dialog back: the buttons as they were, and the press no longer under way.
+  function endAlone(run) {
+    if (aloneRun !== run) return;
+    aloneRun = null;
+    busy = false;
+    var button = document.getElementById('login-passkey-only');
+    button.disabled = false;
+    button.textContent = 'Sign in with a passkey';
+    document.getElementById('login-submit').disabled = false;
+  }
+
+  // "Sign in with a passkey": the server gives a prompt (no user is named), the browser asks for a
+  // passkey, and the answer goes back. The press is a click, as browsers want. Every press starts from
+  // the beginning, so an expired prompt needs nothing but another press. If the dialog is closed while
+  // the browser still asks, the press is over at once and a late answer is dropped.
+  function usePasskeyAlone() {
+    if (busy || !passkeyAlone) return;
+    var button = document.getElementById('login-passkey-only');
+    var run = { dead: false };
+    aloneRun = run;
+    busy = true;
+    button.disabled = true;
+    button.textContent = 'Waiting for your passkey...';
+    document.getElementById('login-submit').disabled = true;
+    setPasskeyError('');
+    var ok = false;
+    var shown = function (text) { if (!run.dead) setPasskeyError(text); };
+    var offline = function () { shown('Could not reach the server. Try again.'); };
+    post('/login/passkey/begin', {})
+      .then(function (b) {
+        if (run.dead) return null;
+        if (b.status !== 200 || !b.body || typeof b.body.token !== 'string' || !b.body.options || typeof b.body.options !== 'object') {
+          shown(b.body && b.body.error ? b.body.error : 'Could not sign in. Try again.');
+          return null;
+        }
+        return new Promise(function (resolve) { resolve(window.rettuiPasskey.get(b.body.options)); }).then(function (credential) {
+          if (run.dead) return null;
+          return post('/login/passkey/finish', { token: b.body.token, credential: JSON.stringify(credential) }).then(function (r) {
+            // The dialog was closed while this was on its way and the server signed the browser in
+            // all the same: the page shows it, so that nobody is signed in without knowing.
+            if (run.dead) return r.status === 200 && r.body && r.body.ok ? lateSignIn(r.body) : null;
+            if (r.status === 200 && r.body.ok) {
+              ok = true;
+              return signedIn(r.body);
+            }
+            shown(r.body && r.body.error ? r.body.error : 'Could not sign in. Try again.');
+            return null;
+          }, offline);
+        }, function (err) {
+          shown(window.rettuiPasskey.cancelled(err) ? NO_PASSKEY_USED : 'This browser could not use a passkey. Sign in with your name and password.');
+        });
+      }, offline)
+      .then(function () {
+        var still = !run.dead;
+        endAlone(run);
+        if (!ok && still && dlg.open) button.focus();
+      });
+  }
+
+  function signOut() {
+    post('/logout', {})
+      .then(function () {
+        name = null;
+        paint();
+        live.textContent = 'Signed out.';
+        return changed();
+      })
+      .then(function () { refocus(null); })
+      .catch(function () { live.textContent = 'Could not sign out. Try again.'; });
+  }
+
+  function build() {
+    dlg = el('dialog', 'login');
+    dlg.id = 'login';
+    dlg.setAttribute('aria-labelledby', 'login-title');
+    var form = el('form', 'login-form');
+    form.id = 'login-form';
+    form.method = 'post';
+    form.action = '/login';
+    form.noValidate = true;
+    var title = el('h2', null, 'Sign in');
+    title.id = 'login-title';
+    form.appendChild(title);
+    form.appendChild(el('p', 'note login-why', 'Some details are only shown to signed-in users.'));
+    var err = el('p', 'login-error');
+    err.id = 'login-error';
+    err.setAttribute('role', 'alert');
+    form.appendChild(err);
+    [['login-name', 'name', 'Name', 'text', 'username', 64], ['login-password', 'password', 'Password', 'password', 'current-password', 1024]].forEach(function (f) {
+      var label = el('label', null, f[2]);
+      label.htmlFor = f[0];
+      var input = el('input');
+      input.id = f[0];
+      input.name = f[1];
+      input.type = f[3];
+      input.autocomplete = f[4];
+      input.maxLength = f[5];
+      input.required = true;
+      input.setAttribute('aria-describedby', 'login-error');
+      if (f[3] === 'text') {
+        input.setAttribute('autocapitalize', 'none');
+        input.spellcheck = false;
+      }
+      form.appendChild(label);
+      form.appendChild(input);
+    });
+    var actions = el('div', 'login-actions');
+    var go = el('button', 'primary', 'Sign in');
+    go.id = 'login-submit';
+    go.type = 'submit';
+    var cancel = el('button', null, 'Cancel');
+    cancel.id = 'login-cancel';
+    cancel.type = 'button';
+    actions.appendChild(go);
+    actions.appendChild(cancel);
+    form.appendChild(actions);
+    // A passkey on its own, with no name or password. A real button, not a submit: Enter in the
+    // password field still sends the password, and Safari wants a click before it shows a prompt.
+    var or = el('p', 'login-or', 'or');
+    var alone = el('button', 'login-passkey-only', 'Sign in with a passkey');
+    alone.id = 'login-passkey-only';
+    alone.type = 'button';
+    or.hidden = alone.hidden = !passkeyAlone;
+    or.id = 'login-or';
+    alone.addEventListener('click', usePasskeyAlone);
+    form.appendChild(or);
+    form.appendChild(alone);
+    dlg.appendChild(form);
+    dlg.appendChild(buildCodeForm());
+    document.body.appendChild(dlg);
+    form.addEventListener('submit', submit);
+    cancel.addEventListener('click', function () { dlg.close(); });
+    dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
+    dlg.addEventListener('close', function () {
+      if (aloneRun) {
+        // Closed while the browser asks: this press is over, and whatever it gives is dropped.
+        var run = aloneRun;
+        run.dead = true;
+        endAlone(run);
+      }
+      showStep(false);
+      var back = opener;
+      opener = null;
+      afterSignIn = null;
+      if (back) refocus(back);
+    });
+  }
+
+  // The second step: a code from the app, or a recovery code instead.
+  function buildCodeForm() {
+    var form = el('form', 'login-form');
+    form.id = 'login-code-form';
+    form.method = 'post';
+    form.action = '/login/code';
+    form.noValidate = true;
+    form.hidden = true;
+    var title = el('h2', null, 'Two-step sign-in');
+    title.id = 'login-code-title';
+    form.appendChild(title);
+    var why = el('p', 'note login-why', 'Enter the 6-digit code from your authenticator app.');
+    why.id = 'login-code-why';
+    form.appendChild(why);
+    var err = el('p', 'login-error');
+    err.id = 'login-code-error';
+    err.setAttribute('role', 'alert');
+    form.appendChild(err);
+    var label = el('label', null, 'Code');
+    label.id = 'login-code-label';
+    label.htmlFor = 'login-code';
+    var code = el('input');
+    code.id = 'login-code';
+    code.name = 'code';
+    code.type = 'text';
+    code.setAttribute('inputmode', 'numeric');
+    code.autocomplete = 'one-time-code';
+    // Password managers take a lone text field for a user name and fill it in: tell them not to.
+    // (Bitwarden still copies the code to the clipboard when it fills the password.)
+    ['data-bwignore', 'data-1p-ignore', 'data-lpignore'].forEach(function (a) { code.setAttribute(a, 'true'); });
+    code.pattern = '[0-9]{6}';
+    code.maxLength = 6;
+    code.required = true;
+    code.setAttribute('aria-describedby', 'login-code-why login-code-error');
+    var recLabel = el('label', null, 'Recovery code');
+    recLabel.id = 'login-recovery-label';
+    recLabel.htmlFor = 'login-recovery';
+    recLabel.hidden = true;
+    var rec = el('input');
+    rec.id = 'login-recovery';
+    rec.name = 'recovery';
+    rec.type = 'text';
+    rec.autocomplete = 'off';
+    ['data-bwignore', 'data-1p-ignore', 'data-lpignore'].forEach(function (a) { rec.setAttribute(a, 'true'); });
+    rec.maxLength = 32;
+    rec.hidden = true;
+    rec.spellcheck = false;
+    rec.setAttribute('autocapitalize', 'none');
+    rec.setAttribute('aria-describedby', 'login-code-why login-code-error');
+    [label, code, recLabel, rec].forEach(function (x) { form.appendChild(x); });
+    // One link for each other way in; setMode shows the ones this user has.
+    [['login-use-passkey', 'Use your passkey', 'passkey'], ['login-use-code', 'Use the code from the app', 'code'], ['login-use-recovery', 'Use a recovery code', 'recovery']].forEach(function (s) {
+      var swap = el('button', 'link-btn login-swap', s[1]);
+      swap.id = s[0];
+      swap.type = 'button';
+      swap.hidden = true;
+      swap.addEventListener('click', function () {
+        if (busy) return;
+        setMode(s[2]);
+        focusStep();
+      });
+      form.appendChild(swap);
+    });
+    var actions = el('div', 'login-actions');
+    // A real button the visitor presses: browsers (Safari above all) refuse a passkey prompt that no click asked for.
+    var key = el('button', 'primary', 'Use your passkey');
+    key.id = 'login-passkey';
+    key.type = 'button';
+    key.hidden = true;
+    key.addEventListener('click', usePasskey);
+    var go = el('button', 'primary', 'Sign in');
+    go.id = 'login-code-submit';
+    go.type = 'submit';
+    var cancel = el('button', null, 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', function () { dlg.close(); });
+    actions.appendChild(key);
+    actions.appendChild(go);
+    actions.appendChild(cancel);
+    form.appendChild(actions);
+    form.addEventListener('submit', submitCode);
+    return form;
+  }
+
+  // Opens the dialog. back gets the focus again if the visitor gives up; then() runs after a sign in
+  // (the focus is then up to it).
+  function open(back, then) {
+    if (!enabled || !dlg) return;
+    opener = back || btn;
+    afterSignIn = then || null;
+    showStep(false);
+    setError('');
+    document.getElementById('login-password').value = '';
+    if (!dlg.open) dlg.showModal();
+    var user = document.getElementById('login-name');
+    (user.value ? document.getElementById('login-password') : user).focus();
+  }
+
+  btn.addEventListener('click', function () {
+    if (name) signOut();
+    else open(btn, null);
+  });
+
+  window.rettuiAccount = {
+    open: open,
+    // The name of whoever is signed in, or null.
+    name: function () { return name; },
+    // Whether this site has users at all.
+    enabled: function () { return enabled; },
+    // For the status page, whose own answers say who is signed in (a session may have ended).
+    sync: function (viewerName) {
+      var next = typeof viewerName === 'string' ? viewerName : null;
+      if (!enabled || next === name) return;
+      name = next;
+      paint();
+    },
+    onChange: function (fn) { listeners.push(fn); }
+  };
+
+  if (typeof HTMLDialogElement === 'undefined' || typeof document.createElement('dialog').showModal !== 'function') return;
+  fetch('/api/session', { cache: 'no-store', credentials: 'same-origin' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (s) {
+      if (!s || s.enabled !== true) return;
+      enabled = true;
+      name = typeof s.name === 'string' ? s.name : null;
+      if (mustChange(s.mustChangePassword)) return;
+      passkeyAlone = s.passkeySignIn === true && typeof s.passkeyOrigin === 'string' && location.origin === s.passkeyOrigin
+        && Boolean(window.rettuiPasskey) && window.rettuiPasskey.supported() === true;
+      build();
+      paint();
+      document.dispatchEvent(new CustomEvent('rettui:account'));
+    })
+    .catch(function () { /* the button stays hidden */ });
+})();

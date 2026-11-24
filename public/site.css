@@ -1,17 +1,48 @@
 /* The rettui web UI's look: same colours, font, radii and panels. */
+/* Fira Sans (words) and Fira Code (values), both self-hosted under the SIL Open Font License. */
+@font-face {
+  font-family: "Fira Sans";
+  src: url("fonts/FiraSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fira Sans";
+  src: url("fonts/FiraSans-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Fira Sans";
+  src: url("fonts/FiraSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+/* Stands in until Fira Sans has loaded, sized to match it so the text does not move when it arrives. */
+@font-face {
+  font-family: "Fira Sans Fallback";
+  src: local("Arial"), local("Liberation Sans"), local("Helvetica");
+  size-adjust: 103%;
+  ascent-override: 90.8%;
+  descent-override: 25.7%;
+  line-gap-override: 0%;
+}
 @font-face {
   font-family: "FiraCode Nerd Font";
   src: url("fonts/FiraCodeNerdFont-Regular-Text.woff2") format("woff2");
   font-weight: 300 500;
   font-style: normal;
-  font-display: swap;
+  font-display: optional;
 }
 @font-face {
   font-family: "FiraCode Nerd Font";
   src: url("fonts/FiraCodeNerdFont-Bold-Text.woff2") format("woff2");
   font-weight: 600 800;
   font-style: normal;
-  font-display: swap;
+  font-display: optional;
 }
 
 :root {
@@ -32,7 +63,8 @@
   --grey-bg: #b4b4c0;
   --on-accent: #0b0b10;
   --sunken: #14141c;
-  --sans: "FiraCode Nerd Font", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --control: #7a7a92;
+  --sans: "Fira Sans", "Fira Sans Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "FiraCode Nerd Font", ui-monospace, Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -50,6 +82,7 @@
   --red: #c02626;
   --on-accent: #ffffff;
   --sunken: #f0f0f4;
+  --control: #75758a;
   color-scheme: light;
 }
 :root[data-theme=light] .wordmark { filter: invert(1) hue-rotate(180deg); }
@@ -59,23 +92,39 @@
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body {
   min-height: 100vh;
-  font: 14px/1.45 var(--sans);
-  font-variant-ligatures: none;
-  font-feature-settings: "calt" 0, "liga" 0;
+  font: 400 15px/1.5 var(--sans);
+  font-variant-numeric: tabular-nums;
   display: flex;
   flex-direction: column;
 }
+
+/* Values (numbers with their units, versions, times, addresses) are code; ligatures would join their characters. */
+.num, .tip-rows b, .shares b, .facts dd.id, .tip-time, .host-addr, .hub .copy, code {
+  font-family: var(--mono);
+  font-feature-settings: "calt" 0, "liga" 0;
+  font-variant-ligatures: none;
+}
+.num { font-size: 0.95em; font-weight: 500; }
+code { font-size: 0.95em; }
 
 a { color: var(--accent); }
 a:hover { text-decoration: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 a.panel:focus-visible, .btn:focus-visible { outline-offset: 3px; }
+/* The target of the skip link is focused by the script of the browser, not by the visitor: no ring around the page. */
+main:focus { outline: none; }
+.skip-link {
+  position: absolute; left: 8px; top: 8px; z-index: 10; padding: 8px 14px; border-radius: 6px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none;
+  transform: translateY(-200%);
+}
+.skip-link:focus { transform: none; outline: 2px solid var(--text); outline-offset: 2px; }
 
 button {
-  font: inherit;
+  font: 500 14px/1.4 var(--sans);
   color: inherit;
   background: var(--raised);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control);
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
@@ -88,6 +137,9 @@ button:hover { border-color: var(--accent); }
 .wrap { width: 100%; max-width: 900px; margin: 0 auto; padding-inline: 16px; }
 
 header.top { border-bottom: 1px solid var(--border); background: var(--bg); }
+/* The header and footer are 1400px wide on every page, so the logo and the menu stay put between pages; main is as wide as its page needs. */
+header.top .wrap, footer .wrap { max-width: 1400px; padding-inline: clamp(16px, 3vw, 32px); }
+main.wrap { padding-inline: clamp(16px, 3vw, 32px); }
 header.top .wrap { display: flex; align-items: center; gap: 16px; padding-top: 12px; padding-bottom: 12px; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; margin-right: auto; }
 .brand .wordmark { display: block; height: 20px; width: auto; }
@@ -97,7 +149,7 @@ nav.links a:hover { color: var(--text); }
 nav.links a[aria-current=page] { color: var(--text); border-bottom-color: var(--accent); }
 
 main { flex: 1; padding-top: 28px; padding-bottom: 40px; }
-h1, h2, h3 { margin: 0; line-height: 1.25; }
+h1, h2, h3 { margin: 0; line-height: 1.25; font-weight: 600; letter-spacing: 0; }
 h2 { font-size: 16px; margin: 32px 0 12px; }
 p { margin: 0 0 12px; }
 
@@ -108,6 +160,8 @@ p { margin: 0 0 12px; }
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 10px; }
 
 .btn {
+  font-size: 14px;
+  font-weight: 500;
   display: inline-block;
   padding: 6px 14px;
   border-radius: 6px;
@@ -121,7 +175,7 @@ p { margin: 0 0 12px; }
 
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
-.panel h3 { font-size: 14px; margin-bottom: 4px; }
+.panel h3 { font-size: 16px; margin-bottom: 4px; }
 .panel p { color: var(--dim); margin: 0; }
 a.panel { display: block; color: inherit; text-decoration: none; }
 a.panel:hover { border-color: var(--accent); }
@@ -141,33 +195,234 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 
 .hosts { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
 .host { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
-.host-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.host-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px 12px; }
 .host-name { font-weight: 600; overflow-wrap: anywhere; }
-.pill { display: inline-block; border-radius: 6px; padding: 1px 8px; font-weight: 600; color: #0b0b10; background: var(--grey-bg); }
+.pill { display: inline-block; flex: none; white-space: nowrap; border-radius: 6px; padding: 1px 8px; font-size: 12px; letter-spacing: 0.01em; font-weight: 600; color: #0b0b10; background: var(--grey-bg); }
 .pill.up { background: var(--green-bg); }
 .pill.down { background: var(--red-bg); }
-.stats { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0; color: var(--dim); font-size: 13px; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0; color: var(--dim); font-size: 13px; line-height: 1.45; }
 .stats b { color: var(--text); font-weight: 500; }
+.node-stats { margin-top: -2px; }
 .bar { display: flex; gap: 2px; height: 24px; background: var(--sunken); border-radius: 6px; padding: 3px; overflow: hidden; }
 .bar span { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--border); align-self: center; height: 40%; }
 /* Down checks are taller than up checks, so they show without colour. */
 .bar span.up { background: var(--green); }
 .bar span.down { background: var(--red); align-self: stretch; height: auto; }
 .host.loading { color: var(--dim); }
-.stale .banner, .stale .hosts { opacity: 0.6; }
-.bar-note { color: var(--dim); font-size: 13px; margin-top: 4px; }
-.note { color: var(--dim); font-size: 13px; margin-top: 16px; }
+.stale .banner { border-left-color: var(--dim); }
+/* Only decoration is dimmed when the page is stale; text stays readable. */
+.stale .bar { opacity: 0.5; }
+.bar-note { color: var(--dim); font-size: 13px; line-height: 1.45; margin-top: 4px; }
+
+/* 90 days of uptime, one cell a day. Less uptime is a shorter cell as well as another colour. */
+.uptime { margin-top: 8px; }
+.days { display: flex; gap: 1px; height: 22px; align-items: flex-end; background: var(--sunken); border-radius: 6px; padding: 3px; overflow: hidden; }
+.days span { flex: 1 1 0; min-width: 0; border-radius: 1px; background: var(--border); height: 100%; }
+.days span.none { height: 25%; opacity: 0.7; }
+.days span.ok { background: var(--green); }
+.days span.warn { background: var(--yellow); height: 70%; }
+.days span.bad { background: var(--red); height: 45%; }
+.stale .days { opacity: 0.5; }
+.incidents h2 { margin-top: 24px; }
+.incident-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.incident { background: var(--panel); border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; padding: 8px 12px; display: grid; gap: 2px; }
+.incident.ongoing { border-left-color: var(--red); }
+.incident.resolved { border-left-color: var(--green); }
+.incident-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.incident-line { color: var(--dim); font-size: 13px; line-height: 1.45; }
+.incident-list[hidden], #incidents-empty[hidden], #incidents-more[hidden] { display: none; }
+.note { color: var(--dim); font-size: 13px; line-height: 1.45; margin-top: 16px; }
+
+/* Propagation node and disk */
+.meter-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.meter { display: block; }
+.meter-bg { fill: var(--sunken); stroke: var(--border); stroke-width: 1; }
+.meter-fill { fill: var(--accent); }
+.meter-fill.high { fill: var(--yellow); }
+.meter-fill.full { fill: var(--red); }
+
+/* Names, badges and proxy groups */
+.host-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.host-addr { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; font-weight: 400; }
+.badge { display: inline-block; font-size: 12px; line-height: 1.5; padding: 0 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); white-space: nowrap; font-weight: 500; }
+.badge.proxy { color: var(--accent); border-color: var(--accent); }
+.host.proxy { border-color: var(--accent); }
+.host-title { flex: 1 1 auto; }
+.passes { color: var(--dim); font-size: 13px; line-height: 1.45; }
+.summary { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; margin: 6px 0 0; color: var(--dim); font-size: 13px; line-height: 1.45; }
+.summary b { color: var(--text); font-weight: 500; }
+/* Values stand out from their labels by colour; the words around them stay plain. */
+.summary .num, .stats .num { color: var(--text); }
+.summary > span { white-space: nowrap; }
+.summary > span + span::before { content: "\00b7"; margin: 0 8px; }
+/* "checked 5s ago" counts up to two digits: reserve their room so the row does not rewrap as it ticks. */
+.summary time { display: inline-block; min-width: 7ch; }
+.summary .down-text { color: var(--text); }
+p.summary { display: block; }
+.warnings { margin: 4px 0 0; }
+.warn { margin: 2px 0 0; font-size: 13px; font-weight: 500; }
+.warn.high { color: var(--yellow); }
+.warn.full { color: var(--red); }
+.warn .glyph { font-weight: 700; }
+.stale-note, .help-text { margin: 4px 0 0; }
+.hint { font-size: 12px; margin-left: 4px; }
+.chev { font-size: 12px; }
+.help-btn { min-width: 24px; padding: 0 6px; border-radius: 999px; font-size: 12px; line-height: 1.5; margin-left: 4px; }
+.host .bar { margin-top: 8px; }
+.row-actions { margin-top: 8px; }
+.more-btn { font-size: 14px; padding: 2px 12px; }
+.more-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.more-body[hidden], .help-text[hidden] { display: none; }
+.more-sec + .more-sec { margin-top: 8px; }
+.more-sec h2 { margin: 0 0 2px; font-size: 12px; color: var(--dim); font-weight: 500; text-transform: none; }
+.more-body .detail-btn { margin: 10px 0 0; }
+/* A proxy and its nodes are one card; members are plain rows inside it. */
+.group-card > .members { margin-top: 12px; padding-top: 4px; }
+.group-card > .members > .host { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; padding: 10px 0 2px 12px; }
+.group-card > .members > .host:first-child { border-top: 1px solid var(--border); }
+.members { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 0; }
+.viewbar { display: flex; align-items: center; gap: 8px; }
+.viewbar[hidden] { display: none; }
+.viewbar select, .section-pick select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--control); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
+.viewbar select:hover, .section-pick select:hover { border-color: var(--accent); }
+
+/* Node details */
+.detail-btn { margin: 4px 0 8px; font-size: 14px; }
+dialog.detail {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0; width: min(860px, calc(100% - 16px)); max-height: 100vh; max-height: 100dvh;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
+.detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.detail-head h2 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.range { display: flex; gap: 6px; margin-left: auto; }
+.detail-top { background: var(--panel); padding: 12px 16px 0; border-bottom: 1px solid var(--border); }
+/* Sticky only when there is room for it to leave space to read. */
+@media (min-height: 600px) { .detail-top { position: sticky; top: 0; z-index: 2; } }
+.detail-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 10px; }
+.detail-body { padding: 8px 16px 16px; }
+.tabs { display: flex; gap: 2px; margin-top: 10px; overflow-x: auto; }
+.tab { font-size: 14px; font-weight: 500; border: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; background: transparent; padding: 6px 14px; color: var(--dim); }
+.tab:focus-visible { outline-offset: -2px; }
+.tab:hover { color: var(--text); border-color: transparent; border-bottom-color: var(--border); }
+.tab[aria-selected=true] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.section-pick { display: none; align-items: center; gap: 8px; margin: 10px 0; }
+.toggle-btn { font-size: 14px; margin: 0 0 6px; }
+.toggle-btn[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+/* Table of a propagation node's peers: a table wide, a stack of cards on a phone (no sideways scroll) */
+.peer-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
+.peer-table caption { text-align: left; color: var(--dim); font-size: 13px; padding-bottom: 4px; }
+.peer-table th, .peer-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.peer-table th, .peer-table td { padding: 6px 6px; }
+.peer-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.peer-table th.peer-name { overflow-wrap: anywhere; min-width: 9em; }
+.peer-table th.peer-name { font-weight: 500; }
+.peer-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.peer-table td { overflow-wrap: break-word; }
+.peer-addr { font-family: var(--mono); font-size: 13px; }
+.peer-flag { display: block; font-size: 13px; font-weight: 600; color: var(--red); }
+.peer-flag::before { content: "\26A0\FE0E\00a0"; }
+@media (max-width: 700px) {
+  .peer-table, .peer-table caption, .peer-table tbody, .peer-table tr, .peer-table th, .peer-table td { display: block; }
+  .peer-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .peer-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .peer-table th, .peer-table td { border: 0; padding: 3px 10px; }
+  .peer-table td { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; }
+  .peer-table td.num { text-align: left; }
+  .peer-table td::before { content: attr(data-label); color: var(--dim); }
+  .peer-table th.peer-name { font-size: 15px; }
+}
+.band { fill: var(--accent); fill-opacity: 0.18; stroke: none; pointer-events: none; }
+@media (max-width: 600px) {
+  .tabs { display: none; }
+  .section-pick { display: flex; }
+  .section-pick select { flex: 1 1 auto; min-height: 40px; }
+}
+.range button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.detail-section { margin-top: 20px; }
+.detail-section h3 { font-size: 16px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.detail-section h4 { font-size: 13px; margin: 12px 0 4px; color: var(--dim); font-weight: 500; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 0; }
+.facts dt { color: var(--dim); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+/* On a phone a label and its value stack, so that a long label cannot push the value out of the dialog. */
+@media (max-width: 600px) {
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .facts dd { margin-bottom: 6px; }
+}
+.versions { margin: 0; padding-left: 18px; }
+.detail .muted { color: var(--dim); }
+.detail .note { margin-top: 8px; }
+.empty { margin: 16px 0 0; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; background: var(--sunken); }
+.total { margin: 0 0 8px; }
+.shares { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.shares li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 4.5em; gap: 8px; align-items: center; }
+.shares .muted { text-align: right; }
+.shares b { font-weight: 500; text-align: right; }
+.chart { margin: 12px 0 0; }
+.chart svg, .detail-section > svg { display: block; max-width: 100%; }
+.plot { position: relative; }
+/* Vertical drags still scroll the page; sideways drags move the guide. */
+.plot svg { touch-action: pan-y; }
+.plot svg:focus-visible { outline-offset: 0; border-radius: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.tip {
+  position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none; white-space: nowrap;
+  background: var(--raised); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.tip[hidden] { display: none; }
+.tip-time { color: var(--dim); margin-bottom: 4px; }
+.tip-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.tip-rows li { display: grid; grid-template-columns: 22px auto auto; gap: 6px; align-items: center; }
+.tip-rows b { font-weight: 500; text-align: right; margin-left: 8px; }
+.tip-rows b.muted { color: var(--dim); font-family: var(--sans); font-weight: 400; }
+.guide { stroke: var(--dim); stroke-width: 1; pointer-events: none; }
+.hp, .hp.d1, .hp.d2 { stroke: var(--panel); stroke-width: 2; stroke-dasharray: none; pointer-events: none; }
+.legend { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; line-height: 1.45; }
+.legend li { display: inline-flex; align-items: center; gap: 6px; }
+.chart-note { color: var(--dim); font-size: 12px; margin-top: 4px; }
+.chart text { fill: var(--dim); font: 12px var(--mono); font-feature-settings: "calt" 0, "liga" 0; }
+.chart .grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart .axis { stroke: var(--dim); stroke-width: 1; }
+.ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.dot { stroke: none; }
+.d1 { stroke-dasharray: 6 3; }
+.d2 { stroke-dasharray: 2 3; }
+.ln.c1 { stroke: var(--accent); } .dot.c1, .hp.c1, .fill.c1 { fill: var(--accent); }
+.ln.c2 { stroke: var(--green); } .dot.c2, .hp.c2, .fill.c2 { fill: var(--green); }
+.ln.c3 { stroke: var(--yellow); } .dot.c3, .hp.c3, .fill.c3 { fill: var(--yellow); }
+.ln.c4 { stroke: var(--text); } .dot.c4, .hp.c4, .fill.c4 { fill: var(--text); }
+.fill.c5 { fill: var(--dim); }
+.bar-bg { fill: var(--sunken); }
+.detail-body svg[role=img] { display: block; }
 
 @media (max-width: 520px) {
+  .detail-top { padding: 10px 12px 0; }
+  .detail-body { padding: 8px 12px 14px; }
+  .toggle-btn { min-height: 40px; }
+  .range { margin-left: 0; }
+  .range button, #detail-close, .detail-btn, .viewbar select, .section-pick select { min-height: 40px; }
+  .viewbar { flex-wrap: wrap; }
+  .more-btn, .help-btn { min-height: 40px; min-width: 40px; border-radius: 6px; }
+  .summary { gap: 2px 14px; }
+  .summary > span + span::before { content: none; }
+  .host-title { flex: 1 1 0; }
+  .group-card > .members > .host { padding-left: 6px; }
+  .range { gap: 8px; }
   header.top .wrap { gap: 4px 12px; }
   .brand { min-height: 40px; }
   nav.links { order: 3; flex: 1 0 100%; gap: 0 4px; }
   nav.links a { display: inline-flex; align-items: center; min-height: 40px; padding: 0 8px; }
   .brand { margin-right: auto; }
-  #theme-toggle { min-height: 40px; }
+  #theme-toggle, #signin-btn { min-height: 40px; }
+  .signin-name { max-width: 9ch; }
+  .link-btn { min-height: 40px; padding: 4px 6px; }
   .btn { min-height: 44px; display: inline-flex; align-items: center; }
   .hero .wordmark { height: 54px; }
-  .hero p { font-size: 14px; }
+  .hero p { font-size: 15px; }
   .bar { gap: 1px; }
 }
 
@@ -181,3 +436,506 @@ footer .wrap { padding-top: 14px; padding-bottom: 14px; display: flex; gap: 8px 
 .shot img { display: block; width: 100%; height: auto; border-radius: 4px; border: 1px solid var(--border); }
 .shot.phone img { max-width: 260px; margin: 0 auto; }
 .shot figcaption { color: var(--dim); font-size: 13px; margin-top: 8px; }
+
+.detail-head h2 .host-addr { margin-left: 10px; }
+dialog.detail > .detail-controls { margin: 0; padding: 10px 12px 0; }
+
+/* Login: the account line, the locked parts of a row and the login dialog */
+.account { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0 0; color: var(--dim); font-size: 13px; }
+.account[hidden] { display: none; }
+.account-text { margin: 0; }
+/* A button that reads as a link: the sign in line under the banner and in the details. */
+.link-btn { font: inherit; color: var(--accent); background: none; border: 0; border-radius: 4px; padding: 4px 2px; min-height: 32px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.link-btn:hover { border: 0; text-decoration-thickness: 2px; }
+.lock-note { margin: 12px 0 0; }
+/* The sign in button, last in the header and so at the top right. Signed in it shows the name and Sign out. */
+.signin { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.signin[hidden], .signin-name[hidden] { display: none; }
+.signin-name { color: var(--dim); font-size: 14px; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dialog.login {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+  padding: 16px; width: min(360px, calc(100% - 16px));
+}
+dialog.login::backdrop { background: rgba(0, 0, 0, 0.6); }
+.login-form { display: grid; gap: 6px; }
+.login-form h2 { margin: 0 0 4px; font-size: 16px; }
+.login-why { margin: 0 0 4px; }
+.login-form label { margin-top: 6px; font-weight: 500; font-size: 14px; }
+.login-form input {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%; max-width: 22rem;
+}
+.login-form input:hover { border-color: var(--accent); }
+.login-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
+.login-error { margin: 0; color: var(--red); font-weight: 500; }
+.login-error:empty { display: none; }
+.login-error::before { content: "\2715  "; }
+.login-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.login-actions button { min-height: 40px; padding: 4px 16px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button:disabled { opacity: 0.7; cursor: progress; }
+/* The second step of the sign in shows one form, and one of its two inputs, at a time. */
+.login-form[hidden], .login-form [hidden] { display: none; }
+.login-swap { justify-self: start; }
+/* "or" and the passkey on its own, under the name and password. */
+.login-or { margin: 10px 0 0; text-align: center; color: var(--dim); font-size: 14px; }
+.login-passkey-only { min-height: 40px; padding: 4px 16px; width: 100%; }
+.signin-link { color: var(--dim); text-decoration: none; }
+.signin-link:hover, .signin-link[aria-current=page] { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* The account page */
+.acct-page h1 { margin: 0 0 8px; font-size: 22px; }
+/* The status line is empty once the page has loaded: it takes no room (it stays a live region for what a change says). */
+#acct-status:empty { margin: 0; }
+.acct-card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px 16px; margin: 16px 0; }
+.acct-card[hidden], #acct[hidden], .acct-page [hidden] { display: none; }
+.acct-card h2 { margin: 0 0 8px; font-size: 17px; }
+.acct-card h3 { margin: 16px 0 6px; font-size: 15px; }
+.acct-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.acct-facts dt { color: var(--dim); }
+.acct-facts dd { margin: 0; overflow-wrap: anywhere; }
+.acct-form { display: grid; gap: 6px; max-width: none; }
+.acct-form label { margin-top: 6px; font-weight: 500; font-size: 14px; }
+.acct-form input, .acct-form select {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%;
+}
+.acct-form input:hover, .acct-form select:hover { border-color: var(--accent); }
+.acct-form input[aria-invalid=true] { border-color: var(--red); border-width: 2px; }
+.acct-form .note { margin: 0; }
+/* Help runs to a readable line, whatever width the fields keep. */
+.acct-form .note, .acct-card > .note { max-width: 60ch; }
+.acct-check { display: grid; grid-template-columns: 24px 1fr; gap: 2px 8px; align-items: center; }
+.acct-check input { width: 24px; height: 24px; min-height: 0; margin: 0; }
+.acct-check label { margin: 0; }
+.acct-check .note { grid-column: 2; }
+.acct-steps { padding-left: 20px; }
+.acct-steps li { margin: 4px 0; }
+.acct-key { overflow-wrap: anywhere; font-size: 15px; letter-spacing: 0.05em; }
+/* The QR code keeps its white background in both themes: readers need dark on light. */
+.acct-qr svg { display: block; width: 216px; max-width: 100%; height: auto; margin: 8px 0 12px; border-radius: 4px; }
+.acct-codes { display: grid; grid-template-columns: repeat(2, max-content); gap: 4px 24px; padding: 8px 12px; margin: 8px 0; list-style: none; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; width: max-content; max-width: 100%; }
+.acct-codes li { font-family: var(--mono); font-feature-settings: "calt" 0, "liga" 0; font-variant-ligatures: none; }
+.acct-sessions { padding-left: 20px; margin: 8px 0 0; }
+.acct-current { color: var(--green); font-weight: 600; }
+/* Passkeys: one card per passkey, the name first, the buttons under it (they wrap on a phone) */
+.acct-passkeys { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.acct-passkey { display: grid; gap: 4px; padding: 8px 12px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+.acct-passkey-name { font-size: 15px; }
+.acct-passkey-info { color: var(--dim); font-size: 14px; }
+.acct-passkey .login-actions { margin-top: 4px; }
+.acct-test { align-items: center; }
+.acct-test .note { margin: 0; }
+.acct-passkey .acct-form { max-width: none; }
+/* The users page: a table wide, a stack of cards on a phone (no sideways scroll) */
+.users-table { width: 100%; border-collapse: collapse; margin: 8px 0 0; font-size: 14px; }
+.users-table th, .users-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.users-table thead th { color: var(--dim); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.users-table th.users-name { font-weight: 600; overflow-wrap: anywhere; }
+.users-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.users-table td.users-actions { display: table-cell; }
+.users-actions button { margin: 0 6px 6px 0; }
+button.danger { color: var(--red); border-color: var(--red); font-weight: 600; }
+button.danger:hover { border-width: 1px; text-decoration: underline; }
+.users-warning { color: var(--red); font-weight: 500; }
+.users-otp { border-color: var(--accent); border-width: 2px; }
+.users-otp code { font-size: 17px; }
+.users-choice { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px 8px; margin: 6px 0 0; }
+.users-choice legend { font-weight: 500; font-size: 14px; padding: 0 4px; }
+.users-radio { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.users-radio input { width: auto; min-height: 0; margin: 0; }
+.users-radio label { margin: 0; font-weight: 400; }
+.acct-form select, .login-form select {
+  font: inherit; color: var(--text); background: var(--sunken); border: 1px solid var(--control); border-radius: 6px;
+  padding: 6px 10px; min-height: 40px; width: 100%;
+}
+@media (max-width: 700px) {
+  .users-table:not(.manage-ret-table), .users-table:not(.manage-ret-table) caption, .users-table:not(.manage-ret-table) tbody, .users-table:not(.manage-ret-table) tr, .users-table:not(.manage-ret-table) th, .users-table:not(.manage-ret-table) td, .users-table:not(.manage-ret-table) td.users-actions { display: block; }
+  .users-table:not(.manage-ret-table) thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .users-table:not(.manage-ret-table) tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .users-table:not(.manage-ret-table) th, .users-table:not(.manage-ret-table) td { border: 0; padding: 3px 10px; }
+  .users-table:not(.manage-ret-table) td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+  .users-table:not(.manage-ret-table) td.num { text-align: left; }
+  .users-table:not(.manage-ret-table) td::before { content: attr(data-label); color: var(--dim); }
+  .users-table:not(.manage-ret-table) th.users-name { font-size: 15px; }
+  .users-table:not(.manage-ret-table) td.users-actions::before { display: block; margin-bottom: 4px; }
+  .users-actions button { min-height: 40px; }
+}
+/* The account page: five stacks of cards (profile and password; sessions and devices; app code; passkeys and recovery codes;
+   LXMF alerts), in wrappers that follow the reading order, so the keyboard goes the way the page reads at every width.
+   A stack is a column of its own, so a short card never leaves a hole beside a tall one. By width: one column; from 1000px
+   two (profile to devices with the app code, then passkeys, recovery codes and LXMF alerts); from 1500px three (profile,
+   password, sessions and devices; app code, passkeys and recovery codes; LXMF alerts); from 1900px four (profile and
+   password; sessions and devices with the app code under them; passkeys and recovery codes; LXMF alerts). A wrapper that is not a column is "display: contents". Where the stacks are placed on the grid by hand, the
+   rows are "auto 1fr" and a column spans both of them, so the second stack of a column starts right under the first. A
+   column is never under 26rem. A stack with no card showing (the LXMF card on a site without it, or all but the password
+   while it must be changed) is dropped, and the columns left share the width. No "order", no CSS columns and no script. */
+#acct-signin { max-width: 32rem; }
+.acct-stack, .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.acct-col { display: contents; }
+.acct-stack > .acct-card, #acct > .acct-card { margin: 0; }
+#acct:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px 24px; align-items: start; max-width: 60rem; }
+#acct > #acct-must-change { grid-column: 1 / -1; max-width: 60rem; }
+/* The page is as wide as the screen up to a limit, so the columns can be as wide as they should be; the header and footer of this page follow it. */
+body:has(> main.wide.acct-page) main.acct-page, body:has(> main.wide.acct-page) header.top .wrap, body:has(> main.wide.acct-page) footer .wrap { max-width: 2400px; }
+@media (min-width: 1000px) {
+  #acct:not([hidden]) { grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); max-width: 118rem; }
+  #acct > .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
+}
+@media (min-width: 1500px) {
+  #acct:not([hidden]) { grid-template-rows: auto 1fr; }
+  #acct > .acct-col { display: contents; }
+  #acct > .acct-col > .acct-col { display: grid; gap: 16px; align-content: start; min-width: 0; grid-column: 1; grid-row: 1 / span 2; }
+  #acct > .acct-col:nth-of-type(1) > .acct-stack { grid-column: 2; grid-row: 1; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:first-child { grid-column: 2; grid-row: 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:last-child { grid-column: 3; grid-row: 1 / span 2; }
+}
+@media (min-width: 1900px) {
+  #acct > .acct-col > .acct-col { display: contents; }
+  #acct > .acct-col > .acct-col > .acct-stack:first-child { grid-column: 1; grid-row: 1 / span 2; }
+  #acct > .acct-col > .acct-col > .acct-stack:last-child { grid-column: 2; grid-row: 1; }
+  #acct > .acct-col:nth-of-type(1) > .acct-stack { grid-column: 2; grid-row: 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:first-child { grid-column: 3; grid-row: 1 / span 2; }
+  #acct > .acct-col:nth-of-type(2) > .acct-stack:last-child { grid-column: 4; grid-row: 1 / span 2; }
+}
+/* While the password must be changed, the one card that shows is one readable column, placed by the flow. */
+#acct:has(> #acct-must-change:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; max-width: 40rem; }
+#acct:has(> #acct-must-change:not([hidden])) .acct-col, #acct:has(> #acct-must-change:not([hidden])) .acct-stack { grid-area: auto; }
+/* Nothing to show in a stack, or in a wrapper: it takes no place (and no column). Without :has() it just stays empty. */
+#acct .acct-stack:not(:has(> .acct-card:not([hidden]))), #acct .acct-col:not(:has(.acct-card:not([hidden]))) { display: none; }
+/* The users page: the table has the width of the page, and a card for each user below 1100px (eight columns do not fit before that). */
+.users-page #users > .acct-card > .note { max-width: 70ch; }
+.users-page #users > .acct-card[aria-labelledby=users-new-h] { max-width: 40rem; }
+.users-page #users-otp, .users-page #users-need-2fa { max-width: 40rem; }
+.users-admin-note { display: block; max-width: 26em; }
+@media (min-width: 1100px) {
+  .users-page td.users-actions { min-width: 20rem; }
+  /* A date or a name is not broken in two lines while there is room. */
+  .users-page td[data-label="Last sign in"], .users-page td[data-label=Created], .users-page th.users-name { white-space: nowrap; }
+}
+@media (max-width: 1099px) {
+  .users-page .users-table, .users-page .users-table caption, .users-page .users-table tbody, .users-page .users-table tr, .users-page .users-table th, .users-page .users-table td, .users-page .users-table td.users-actions { display: block; }
+  .users-page .users-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .users-page .users-table tr { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 10px; padding: 4px 0; background: var(--sunken); }
+  .users-page .users-table th, .users-page .users-table td { border: 0; padding: 3px 10px; }
+  .users-page .users-table td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+  .users-page .users-table td.num { text-align: left; }
+  .users-page .users-table td::before { content: attr(data-label); color: var(--dim); }
+  .users-page .users-table th.users-name { font-size: 15px; }
+  .users-page .users-table td.users-actions::before { display: block; margin-bottom: 4px; }
+  .users-page .users-actions button { min-height: 40px; }
+}
+
+/* The manage page: one node at a time, its settings in groups; long values wrap */
+/* The manage and status pages use the width of a large screen (the header and footer line up with them). */
+body:has(> main.wide) .wrap { max-width: 1400px; padding-inline: clamp(16px, 3vw, 32px); }
+/* The sticky strip and the sticky save bar must not hide what has the focus, or what a link jumps to. */
+html:has(.manage-page) { scroll-padding-top: 80px; scroll-padding-bottom: 72px; }
+.manage-page section, .manage-page .manage-top { scroll-margin-top: 80px; }
+.manage-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin: 0 0 8px; }
+.manage-head h1 { font-size: 22px; }
+.manage-page .manage-head + .acct-card, .manage-page .acct-card.users-warning { margin-top: 8px; }
+/* What the page says (status and errors) stays in view, wherever on the long page the person is. */
+.manage-live { position: sticky; top: 0; z-index: 5; max-height: 30vh; overflow: auto; background: var(--bg); }
+.manage-live:has(> :not(:empty)) { padding: 8px 0 0; }
+.manage-live > p { margin: 0 0 8px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; }
+.manage-live > p:empty { display: none; }
+.manage-live > .note { border-left-color: var(--accent); color: var(--text); font-size: 14px; }
+.manage-live > .login-error { border-left-color: var(--red); }
+.manage-main { display: grid; gap: 16px; min-width: 0; align-content: start; }
+.manage-main > .acct-card, .manage-top > .acct-card, .manage-pair > .acct-card { margin: 0; }
+.manage-top { display: grid; gap: 16px; align-items: start; }
+.manage-pair { display: grid; gap: 16px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.manage-pick { margin: 0; max-width: none; }
+.manage-nav { margin: 8px 0 16px; }
+.manage-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.manage-nav a { display: flex; align-items: center; min-height: 44px; padding: 0 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--accent); text-decoration: none; }
+.manage-nav a:hover { border-color: var(--accent); }
+.manage-pending-line { color: var(--text); font-weight: 600; margin: 8px 0 0; }
+.manage-ret-section { margin: 0; padding: 8px 10px 10px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+#manage-ret-sections { display: grid; gap: 12px; align-items: start; margin-top: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); }
+.manage-ret-section h3 { margin: 0 0 4px; font-size: 15px; overflow-wrap: anywhere; }
+/* The key column is as wide as its longest key; a value is only broken inside a word when the word is longer than what is left. */
+.manage-ret-section { overflow-x: auto; }
+.manage-ret-section .users-table { margin: 0; background: transparent; }
+.manage-ret-table th, .manage-ret-table td { padding: 4px 6px; }
+.manage-ret-table th { overflow-wrap: break-word; }
+.manage-ret-table td { overflow-wrap: anywhere; }
+.manage-ret-table tbody th, .manage-ret-table thead th:first-child { width: 1%; padding-right: 12px; }
+.manage-ret-table tbody th { font-weight: 500; color: var(--dim); }
+.manage-line { margin: 0; overflow-wrap: anywhere; }
+.manage-form { max-width: none; }
+.acct-form.manage-form { max-width: none; }
+#manage-fields { display: grid; gap: 12px; }
+.manage-group { display: grid; gap: 12px 16px; margin: 0; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); align-items: start; }
+.manage-group legend { overflow-wrap: anywhere; }
+/* The Reticulum form: one card for each section, full width, its fields side by side (one row on a wide screen). */
+#manage-ret-fields { display: grid; gap: 12px; }
+#manage-ret-fields .manage-group { grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr)); }
+.manage-field { display: grid; gap: 4px; margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.manage-field.changed { border-left: 3px solid var(--accent); padding-left: 8px; }
+.manage-was { margin: 0; color: var(--text); font-weight: 600; }
+.manage-field.users-radio { display: flex; flex-wrap: wrap; }
+.manage-field.users-radio .note { flex-basis: 100%; }
+.manage-field input[type=checkbox] { width: 24px; height: 24px; min-height: 0; margin: 0; }
+.manage-label { margin: 0; font-weight: 600; font-size: 14px; }
+.manage-label:focus-visible { outline-offset: 2px; }
+.manage-changes { padding-left: 20px; margin: 4px 0; overflow-wrap: anywhere; }
+.manage-audit td { overflow-wrap: anywhere; }
+.manage-bad { font-weight: 600; }
+.manage-field button, .manage-page .login-actions button { min-height: 40px; }
+.manage-page .login-actions { align-items: center; }
+.manage-page .login-actions .note { margin: 0; }
+.manage-retry { color: var(--text); font-size: 13px; }
+.manage-why { margin: 0 0 8px; color: var(--text); }
+/* The save bar stays at the bottom of the screen while the form is on it, so Save is always reachable. */
+.manage-bar { position: sticky; bottom: 0; z-index: 4; margin-top: 12px; padding: 8px 0; background: var(--panel); border-top: 1px solid var(--border); }
+.manage-bar .login-actions { margin-top: 0; }
+.manage-bar .login-error { margin-bottom: 8px; }
+/* A Reticulum change on probation stands out from the other cards. */
+#manage-ret-edit.on-probation { border-left: 4px solid var(--accent); }
+#manage-ret-edit.on-probation #manage-ret-pending { color: var(--text); font-weight: 600; }
+#manage-ret-checks { columns: 1; }
+@media (min-width: 700px) {
+  .manage-top { grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr); }
+  #manage-ret-checks { columns: 2; }
+  .manage-audit th.manage-time { white-space: nowrap; font-weight: 500; }
+  .manage-audit td[data-label=Who] { min-width: 6em; }
+  .manage-audit td[data-label=What] { min-width: 7em; }
+  .manage-audit td[data-label=Result] { min-width: 11em; }
+}
+@media (min-width: 1440px) {
+  #manage-ret-fields .manage-group { grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr)); }
+}
+@media (min-width: 1100px) {
+  #manage { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; align-items: start; }
+  .manage-audit td[data-label=Changes] { min-width: 20em; }
+  .manage-nav { position: sticky; top: 72px; margin: 0; }
+  .manage-nav ul { display: grid; gap: 4px; }
+  .manage-nav a { min-height: 40px; padding-block: 6px; line-height: 1.3; }
+}
+@media (max-width: 699px) {
+  .manage-nav ul { gap: 6px; }
+}
+@media (max-width: 560px) {
+  .acct-codes { grid-template-columns: max-content; }
+  .acct-card { padding: 10px 12px 14px; }
+  .acct-form { max-width: none; }
+}
+
+/* The status page on a large screen: the entry points on the left, the incidents beside them. */
+.hosts { grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); align-items: start; }
+.hosts > .group-card { grid-column: 1 / -1; }
+.hosts > .group-card > .members { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); column-gap: 16px; }
+.netmap-chart { max-width: 1100px; margin-inline: auto; }
+@media (min-width: 1100px) {
+  main.wide:has(#hosts) { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; column-gap: 24px; align-content: start; }
+  main.wide:has(#hosts) > :not(#hosts, #incidents, dialog) { grid-column: 1 / -1; }
+  main.wide:has(#hosts) > #hosts { grid-column: 1; }
+  main.wide:has(#hosts) > #incidents { grid-column: 2; position: sticky; top: 16px; align-self: start; margin-top: 16px; }
+  main.wide:has(#hosts) > #incidents h2 { margin-top: 0; }
+}
+@media (min-width: 1400px) {
+  dialog.detail { width: min(1000px, calc(100% - 16px)); }
+}
+
+/* Network map */
+.netmap { margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); padding: 0 12px; }
+.netmap[hidden] { display: none; }
+.netmap > summary, .netmap-listbox > summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.netmap-count { color: var(--dim); font-weight: 400; font-size: 13px; }
+.netmap-chart { min-height: 40px; }
+.netmap-note { margin: 8px 0; }
+.netmap-listbox { margin: 0 0 8px; }
+.netmap-list { margin: 4px 0 8px; padding-left: 20px; color: var(--dim); font-size: 13px; line-height: 1.5; }
+.nm-svg { display: block; max-width: 100%; height: auto; font-family: var(--sans); font-size: 12px; }
+.nm-edge { stroke: var(--control); stroke-width: 2; }
+.nm-edge.upstream { stroke-dasharray: 6 5; }
+.nm-edge.down { stroke: var(--border); }
+.nm-box { fill: var(--raised); stroke: var(--dim); stroke-width: 2; }
+.nm-node.up .nm-box { stroke: var(--green); }
+.nm-node.down .nm-box { stroke: var(--red); }
+.nm-node.unknown .nm-box { stroke: var(--yellow); }
+.nm-node.external .nm-box { stroke: var(--dim); stroke-dasharray: 6 4; fill: var(--sunken); }
+.nm-node.proxy .nm-box { stroke-width: 3; }
+/* A proxy around its nodes: a frame with the sunken fill, so the boxes inside stand out. */
+.nm-node.frame .nm-box { fill: var(--sunken); }
+.nm-node.focus .nm-box { stroke-width: 3; }
+.nm-name.big { font-size: 16px; }
+.nm-label { fill: var(--dim); font-size: 12px; }
+.nm-head { fill: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.nm-stub-halo { stroke: var(--panel); stroke-width: 6; fill: none; }
+.nm-box-inner { fill: none; stroke: var(--accent); stroke-width: 1.5; pointer-events: none; }
+.nm-tag { fill: var(--accent); font-weight: 700; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.nm-node:focus { outline: none; }
+.nm-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nm-node:focus-visible .nm-box { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; }
+.nm-node:focus-visible .nm-box-inner { stroke: var(--text); }
+.nm-name { fill: var(--text); font-weight: 600; }
+.nm-state { fill: var(--text); }
+.nm-fact { fill: var(--dim); }
+/* The address under a box's facts: small, dim and in the type of the address on a host card. */
+.nm-addr { fill: var(--dim); font-family: var(--mono); font-size: 11px; }
+.nm-node.up .nm-state { fill: var(--green); }
+.nm-node.down .nm-state { fill: var(--red); }
+.nm-node.unknown .nm-state { fill: var(--yellow); }
+.nm-node.external .nm-state { fill: var(--dim); }
+.stale .nm-svg { opacity: 0.6; }
+@media (prefers-reduced-motion: no-preference) {
+  .nm-node.up .nm-box { animation: nm-pulse 3s ease-in-out infinite; }
+  @keyframes nm-pulse { 50% { stroke-opacity: 0.55; } }
+}
+
+/* Join and Downloads pages */
+.page h1 { font-size: 22px; margin-bottom: 8px; }
+.page h2 { margin-top: 28px; }
+.page p, .page li { max-width: 46em; }
+.page .lead { color: var(--dim); font-size: 16px; }
+.note-inline { color: var(--dim); font-size: 13px; line-height: 1.45; }
+.addr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.addr { font-size: 18px; overflow-wrap: anywhere; }
+.copied { color: var(--green); font-size: 13px; }
+p.copied { margin: 0; }
+pre.code { margin: 8px 0 12px; padding: 10px 12px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; max-width: 46em; }
+pre.code code { font-size: inherit; }
+.qr-panel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 20px; max-width: 46em; }
+.qr-panel p { flex: 1 1 14em; }
+/* Black on white whatever the theme: a reader needs the contrast. */
+.qr { display: block; flex: none; width: 264px; max-width: 100%; height: auto; background: #fff; border-radius: 6px; image-rendering: pixelated; }
+.entry-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
+.entry-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.projects { display: grid; gap: 8px; }
+/* Join on a wide screen: the text on the left, the QR code and the other entry points beside it. */
+.join-side > h2:first-child { margin-top: 28px; }
+.join-side .qr-panel { flex-direction: column; flex-wrap: nowrap; }
+.join-side .qr-panel p { flex: none; }
+@media (min-width: 1100px) {
+  main.wide:has(> .join-side) { display: grid; grid-template-columns: minmax(0, 46rem) minmax(18rem, 26rem); column-gap: 48px; justify-content: start; align-content: start; }
+  main.wide:has(> .join-side) > :not(.join-side) { grid-column: 1; }
+  main.wide:has(> .join-side) > .join-side { grid-column: 2; grid-row: 1 / span 20; align-self: start; }
+  .join-side > h2:first-child { margin-top: 0; }
+}
+/* Sticky only when the window is tall enough to leave room to read, so a short window never hides the end of the column. */
+@media (min-width: 1100px) and (min-height: 700px) {
+  .join-side { position: sticky; top: 16px; }
+}
+/* Downloads on a wide screen: the two projects side by side. */
+@media (min-width: 1000px) {
+  #projects { grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr)); gap: 16px 32px; align-items: start; }
+}
+.project h2 { margin-top: 28px; }
+.release-meta { margin-bottom: 8px; }
+.dim { color: var(--dim); }
+/* Downloads: one card for each platform with its main file first, and the rest folded away. */
+.platforms { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
+.platform { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; display: grid; gap: 4px 16px; grid-template-columns: 11em minmax(0, 1fr); align-items: start; }
+.platform h3 { font-size: 15px; margin: 0; padding-top: 2px; }
+.platform .files { min-width: 0; display: grid; gap: 8px; }
+.file-line { margin: 0 0 2px; overflow-wrap: anywhere; }
+.file-line .num { margin-left: 8px; }
+.sum-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 12px; line-height: 1.4; }
+.sum-label { color: var(--dim); }
+code.sum { overflow-wrap: anywhere; word-break: break-all; min-width: 0; }
+.sum-line .copied { margin: 0; }
+.copy-btn { font-size: 13px; padding: 2px 10px; min-height: 28px; }
+details.more-files { grid-column: 2; min-width: 0; }
+details.more-files > summary { cursor: pointer; min-height: 28px; display: flex; align-items: center; color: var(--accent); }
+details.more-files[open] > summary { margin-bottom: 6px; }
+details.more-files .files { padding-top: 4px; border-top: 1px solid var(--border); }
+@media (max-width: 600px) {
+  .platform { grid-template-columns: minmax(0, 1fr); }
+  details.more-files { grid-column: 1; }
+  .copy-btn, details.more-files > summary { min-height: 40px; }
+  details.more-files > summary { min-height: 44px; }
+  nav.links { flex-wrap: wrap; }
+}
+
+/* A custom site name and logo on the status page (site: in the config file). */
+.brand .site-logo { display: block; height: 28px; width: auto; max-width: 160px; object-fit: contain; }
+.brand { text-decoration: none; }
+.brand .brand-name { font-weight: 600; font-size: 18px; color: var(--text); overflow-wrap: anywhere; }
+.brand .site-logo + .brand-name { margin-left: 10px; }
+.site-description { color: var(--dim); margin: 16px 0 12px; overflow-wrap: anywhere; }
+
+/* Nothing here has to move: for those who ask for less motion, nothing does. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* The Logs tab: controls, then the lines in the code font. The level is always written out; the colour only adds to it. */
+.log-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; margin-top: 8px; }
+.log-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.log-field label { font-size: 13px; color: var(--dim); }
+.log-field select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--control); border-radius: 6px; padding: 4px 8px; min-width: 0; max-width: 100%; }
+.log-field select:hover { border-color: var(--accent); }
+.log-refresh { font-size: 14px; min-height: 32px; }
+.log-refresh[aria-disabled=true] { opacity: 0.6; cursor: progress; }
+.log-error-note { color: var(--red); }
+.log-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 60vh; overflow: auto; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; font: 12.5px/1.45 var(--mono); font-feature-settings: "calt" 0, "liga" 0; }
+.log-list[hidden] { display: none; }
+.log-line { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 2px 8px; border-bottom: 1px solid var(--border); }
+.log-line:last-child { border-bottom: 0; }
+.log-time { color: var(--dim); white-space: nowrap; }
+.log-level { min-width: 7ch; font-weight: 600; text-transform: uppercase; }
+.log-text { flex: 1 1 24ch; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-error .log-level { color: var(--red); }
+.log-warn .log-level { color: var(--yellow); }
+.log-info .log-level { color: var(--green); }
+.log-debug .log-level, .log-trace .log-level, .log-unknown .log-level { color: var(--dim); }
+@media (max-width: 600px) {
+  .log-field select, .log-refresh { min-height: 40px; }
+  .log-list { max-height: 55vh; }
+  .log-text { flex-basis: 100%; }
+}
+
+/* Links between nodes on the network map: a line with marks at its ends (set in netmap.js). */
+.nm-edge.link { stroke: var(--accent); stroke-width: 2; }
+.nm-edge.link.down { stroke: var(--control); }
+.nm-edge.link.off { stroke-dasharray: 2 4; stroke-linecap: round; }
+/* Declared by the operator: a wide line with a narrower one in the panel colour on top, a hollow double line. */
+.nm-edge.link.outer { stroke-width: 6; }
+.nm-edge.link.inner { stroke: var(--panel); stroke-width: 3; }
+.nm-halo { stroke: var(--panel); stroke-width: 6; fill: none; }
+.nm-halo.wide { stroke-width: 10; }
+.nm-mk-fill { fill: var(--accent); stroke: none; }
+.nm-mk-open { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
+.nm-mk-bar { stroke: var(--accent); stroke-width: 3; fill: none; }
+.nm-mk-fill.dn { fill: var(--control); }
+.nm-mk-open.dn, .nm-mk-bar.dn { stroke: var(--control); }
+.nm-tick-halo { stroke: var(--panel); stroke-width: 6; }
+/* Inside a frame the gaps under a line are the frame's fill. */
+.nm-link.in-frame .nm-halo, .nm-link.in-frame .nm-tick-halo, .nm-link.in-frame .nm-edge.link.inner { stroke: var(--sunken); }
+.nm-mk-open.fr { fill: var(--sunken); stroke: var(--accent); }
+.nm-mk-open.fr.dn { stroke: var(--control); }
+.nm-tick { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.nm-edges.has-hot .nm-link { opacity: 0.25; }
+.nm-edges.has-hot .nm-link.hot { opacity: 1; }
+.nm-edges.has-hot .nm-link.hot .nm-edge { stroke-width: 3; }
+.nm-edges.has-hot .nm-link.hot .nm-edge.outer { stroke-width: 7; }
+.nm-edges.has-hot .nm-link.hot .nm-edge.inner { stroke-width: 4; }
+
+/* The buttons that pick the node of the one-node view of the network map. */
+.nm-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.nm-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--control); background: var(--sunken); color: var(--text); font-size: 13px; }
+.nm-pill[aria-selected=true] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--raised); font-weight: 600; }
+.nm-pill-mark { font-size: 11px; color: var(--dim); }
+.nm-pill-mark.up { color: var(--green); }
+.nm-pill-mark.down { color: var(--red); }
+.nm-pill-mark.unknown { color: var(--yellow); }
+@media (max-width: 600px) {
+  .nm-pill { min-height: 40px; font-size: 14px; }
+}
+
+/* Links on a host card: Dials, Dialled by, Linked with. */
+.nl-lists { display: grid; gap: 4px; margin: 8px 0; }
+.nl-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.nl-label { color: var(--dim); font-size: 13px; min-width: 5.5em; }
+.nl-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.nl-chip { min-height: 24px; display: inline-flex; align-items: center; white-space: normal; text-decoration: none; color: var(--text); background: var(--sunken); border-color: var(--control); }
+.nl-chip:hover { border-color: var(--accent); color: var(--accent); }
+.nl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nl-more { color: var(--dim); font-size: 13px; align-self: center; }
+@media (max-width: 600px) {
+  .nl-chip { min-height: 40px; padding: 0 12px; font-size: 14px; }
+  .nl-group { display: grid; gap: 4px; }
+}

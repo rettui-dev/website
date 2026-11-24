@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Downloads - rettui</title>
+<meta name="description" content="The latest rettui and rngit-rs releases for each platform, with SHA-256 checksums">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#16161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+<meta property="og:site_name" content="rettui">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Downloads - rettui">
+<meta property="og:description" content="The latest rettui and rngit-rs releases for each platform, with SHA-256 checksums">
+<link rel="icon" type="image/png" href="/brand/icon.png">
+<link rel="apple-touch-icon" href="/brand/icon.png">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-Regular.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/FiraSans-SemiBold.woff2">
+<link rel="alternate" type="application/atom+xml" title="rettui releases" href="/feed.xml">
+<link rel="stylesheet" href="/site.css">
+<script src="/theme.js"></script>
+<script src="/passkey.js" defer></script>
+<script src="/account.js" defer></script>
+<script src="/copy.js" defer></script>
+<script src="/downloads.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img class="wordmark" src="/brand/wordmark.png" alt="rettui" width="91" height="20"></a>
+    <nav class="links" aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/status">Status</a>
+      <a href="/join">Join</a>
+      <a href="/downloads" aria-current="page">Downloads</a>
+      <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+      <a href="https://github.com/rettui-dev" rel="noopener noreferrer">GitHub</a>
+    </nav>
+    <button id="theme-toggle" type="button">Theme</button>
+    <div class="signin" id="signin" hidden>
+      <span class="signin-name" id="signin-name" hidden></span>
+      <button id="signin-btn" type="button">Sign in</button>
+    </div>
+  </div>
+</header>
+<main id="main" tabindex="-1" class="wrap wide page">
+  <h1>Downloads</h1>
+  <p class="lead">The latest release of rettui and of rngit-rs, for each platform, with the SHA-256 checksum of every file. This server asks GitHub for the list every 15 minutes, so your browser does not contact GitHub until you follow a link.</p>
+  <p id="downloads-status" class="note-inline" role="status">Loading the releases...</p>
+  <div id="projects" class="projects"></div>
+  <noscript>
+    <p class="note">The list of files needs JavaScript. The releases are on GitHub:
+      <a href="https://github.com/rettui-dev/rettui/releases/latest" rel="noopener noreferrer">rettui</a>,
+      <a href="https://github.com/rettui-dev/rngit-rs/releases" rel="noopener noreferrer">rngit-rs</a>.</p>
+  </noscript>
+
+  <h2>Check a download</h2>
+  <p>Compare the SHA-256 of the file you downloaded with the one listed under the file (the Copy button beside it copies it). Put the checksum and the file name in a file called <code>SHA256SUMS</code>, with two spaces between them, in the folder with the download:</p>
+  <pre class="code"><code>sha256sum -c SHA256SUMS --ignore-missing</code></pre>
+  <p>It prints <code>OK</code> for each file that matches. On macOS use <code>shasum -a 256 -c SHA256SUMS</code>; in Windows PowerShell use <code>Get-FileHash &lt;file&gt; -Algorithm SHA256</code> and compare the result by eye. If the release has a <code>SHA256SUMS</code> file, you can download that instead. A checksum shows that the file is the one GitHub holds; it does not show who made it.</p>
+</main>
+<footer>
+  <div class="wrap">
+    <span>rettui</span>
+    <a href="/join">Join the network</a>
+    <a href="/downloads">Downloads</a>
+    <a href="https://docs.rettui.dev" rel="noopener noreferrer">Docs</a>
+    <a href="https://github.com/rettui-dev" rel="noopener noreferrer">github.com/rettui-dev</a>
+    <a href="https://reticulum.network/" rel="noopener noreferrer">Reticulum</a>
+  </div>
+</footer>
+</body>
+</html>

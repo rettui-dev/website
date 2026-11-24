@@ -1,0 +1,177 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { loadConfig, loadNodes } from '../lib/config.js';
+import { ALL_SECTIONS, SECTIONS, stripGroup, stripSeries, stripStats } from '../lib/access.js';
+
+const HASH = '$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc';
+const yaml = (top = '', node = '') => `${top}
+nodes:
+  - address: a.test:1
+${node}
+  - address: b.test:1
+`;
+const USERS = `users:\n  - name: alice\n    password_hash: '${HASH}'`;
+const bad = (text, pattern) => assert.throws(() => loadConfig(text), (e) => pattern.test(e.message), text);
+
+test('users: names and hashes are read; without a rule every section is locked', () => {
+  const c = loadConfig(yaml(USERS));
+  assert.equal(c.users.length, 1);
+  assert.equal(c.users[0].name, 'alice');
+  assert.equal(c.users[0].phc.memory, 19456);
+  assert.deepEqual(c.defaults.requireLogin, ALL_SECTIONS);
+  assert.deepEqual(c.nodes.get('a.test:1').requireLogin, ALL_SECTIONS);
+  assert.deepEqual(c.login, { idleTimeoutMinutes: 60, maxAgeHours: 12, maxSessions: 1000, trustedProxies: [], passkeySignIn: true });
+});
+
+test('without users nothing is locked and there is no login', () => {
+  const c = loadConfig(yaml());
+  assert.deepEqual(c.users, []);
+  assert.deepEqual(c.defaults.requireLogin, []);
+  assert.deepEqual(c.nodes.get('a.test:1').requireLogin, []);
+  // An empty rule names nothing, so it is allowed.
+  assert.deepEqual(loadConfig(yaml('require_login: []')).defaults.requireLogin, []);
+});
+
+test('a rule or login settings without users stop the start', () => {
+  bad(yaml('require_login: [disk]'), /require_login needs "users"/);
+  bad(yaml('', '    require_login: [details]'), /nodes\[1\]\.require_login needs "users"/);
+  bad(yaml('login:\n  max_sessions: 5'), /"login" needs "users"/);
+});
+
+test('require_login: global rule, node override, strict sections', () => {
+  const c = loadConfig(yaml(`${USERS}\nrequire_login: [details, disk]`, '    require_login: []'));
+  assert.deepEqual(c.defaults.requireLogin, ['details', 'disk']);
+  assert.deepEqual(c.nodes.get('a.test:1').requireLogin, []);
+  assert.deepEqual(c.nodes.get('b.test:1').requireLogin, ['details', 'disk']);
+  bad(yaml(`${USERS}\nrequire_login: [everything]`), /require_login\[1\] must be one of details, storage, peers, disk, versions/);
+  bad(yaml(`${USERS}\nrequire_login: [disk, disk]`), /lists disk twice/);
+  bad(yaml(`${USERS}\nrequire_login: disk`), /must be a list of sections/);
+  bad(yaml(USERS, '    require_login: [1]'), /nodes\[1\]\.require_login\[1\]/);
+});
+
+test('users are validated and their hashes never repeated in an error', () => {
+  const user = (name, hash = HASH) => `users:\n  - name: ${JSON.stringify(name)}\n    password_hash: '${hash}'`;
+  bad(yaml('users: []'), /list of 1 to 64 users/);
+  bad(yaml('users: alice'), /list of 1 to 64 users/);
+  bad(yaml('users: [alice]'), /users\[1\] must be a map/);
+  bad(yaml(user('')), /users\[1\]\.name/);
+  bad(yaml(user('a b')), /users\[1\]\.name/);
+  bad(yaml(user('-alice')), /users\[1\]\.name/);
+  bad(yaml(user('a'.repeat(33))), /users\[1\]\.name/);
+  bad(yaml(user('al‮ice')), /users\[1\]\.name/);
+  bad(yaml(`users:\n  - name: alice\n    password_hash: '${HASH}'\n  - name: ALICE\n    password_hash: '${HASH}'`), /users\[2\]\.name "ALICE" is listed twice/);
+  bad(yaml('users:\n  - name: alice'), /needs a password_hash/);
+  bad(yaml(`users:\n  - name: alice\n    password: hunter2\n    password_hash: '${HASH}'`), /unknown key "password"/);
+  bad(yaml(user('alice', HASH.replace('m=19456', 'm=4096'))), /users\[1\]\.password_hash is too cheap/);
+  bad(yaml(user('alice', HASH.replace('argon2id', 'argon2i'))), /must be argon2id/);
+  bad(yaml(user('alice', 'plain text')), /users\[1\]\.password_hash is not an Argon2id hash/);
+  bad(yaml(`users:\n  - name: alice\n    password_hash: 12`), /password_hash is not an Argon2id hash/);
+  const many = Array.from({ length: 65 }, (_, i) => `  - name: u${i}\n    password_hash: '${HASH}'`).join('\n');
+  bad(yaml(`users:\n${many}`), /1 to 64 users/);
+  try {
+    loadConfig(yaml(user('alice', HASH.replace('m=19456', 'm=4096'))));
+  } catch (err) {
+    assert.equal(err.message.includes('c29tZXNhbHRzb21lc2FsdA'), false);
+    assert.equal(err.message.includes('CTFhFdXP'), false);
+  }
+});
+
+test('login settings: defaults, ranges and trusted proxies', () => {
+  const c = loadConfig(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 15\n  max_age_hours: 2\n  max_sessions: 50\n  trusted_proxies: [127.0.0.1, "::1"]`));
+  assert.deepEqual(c.login, { idleTimeoutMinutes: 15, maxAgeHours: 2, maxSessions: 50, trustedProxies: ['127.0.0.1', '::1'], passkeySignIn: true });
+  // Each address in one spelling, the one a peer address is compared in.
+  const long = loadConfig(yaml(`${USERS}\nlogin:\n  trusted_proxies: ["0:0:0:0:0:0:0:1", "FD00:0::1", "::ffff:10.0.0.1"]`));
+  assert.deepEqual(long.login.trustedProxies, ['::1', 'fd00::1', '10.0.0.1']);
+  bad(yaml(`${USERS}\nlogin: yes`), /"login" must be a map/);
+  bad(yaml(`${USERS}\nlogin:\n  secure: false`), /login has an unknown key "secure"/);
+  bad(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 0`), /idle_timeout_minutes must be a whole number/);
+  bad(yaml(`${USERS}\nlogin:\n  max_age_hours: 1.5`), /max_age_hours must be a whole number/);
+  bad(yaml(`${USERS}\nlogin:\n  max_sessions: "10"`), /max_sessions must be a whole number/);
+  bad(yaml(`${USERS}\nlogin:\n  idle_timeout_minutes: 120\n  max_age_hours: 1`), /cannot be longer/);
+  bad(yaml(`${USERS}\nlogin:\n  trusted_proxies: [proxy.local]`), /trusted_proxies\[1\] is not an IP address/);
+  bad(yaml(`${USERS}\nlogin:\n  trusted_proxies: 127.0.0.1`), /must be a list/);
+});
+
+test('the environment variables have no users and lock nothing', async () => {
+  const n = await loadNodes({});
+  assert.deepEqual(n.users, []);
+  assert.deepEqual(n.defaults.requireLogin, []);
+});
+
+const data = () => ({
+  rettuiVersion: '2.0.0', uptimeSeconds: 5,
+  interfaces: { total: 1, online: 1, clients: 3, rxBytes: 1, txBytes: 1 },
+  peersHeard: { total: 7, lxmf: 1, nomad: 1, propagation: 1 }, announcesLastMinute: 2,
+  disk: { dataBytes: 9, level: 'high', usedPercent: 80 },
+  propagation: { enabled: true, storedMessages: 11, storedBytes: 12, peersAlive: 13, peersTotal: 14, autopeer: true, unhandledMessages: 15, unhandledDistinct: 9 },
+});
+
+test('stripStats leaves out each hidden section and nothing else', () => {
+  const stats = { ok: true, stale: false, data: data(), peerSummary: { listed: 3 } };
+  assert.equal(stripStats(stats, new Set()), stats);
+  assert.equal(stripStats(null, new Set(['disk'])), null);
+  const all = stripStats(stats, new Set(SECTIONS));
+  assert.deepEqual(Object.keys(all.data).sort(), ['announcesLastMinute', 'interfaces', 'peersHeard', 'uptimeSeconds']);
+  assert.equal('peerSummary' in all, false);
+  // The original is untouched.
+  assert.equal(stats.data.disk.level, 'high');
+  const storage = stripStats(stats, new Set(['storage'])).data.propagation;
+  assert.deepEqual(storage, { enabled: true, peersAlive: 13, peersTotal: 14, autopeer: true });
+  const peers = stripStats(stats, new Set(['peers']));
+  assert.deepEqual(peers.data.propagation, { enabled: true, storedMessages: 11, storedBytes: 12, unhandledMessages: 15, unhandledDistinct: 9 });
+  assert.equal('peerSummary' in peers, false);
+  assert.equal(stripStats(stats, new Set(['versions'])).data.rettuiVersion, undefined);
+  assert.equal(stripStats({ ok: false, error: 'x' }, new Set(SECTIONS)).ok, false);
+});
+
+test('stripGroup and stripSeries take the sums and the graphs out', () => {
+  const group = { nodes: 2, data: { peersHeard: { sum: {} }, disk: { worst: { level: 'full' } }, propagation: { nodes: 2, storedMessages: 1, peersAlive: 2 } } };
+  assert.equal(stripGroup(group, new Set()), group);
+  assert.deepEqual(stripGroup(group, new Set(['disk', 'storage', 'peers'])).data, { peersHeard: { sum: {} }, disk: null, propagation: null });
+  assert.deepEqual(stripGroup(group, new Set(['storage'])).data.propagation, { nodes: 2, peersAlive: 2 });
+  assert.equal(stripGroup({ nodes: 1, data: null }, new Set(['disk'])).data, null);
+  const series = { bytesIn: [], disk: { fsFreeBytes: [] }, propagation: { storedMessages: [], storedBytes: [], peersAlive: [], peersTotal: [], sentPerMinute: [], receivedPerMinute: [], members: 2 } };
+  assert.deepEqual(stripSeries(series, new Set(['disk', 'storage'])), { bytesIn: [], disk: null, propagation: { peersAlive: [], peersTotal: [], members: 2 } });
+  assert.equal(stripSeries(series, new Set(['storage', 'peers'])).propagation, null);
+  // The flow to and from peers goes with peers, as well as with storage.
+  assert.deepEqual(Object.keys(stripSeries(series, new Set(['peers'])).propagation).sort(), ['members', 'storedBytes', 'storedMessages']);
+  // The store size goes with the disk: it is most of a propagation node's data size.
+  assert.deepEqual(Object.keys(stripSeries(series, new Set(['disk'])).propagation).sort(), ['members', 'peersAlive', 'peersTotal', 'receivedPerMinute', 'sentPerMinute', 'storedMessages']);
+  assert.equal(stripSeries(series, new Set(['disk'])).disk, null);
+  assert.equal(stripSeries(series, new Set(['peers', 'disk'])).propagation.storedBytes, undefined);
+  const flow = { nodes: 2, storedMessages: 1, storedBytes: 5, messagesSentToPeers: 3, messagesReceivedFromPeers: 4, peersAlive: 2 };
+  assert.deepEqual(stripGroup({ nodes: 2, data: { propagation: flow } }, new Set(['peers'])).data.propagation, { nodes: 2, storedMessages: 1, storedBytes: 5 });
+  assert.deepEqual(stripGroup({ nodes: 2, data: { propagation: flow } }, new Set(['disk'])).data.propagation, { nodes: 2, storedMessages: 1, messagesSentToPeers: 3, messagesReceivedFromPeers: 4, peersAlive: 2 });
+});
+
+test('locked peers also hide the messages exchanged with peers, and a locked disk the store size', () => {
+  const stats = { ok: true, data: data() };
+  Object.assign(stats.data.propagation, { messagesSentToPeers: 21, messagesReceivedFromPeers: 22, messagesOfferedToPeers: 23, messagesReceived: 24 });
+  const peers = stripStats(stats, new Set(['peers'])).data.propagation;
+  for (const k of ['messagesSentToPeers', 'messagesReceivedFromPeers', 'messagesOfferedToPeers', 'peersAlive']) assert.equal(k in peers, false, k);
+  assert.equal(peers.messagesReceived, 24);
+  assert.equal(peers.storedBytes, 12);
+  const disk = stripStats(stats, new Set(['disk'])).data;
+  assert.equal(disk.disk, undefined);
+  assert.equal('storedBytes' in disk.propagation, false);
+  assert.equal(disk.propagation.storedMessages, 11);
+  assert.equal(disk.propagation.messagesSentToPeers, 21);
+});
+
+test('config: detect_links with a require_login list that leaves out links is warned about, at the top level and for a node', () => {
+  const users = `${USERS}\n    role: admin`;
+  // The default locks everything: no warning.
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true`)).linkWarnings, []);
+  // Explicit list without links: everyone sees the links.
+  const top = loadConfig(yaml(`${users}\ndetect_links: true\nrequire_login: [details, peers]`));
+  assert.equal(top.linkWarnings.length, 1);
+  assert.match(top.linkWarnings[0], /top level require_login does not list "links"/);
+  // With links, or without detect_links: none.
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true\nrequire_login: [details, links]`)).linkWarnings, []);
+  assert.deepEqual(loadConfig(yaml(`${users}\nrequire_login: [details]`)).linkWarnings, []);
+  // A node's own list.
+  const node = loadConfig(yaml(`${users}\ndetect_links: true`, '    require_login: [details]'));
+  assert.equal(node.linkWarnings.length, 1);
+  assert.match(node.linkWarnings[0], /a\.test:1/);
+  assert.deepEqual(loadConfig(yaml(`${users}\ndetect_links: true`, '    require_login: [links]')).linkWarnings, []);
+});

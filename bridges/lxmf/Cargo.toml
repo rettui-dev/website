@@ -1,0 +1,36 @@
+[package]
+name = "lxmf-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Receives the rettui website's alert webhook and forwards each alert as an LXMF message"
+license = "AGPL-3.0-only"
+publish = false
+
+# The bridge is its own workspace: the website around it is a Node.js project.
+[workspace]
+exclude = ["deps"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+# Reticulum and LXMF, as git submodules under deps/ at the same commits rettui
+# pins (the fork's rettui-1.5 branches). rsLXMF finds rsReticulum as its sibling
+# by path, so they cannot be plain git dependencies.
+rns-runtime = { path = "deps/rsReticulum/crates/rns-runtime" }
+lxmf-core = { path = "deps/rsLXMF/crates/lxmf-core", default-features = false }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -13,16 +13,19 @@ concurrency:
 
 jobs:
   test:
-    name: Tests (Node 22)
+    name: Tests (Node 24)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
       - name: Run tests
         run: npm test
 
@@ -31,14 +34,61 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: false
           cache-from: type=gha,scope=ci
           cache-to: type=gha,scope=ci,mode=max
+
+  # The LXMF bridge image (bridges/lxmf/Dockerfile); it needs the submodules in its build context.
+  bridge-docker-build:
+    name: LXMF bridge image builds (no push)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: bridges/lxmf
+          push: false
+          cache-from: type=gha,scope=bridge-ci
+          cache-to: type=gha,scope=bridge-ci,mode=max
+
+  # The LXMF bridge (bridges/lxmf) is a Rust crate of its own; nothing else in this repository uses it.
+  bridge-lxmf:
+    name: LXMF bridge (Rust)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bridges/lxmf
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # rsReticulum and rsLXMF, at the commits rettui pins.
+          submodules: recursive
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridges/lxmf/target
+          key: bridge-lxmf-${{ runner.os }}-${{ hashFiles('bridges/lxmf/Cargo.lock') }}
+          restore-keys: bridge-lxmf-${{ runner.os }}-
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked

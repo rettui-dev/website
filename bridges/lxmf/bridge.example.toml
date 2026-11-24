@@ -1,0 +1,59 @@
+# The LXMF bridge's settings. Paths are relative to this file.
+
+# Where the website's webhook is received. In a container this is 0.0.0.0:8742, and the port is
+# not published: only the website's container reaches it.
+listen = "127.0.0.1:8742"
+
+# The alert secret, the same as the website's alerts.channels[].secret_file. 16 to 256 printable
+# characters. Keep the file readable by the bridge's user only (chmod 600).
+secret_file = "secrets/hook.secret"
+
+# The bridge's LXMF identity. Made on the first start (mode 600) and kept: it is the address the
+# messages come from, so keep it in a volume. Reticulum's files go in a "reticulum" folder next to it.
+identity_file = "/data/identity"
+
+# The name shown for the bridge's address (1 to 64 characters).
+display_name = "rettui alerts"
+
+# Who gets each alert: 1 to 16 LXMF addresses (32 hex digits), as your LXMF app shows them.
+recipients = ["00000000000000000000000000000000"]
+
+# Optional: let the website name the address of an alert (a "to" in the signed webhook body), for
+# alerts about a user's own account. The website must have checked the address first (sent a code to
+# it and had it typed back): the bridge only keeps the limits below. An alert with a "to" goes to
+# that address only, never to the list above; one without goes to the list. Off by default, and then
+# a body with a "to" is refused. With it on, "recipients" may be empty (or left out).
+# website_recipients = true
+
+# With website_recipients on: the most alerts an hour to one named address (1 to 100), and the most
+# different named addresses an hour (1 to 1000). Over either, the answer is 429 with Retry-After.
+# per_recipient_per_hour = 10
+# recipients_per_hour = 50
+
+# With website_recipients on, named addresses have a pool of their own, so that they cannot hold up the
+# list above (which keeps its own 32 deliveries and 100 queued alerts). Deliveries at once (1 to 16),
+# alerts that may wait (1 to 100; a full queue answers 503 to alerts with a "to" only), the highest
+# stamp cost worked out for such an address (0 to 28; a higher one is not delivered to), and the most
+# seconds one whole delivery may take, tries included (30 to 3600).
+# website_slots = 4
+# website_queue = 20
+# website_max_stamp_cost = 12
+# website_delivery_seconds = 300
+
+# Reticulum TCP servers to connect to, host:port (1 to 8). The default is shown.
+entry_points = ["rns.rettui.dev:4242"]
+
+# Optional: a propagation node's address. When a message cannot be delivered directly it is left
+# there for the recipient to fetch later.
+# propagation_node = "00000000000000000000000000000000"
+
+# Optional: only these IP addresses (exact, no ranges) may connect; any other is closed on at once.
+# Set it to the website's address. Empty or left out: any address.
+# allow_from = ["172.28.0.5"]
+
+# A request whose time is more than this many seconds old (or over 60 seconds ahead) is refused.
+# Replay memory is lost on a restart, so a small value limits what a captured request can do.
+max_age_seconds = 300
+
+# The most a request body may hold.
+max_body_bytes = 16384
