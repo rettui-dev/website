@@ -434,7 +434,8 @@ dialog.detail::backdrop { background: rgba(0, 0, 0, 0.6); }
 .shot { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
 .shot.wide { grid-column: 1 / -1; }
 .shot img { display: block; width: 100%; height: auto; border-radius: 4px; border: 1px solid var(--border); }
-.shot.phone img { max-width: 260px; margin: 0 auto; }
+.phones { grid-column: 1 / -1; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.shot.phone { padding: 8px; }
 .shot figcaption { color: var(--dim); font-size: 13px; margin-top: 8px; }
 
 .detail-head h2 .host-addr { margin-left: 10px; }
