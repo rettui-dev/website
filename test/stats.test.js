@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseStatsUrls, sanitizeStats, fetchStats } from '../lib/stats.js';
+import { parseStatsUrls, sanitizeStats, sanitizeInterfaceList, fetchStats } from '../lib/stats.js';
 import { Monitor, PROBE_INTERVAL_MS } from '../lib/monitor.js';
 
 const targets = [
@@ -316,4 +316,131 @@ test('monitor: the announce queue stays with the last good stats when a fetch fa
   const st = m.snapshot().hosts[0].stats;
   assert.equal(st.ok, false);
   assert.equal(st.data.announceQueue.full, true);
+});
+
+// Interface rows: what a declared upstream's state is read from
+
+const withList = (list, extra = {}) => ({ ...good(), interfaces: { ...good().interfaces, list, ...extra } });
+
+test('sanitizeInterfaceList gives a fixed shape and drops malformed rows', () => {
+  const rows = sanitizeInterfaceList(
+    withList([
+      { name: ' MichMesh ', online: true, rx_bytes: 5.9, tx_bytes: -3, clients: 4, extra: 'x' },
+      { name: 'Rat\u0007s\u202epeak', online: false, rx_bytes: 1, tx_bytes: 2 },
+      { name: 'x'.repeat(100), online: true, rx_bytes: 0, tx_bytes: 0 },
+      { name: 'no state', rx_bytes: 1, tx_bytes: 1 },
+      { name: 'string state', online: 'yes', rx_bytes: 1, tx_bytes: 1 },
+      { name: 'no counts', online: true },
+      { name: 'bad count', online: true, rx_bytes: '1', tx_bytes: 1 },
+      { name: '\u0007\u200b', online: true, rx_bytes: 1, tx_bytes: 1 },
+      { name: 42, online: true, rx_bytes: 1, tx_bytes: 1 },
+      null,
+      'row',
+      [],
+    ]),
+  );
+  assert.deepEqual(rows, [
+    { name: 'MichMesh', online: true, rxBytes: 5, txBytes: 0 },
+    { name: 'Ratspeak', online: false, rxBytes: 1, txBytes: 2 },
+    { name: 'x'.repeat(64), online: true, rxBytes: 0, txBytes: 0 },
+  ]);
+});
+
+test('sanitizeInterfaceList caps the rows at 32 and ignores a missing or wrong list', () => {
+  const many = Array.from({ length: 100 }, (_, i) => ({ name: `i${i}`, online: true, rx_bytes: 0, tx_bytes: 0 }));
+  assert.equal(sanitizeInterfaceList(withList(many)).length, 32);
+  assert.deepEqual(sanitizeInterfaceList(withList([])), []);
+  for (const bad of [undefined, null, 'x', 5, {}]) assert.equal(sanitizeInterfaceList(withList(bad)), null);
+  for (const bad of [null, undefined, 'x', [], { interfaces: null }, { interfaces: 'x' }]) assert.equal(sanitizeInterfaceList(bad), null);
+});
+
+test('sanitizeStats leaves the rows out: only fetchStats hands them over, on their own', async () => {
+  const p = withList([{ name: 'MichMesh', online: true, rx_bytes: 7, tx_bytes: 8 }], { list_truncated: true });
+  const d = sanitizeStats(p);
+  assert.deepEqual(Object.keys(d.interfaces).sort(), ['clients', 'online', 'rxBytes', 'total', 'txBytes']);
+  const r = await fetchStats('https://a.test/s', { fetchFn: respond(p) });
+  assert.deepEqual(r.interfaceRows, [{ name: 'MichMesh', online: true, rxBytes: 7, txBytes: 8 }]);
+  assert.equal(JSON.stringify(r.data).includes('MichMesh'), false);
+  // An older node sends no list: no rows, and the stats are as before.
+  const older = good();
+  delete older.interfaces.list;
+  const old = await fetchStats('https://a.test/s', { fetchFn: respond(older) });
+  assert.equal(old.ok, true);
+  assert.equal(Object.hasOwn(old, 'interfaceRows'), false);
+});
+
+async function upstreamMonitor({ rows, t = { now: 1_000_000 }, ups = [{ name: 'MichMesh' }, { name: 'ratspeak' }, { name: 'RNS Beleth' }] } = {}) {
+  const statsUrls = parseStatsUrls('a.test:4242=https://a.test/s', targets);
+  const nodes = new Map([['a.test:4242', { name: null, proxyFor: [], proxiedBy: null, countOwn: false, upstreams: ups }]]);
+  let current = rows;
+  const m = new Monitor({
+    targets, nodes, dataDir: await tmp(), probeFn: up, now: () => t.now, statsUrls,
+    statsFn: async () => (current === 'fail' ? { ok: false, error: 'timeout' } : { ok: true, data: sanitizeStats(good()), ...(current ? { interfaceRows: current } : {}) }),
+  });
+  return { m, t, set: (r) => { current = r; } };
+}
+
+const row = (name, online) => ({ name, online, rxBytes: 7654321, txBytes: 8765432 });
+
+test('monitor: an upstream is online or offline as its node reports, matched by trimmed name in any case', async () => {
+  const { m } = await upstreamMonitor({ rows: [row('michmesh', true), row('RatSpeak ', false), row('Other', true)] });
+  await m.checkAll();
+  assert.deepEqual(m.snapshot().hosts[0].upstreams, [
+    { name: 'MichMesh', online: true },
+    { name: 'ratspeak', online: false },
+    { name: 'RNS Beleth', online: null },
+  ]);
+});
+
+test('monitor: the answer never carries the rows, counters or other interface names', async () => {
+  const { m } = await upstreamMonitor({ rows: [row('MichMesh', true), row('Secret TCP Server', true)] });
+  await m.checkAll();
+  for (const auth of [false, true]) {
+    const text = JSON.stringify(m.snapshot(90, auth));
+    for (const leak of ['Secret TCP Server', '7654321', '8765432', 'interfaceRows', '"rows"', '"list"']) assert.equal(text.includes(leak), false, leak);
+  }
+});
+
+test('monitor: no list, no stats or an older node gives null for every upstream', async () => {
+  const { m, set } = await upstreamMonitor({ rows: undefined });
+  await m.checkAll();
+  assert.deepEqual(m.snapshot().hosts[0].upstreams.map((u) => u.online), [null, null, null]);
+  // A list that is empty matches nothing.
+  set([]);
+  await m.checkAll();
+  assert.deepEqual(m.snapshot().hosts[0].upstreams.map((u) => u.online), [null, null, null]);
+  // Not fetched yet.
+  const fresh = await upstreamMonitor({ rows: [row('MichMesh', true)] });
+  assert.deepEqual(fresh.m.snapshot().hosts[0].upstreams.map((u) => u.online), [null, null, null]);
+});
+
+test('monitor: a node that stops sending the list stops being believed at once', async () => {
+  const { m, set } = await upstreamMonitor({ rows: [row('MichMesh', true)] });
+  await m.checkAll();
+  assert.equal(m.snapshot().hosts[0].upstreams[0].online, true);
+  set(undefined);
+  await m.checkAll();
+  assert.equal(m.snapshot().hosts[0].upstreams[0].online, null);
+});
+
+test('monitor: stale stats give null, not the old state', async () => {
+  const { m, t, set } = await upstreamMonitor({ rows: [row('MichMesh', true), row('Ratspeak', false)] });
+  await m.checkAll();
+  // The fetches fail from now on: the last list is kept, but not for long.
+  set('fail');
+  t.now += PROBE_INTERVAL_MS;
+  await m.checkAll();
+  assert.equal(m.snapshot().hosts[0].upstreams[0].online, true);
+  t.now += 2 * PROBE_INTERVAL_MS;
+  assert.equal(m.snapshot().hosts[0].upstreams[0].online, true, 'exactly three intervals old is not stale yet');
+  t.now += 1;
+  assert.equal(m.snapshot().hosts[0].stats.stale, true);
+  assert.deepEqual(m.snapshot().hosts[0].upstreams.map((u) => u.online), [null, null, null]);
+});
+
+test('monitor: a host without upstreams gets no upstreams key', async () => {
+  const statsUrls = parseStatsUrls('a.test:4242=https://a.test/s', targets);
+  const m = new Monitor({ targets, dataDir: await tmp(), probeFn: up, statsUrls, statsFn: async () => ({ ok: true, data: sanitizeStats(good()), interfaceRows: [row('X', true)] }) });
+  await m.checkAll();
+  assert.equal(Object.hasOwn(m.snapshot().hosts[0], 'upstreams'), false);
 });

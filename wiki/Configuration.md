@@ -164,7 +164,9 @@ never repeats a URL:
   are one level deep).
 - `upstreams` is a list of 1 to 8 maps with a `name` (1 to 48 characters, no control characters,
   each once per node) and an optional `address` (host:port); no other key is allowed. It can only be
-  set in the file, on a node.
+  set in the file, on a node. Upstreams are never probed. To show whether one is up, the node must
+  publish its interface list (rettui: `stats_interfaces`, optionally `stats_interface_names`) and
+  the name must match an interface name there; see [Node stats](Node-Stats).
 - `links` is a list of 1 to 8 maps, each with a `to` (the name or the `host:port` address of another
   node in the file) and an optional `direction` (`dials`, the default, or `unknown`); no other key is
   allowed. A name that two nodes share, a `to` that is not a node, a link from a node to itself and the

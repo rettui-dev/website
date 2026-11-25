@@ -330,9 +330,21 @@ other request.
   shown again. The view is chosen again whenever the map changes size.
 - **Upstreams** are for display only. A node's `upstreams` lists the external backbone peers it
   connects out to, so the map can draw them as grey "External" boxes. The server never resolves,
-  probes or fetches an upstream's address, and an upstream has no state. The same name and
-  address on two nodes is drawn once, with a line from each. `/api/status` adds an `upstreams`
-  list (`[{name, address?}]`) to the hosts that have one, and nothing else.
+  probes or fetches an upstream's address. The same name and address on two nodes is drawn once,
+  with a line from each. `/api/status` adds an `upstreams` list (`[{name, address?, online}]`) to
+  the hosts that have one, and nothing else.
+  - **State** is read from the node's own report, never checked from here. When the node publishes
+    the rows of its interfaces (in rettui, turn on `stats_interfaces`; `stats_interface_names`
+    optionally limits which names are listed), the website matches an upstream's `name` to a row
+    name, ignoring case and spaces around it. `online` is `true` or `false` for a match, and `null`
+    with no stats URL, an older node that sends no list, no row of that name, or stats that have
+    gone stale. Only that one value leaves the server: not the rows, their byte counts or the
+    names of any other interface.
+  - On the map a box is "Up" if any node that reports on it says online, "Down" if every node that
+    reports says offline, and otherwise stays a plain "External" box. Each line is crossed with two
+    slashes when its own node reports the upstream offline, and the text alternative and the list
+    say it per node, such as "MichMesh: external backbone peer, not monitored, reported up via
+    Front, down via Back". Names must match the interface names in the node's config.
 - **Access:** the map draws only what a visitor already sees on the page: up or down, clients,
   connect time and the 90 day uptime. Nothing that `require_login` or `public_details` hides
   is used, and the names and addresses in `upstreams` are public, so leave out an address you do

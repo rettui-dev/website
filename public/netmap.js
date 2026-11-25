@@ -136,7 +136,7 @@
       var members = proxy && isObject(h.proxy) && Array.isArray(h.proxy.for)
         ? h.proxy.for.filter(function (m) { return typeof m === 'string'; }).slice(0, MAX_MEMBERS) : null;
       var ups = (Array.isArray(h.upstreams) ? h.upstreams : []).filter(function (u) { return isObject(u) && plainText(u.name, MAX_NAME) !== null; })
-        .slice(0, MAX_UPSTREAMS).map(function (u) { return { name: plainText(u.name, MAX_NAME), address: plainText(u.address, MAX_ADDRESS) }; });
+        .slice(0, MAX_UPSTREAMS).map(function (u) { return { name: plainText(u.name, MAX_NAME), address: plainText(u.address, MAX_ADDRESS), online: u.online === true || u.online === false ? u.online : null }; });
       out.push({
         host: h.host, port: port, name: plainText(h.name, MAX_NAME), status: STATES[h.status] === true ? h.status : 'unknown',
         role: proxy ? 'proxy' : 'node', proxy: members ? { for: members } : null, proxiedBy: typeof h.proxiedBy === 'string' ? h.proxiedBy : null,
@@ -262,13 +262,22 @@
         // The same peer listed by two nodes is one box.
         var id = 'ext:' + u.name.toLowerCase() + '|' + (u.address || '');
         if (!byId[id]) {
-          byId[id] = { id: id, kind: 'external', name: u.name, addr: null, state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [] };
+          byId[id] = { id: id, kind: 'external', name: u.name, addr: null, state: 'external', tier: -1, clients: null, ms: null, uptime: null, members: 0, address: u.address || null, usedBy: [], report: null, reports: [] };
           nodes.push(byId[id]);
           externals++;
         }
         byId[id].usedBy.push(from.name);
-        edges.push({ from: from.id, to: id, kind: 'upstream' });
+        // What the node itself says about this upstream: nothing is checked from here.
+        var report = u.online === true ? 'up' : u.online === false ? 'down' : null;
+        if (report) byId[id].reports.push({ id: from.id, by: from.name, report: report });
+        edges.push({ from: from.id, to: id, kind: 'upstream', report: report });
       });
+    });
+    // A box several nodes share is up when any node reporting on it says online, down when every node
+    // reporting says offline, and otherwise stays an unknown external peer (report null).
+    nodes.forEach(function (n) {
+      if (n.kind !== 'external' || !n.reports.length) return;
+      n.report = n.reports.some(function (r) { return r.report === 'up'; }) ? 'up' : 'down';
     });
     var links = linkEdges(list, byId);
     links.forEach(function (e) { edges.push(e); });
@@ -277,7 +286,7 @@
     nodes.forEach(function (n) { if (n.kind === 'external') n.tier = last + 1; });
     var state = Object.create(null);
     nodes.forEach(function (n) { state[n.id] = n.state; });
-    edges.forEach(function (e) { e.down = state[e.from] === 'down' || state[e.to] === 'down'; });
+    edges.forEach(function (e) { e.down = state[e.from] === 'down' || state[e.to] === 'down' || e.report === 'down'; });
     if (links.length) {
       var names = Object.create(null);
       nodes.forEach(function (n) { names[n.id] = n.name; });
@@ -292,6 +301,9 @@
   function describe(n, withAddress) {
     var out = [n.kind === 'proxy' ? 'Proxy ' + n.name + ', ' + WORD[n.state].toLowerCase()
       : n.name + ': ' + (n.kind === 'external' ? 'external backbone peer, not monitored' : WORD[n.state].toLowerCase())];
+    if (n.kind === 'external' && n.reports && n.reports.length) {
+      out.push('reported ' + n.reports.map(function (r) { return r.report + ' via ' + r.by; }).join(', '));
+    }
     if (withAddress && n.kind !== 'external' && n.addr && n.addr !== n.name) out.push('address ' + n.addr);
     if (n.kind === 'proxy') out.push('passes visitors to ' + plural(n.members, 'node', 'nodes'));
     if (n.kind === 'external' && n.address) out.push('address ' + n.address + ' (not checked)');
@@ -304,9 +316,10 @@
 
   // The state and fact lines drawn in a box.
   function facts(n) {
-    var out = [GLYPH[n.state] + ' ' + WORD[n.state]];
+    var shown = n.kind === 'external' && n.report ? n.report : n.state;
+    var out = [GLYPH[shown] + ' ' + WORD[shown]];
     if (n.clients !== null) out.push(plural(num(n.clients), 'client', 'clients'));
-    else if (n.kind === 'external') out.push('not checked');
+    else if (n.kind === 'external') out.push(n.report ? 'reported by node, not checked' : 'not checked');
     else if (n.state === 'up' && n.ms !== null) out.push(n.ms + ' ms');
     return out;
   }
@@ -401,6 +414,19 @@
     };
   }
 
+  // Two slashes across the last leg of an upstream line that the node reports as offline.
+  function upstreamTicks(report, pts) {
+    if (report !== 'down' || pts.length < 2) return [];
+    var a = pts[pts.length - 2];
+    var b = pts[pts.length - 1];
+    return slashes((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, Math.atan2(b[1] - a[1], b[0] - a[0]));
+  }
+
+  // The external box as one node sees it: its own report only (the one-node view).
+  function seenBy(n, id, report) {
+    return Object.assign({}, n, { report: report, reports: n.reports.filter(function (r) { return r.id === id; }) });
+  }
+
   function boxH(n) { return n.kind === 'proxy' ? PROXY_H : n.kind === 'external' ? EXT_H : BOX_H; }
 
   // The lines of text in a box: the tag of a proxy, the name (two lines at most, one for an external
@@ -431,7 +457,7 @@
   }
 
   function nodeOut(n, x, y, w, h, id) {
-    return { id: id || n.id, kind: n.kind, state: n.state, x: Math.round(x), y: Math.round(y), w: w, h: h, lines: boxLines(n, w, h), label: describe(n, true) };
+    return { id: id || n.id, kind: n.kind, state: n.state, report: n.kind === 'external' ? n.report : null, x: Math.round(x), y: Math.round(y), w: w, h: h, lines: boxLines(n, w, h), label: describe(n, true) };
   }
 
   // The facts of a proxy in its frame header, on one line.
@@ -594,7 +620,7 @@
       x.uses.forEach(function (u) {
         var by = bottom + 16 + BUS_STEP * (u.lane || 0);
         var pts = u.straight ? [[u.sx, u.sy], [u.sx, top]] : [[u.sx, u.sy], [u.sx, by], [u.ex, by], [u.ex, top]];
-        out.edges.push({ from: u.e.from, to: id, kind: 'upstream', down: u.e.down, d: rpath(pts, 8), pts: pts, turns: !u.straight });
+        out.edges.push({ from: u.e.from, to: id, kind: 'upstream', down: u.e.down, report: u.e.report, ticks: upstreamTicks(u.e.report, pts), d: rpath(pts, 8), pts: pts, turns: !u.straight });
       });
       out.nodes.push(nodeOut(x.node, x.x, top, EW, EXT_H, id));
     });
@@ -951,8 +977,8 @@
           var ecx = ex + EW / 2;
           if (k2 === 1 && trunk >= ex + 12 && trunk <= ex + EW - 12) ecx = trunk;
           var pts = Math.abs(ecx - trunk) < 0.5 ? [[trunk, fb], [trunk, etop]] : [[trunk, fb], [trunk, etop - 10], [ecx, etop - 10], [ecx, etop]];
-          edges.push({ from: sel, to: x.node.id, kind: 'upstream', down: x.edge.down, d: rpath(pts, 8), pts: pts });
-          nodes.push(nodeOut(x.node, ex, etop, EW, EXT_H));
+          edges.push({ from: sel, to: x.node.id, kind: 'upstream', down: x.edge.down, report: x.edge.report, ticks: upstreamTicks(x.edge.report, pts), d: rpath(pts, 8), pts: pts });
+          nodes.push(nodeOut(seenBy(x.node, sel, x.edge.report), ex, etop, EW, EXT_H, x.node.id));
         });
         end = etop + EXT_H;
       } else {
@@ -964,8 +990,8 @@
           var left = i % 2 === 0;
           var ex = left ? trunk - 12 - EW2 : trunk + 12;
           var pts = [[trunk, fb], [trunk, ey + EXT_H / 2], [left ? ex + EW2 : ex, ey + EXT_H / 2]];
-          edges.push({ from: sel, to: x.node.id, kind: 'upstream', down: x.edge.down, d: rpath(pts, 8), pts: pts });
-          nodes.push(nodeOut(x.node, ex, ey, EW2, EXT_H));
+          edges.push({ from: sel, to: x.node.id, kind: 'upstream', down: x.edge.down, report: x.edge.report, ticks: upstreamTicks(x.edge.report, pts), d: rpath(pts, 8), pts: pts });
+          nodes.push(nodeOut(seenBy(x.node, sel, x.edge.report), ex, ey, EW2, EXT_H, x.node.id));
         });
         end = etop + Math.ceil(k2 / 2) * (EXT_H + 12) - 12;
       }
@@ -1091,7 +1117,7 @@
   }
 
   function drawNode(n, parent) {
-    var cls = 'nm-node ' + n.kind + ' ' + n.state + (n.frame ? ' frame' : '') + (n.focus ? ' focus' : '');
+    var cls = 'nm-node ' + n.kind + ' ' + n.state + (n.report ? ' rep-' + n.report : '') + (n.frame ? ' frame' : '') + (n.focus ? ' focus' : '');
     var g = el('g', { 'class': cls, tabindex: '0', role: 'img', 'aria-label': n.label, 'data-id': n.id, transform: 'translate(' + n.x + ' ' + n.y + ')' }, parent);
     el('title', {}, g).textContent = n.label;
     var r = n.frame ? 14 : 10;
@@ -1205,6 +1231,10 @@
       if (e.kind === 'link') return;
       if (e.turns) el('path', { 'class': 'nm-stub-halo', d: e.d, fill: 'none' }, edges);
       el('path', { 'class': 'nm-edge ' + e.kind + (e.down ? ' down' : ''), d: e.d, fill: 'none' }, edges);
+      (e.ticks || []).forEach(function (t) {
+        el('path', { 'class': 'nm-tick-halo', d: t }, edges);
+        el('path', { 'class': 'nm-tick', d: t }, edges);
+      });
     });
     var linkGroups = [];
     lay.edges.forEach(function (e) {

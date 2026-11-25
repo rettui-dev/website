@@ -781,6 +781,10 @@ html:has(.manage-page) { scroll-padding-top: 80px; scroll-padding-bottom: 72px; 
 .nm-node.down .nm-state { fill: var(--red); }
 .nm-node.unknown .nm-state { fill: var(--yellow); }
 .nm-node.external .nm-state { fill: var(--dim); }
+.nm-node.external.rep-up .nm-box { stroke: var(--green); }
+.nm-node.external.rep-up .nm-state { fill: var(--green); }
+.nm-node.external.rep-down .nm-state { fill: var(--red); }
+.nm-node.external.rep-down .nm-box { stroke: var(--red); }
 .stale .nm-svg { opacity: 0.6; }
 @media (prefers-reduced-motion: no-preference) {
   .nm-node.up .nm-box { animation: nm-pulse 3s ease-in-out infinite; }

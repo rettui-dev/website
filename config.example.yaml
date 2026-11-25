@@ -143,7 +143,11 @@ nodes:
     # manage_secret_file: secrets/front.manage
     # manage_confirm_seconds: 300     # 60 to 900, default 300: how long a node waits for a confirmation
     # Optional: the external backbone peers this node connects out to, drawn as grey boxes on the
-    # network map (up to 8 per node). The address is only shown: it is never checked.
+    # network map (up to 8 per node). The address is only shown: it is never checked. Whether an
+    # upstream is up or down comes from the node's own stats, never from here: the node has to publish
+    # its interface list (rettui: stats_interfaces on, optionally stats_interface_names), and the
+    # name here must be the interface's name in the node's config ("MichMesh", "RNS Beleth"), in
+    # any case. With no stats URL, no list or no match the box stays plain "External".
     # upstreams:
     #   - name: Example backbone hub
     #     address: hub.example.org:4965

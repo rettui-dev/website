@@ -139,7 +139,7 @@ test('/api/status gives upstreams only to the hosts that have them, with name an
   try {
     const body = await (await fetch(`${s.base}/api/status`)).json();
     const [p, a] = body.hosts;
-    assert.deepEqual(p.upstreams, [{ name: 'Edge hub', address: 'edge.example.org:4965' }]);
+    assert.deepEqual(p.upstreams, [{ name: 'Edge hub', address: 'edge.example.org:4965', online: null }]);
     assert.equal(Object.hasOwn(a, 'upstreams'), false);
     // The rest of the shape is what it was.
     assert.deepEqual(Object.keys(p).filter((k) => !Object.hasOwn(a, k)), ['upstreams']);
@@ -156,7 +156,7 @@ test('/api/status stays small with the most upstreams a node can have', async ()
   await monitor.checkAll();
   const ups = JSON.stringify(monitor.snapshot().hosts[0].upstreams);
   assert.equal(monitor.snapshot().hosts[0].upstreams.length, 8);
-  assert.ok(ups.length < 8 * 140, `upstreams are ${ups.length} bytes`);
+  assert.ok(ups.length < 8 * 160, `upstreams are ${ups.length} bytes`);
 });
 
 test('with users and require_login the map adds nothing that is locked', async () => {
@@ -167,7 +167,7 @@ test('with users and require_login the map adds nothing that is locked', async (
     const body = JSON.parse(text);
     // The locked parts are not in the answer, with or without the upstreams.
     for (const secret of ['9.8.7', 'dataBytes', 'fsFreeBytes', '123456', 'usedPercent']) assert.equal(text.includes(secret), false, secret);
-    assert.deepEqual(body.hosts[0].upstreams, [{ name: 'Edge hub', address: 'edge.example.org:4965' }]);
+    assert.deepEqual(body.hosts[0].upstreams, [{ name: 'Edge hub', address: 'edge.example.org:4965', online: null }]);
     // What the map reads (state, clients, connect time, uptime) is public data.
     assert.equal(body.hosts[0].status, 'up');
     assert.equal(body.hosts[0].stats.data.interfaces.clients, 4);
@@ -757,4 +757,80 @@ test('pills: two nodes with one name are told apart by their proxy, or by their 
   assert.deepEqual(names, ['Relay (h:1)', 'Relay (h:2)', 'Relay (Berlin)', 'Solo']);
   const behindNone = buildModel([mock(1, 'Relay', { links: dials(2) }), mock(2, 'Relay')]);
   assert.deepEqual([...layout(behindNone, 390).pills.map((p) => p.name)], ['Relay (h:1)', 'Relay (h:2)']);
+});
+
+// State of declared upstreams, as their node reports it
+
+const mesh = (online) => ({ name: 'MichMesh', online });
+const dn = (port, name, up) => host(port, { name, upstreams: [{ name: 'MichMesh', address: 'm.test:1', ...(up === undefined ? {} : { online: up }) }] });
+
+test('cleanHosts: online is true, false or null, and nothing else gets through', () => {
+  const online = (v) => buildModel([host(1, { upstreams: [{ name: 'M', ...(v === undefined ? {} : { online: v }) }] })]).nodes.find((n) => n.kind === 'external').report;
+  assert.equal(online(true), 'up');
+  assert.equal(online(false), 'down');
+  for (const v of [undefined, null, 'true', 1, 0, {}, [], 'down']) assert.equal(online(v), null, String(v));
+});
+
+test('buildModel: a box shared by nodes is up if any reporting node says online, down if all say offline', () => {
+  const box = (...hs) => buildModel(hs).nodes.find((n) => n.kind === 'external');
+  assert.equal(box(dn(1, 'Front', true), dn(2, 'Back', false)).report, 'up');
+  assert.equal(box(dn(1, 'Front', false), dn(2, 'Back', false)).report, 'down');
+  assert.equal(box(dn(1, 'Front', false), dn(2, 'Back')).report, 'down');
+  assert.equal(box(dn(1, 'Front', true), dn(2, 'Back')).report, 'up');
+  assert.equal(box(dn(1, 'Front'), dn(2, 'Back')).report, null);
+  assert.equal(box(dn(1, 'Front'), dn(2, 'Back')).state, 'external');
+  assert.equal(box(dn(1, 'Front', false)).state, 'external');
+});
+
+test('buildModel: an edge is down when its own node reports the upstream offline', () => {
+  const m = buildModel([dn(1, 'Front', true), dn(2, 'Back', false), dn(3, 'Spare')]);
+  assert.deepEqual([...m.edges.map((e) => `${e.from}:${e.report}:${e.down}`)], ['h:1:up:false', 'h:2:down:true', 'h:3:null:false']);
+  // A node that is down still greys its own line, with no report.
+  const gone = buildModel([{ ...dn(1, 'Front'), status: 'down' }]);
+  assert.equal(gone.edges[0].down, true);
+  assert.equal(gone.edges[0].report, null);
+});
+
+test('describe and the list say the state in words, per node', () => {
+  const m = buildModel([dn(1, 'Front', true), dn(2, 'Back', false), dn(3, 'Spare')]);
+  const box = m.nodes.find((n) => n.kind === 'external');
+  assert.equal(describe(box), 'MichMesh: external backbone peer, not monitored, reported up via Front, down via Back, address m.test:1 (not checked), used by Front, Back, Spare.');
+  assert.ok(listItems(m).some((t) => t.startsWith('MichMesh: external backbone peer, not monitored, reported up via Front, down via Back,')));
+  // No report: the words are what they were.
+  const quiet = buildModel([dn(1, 'Front')]);
+  assert.equal(describe(quiet.nodes.find((n) => n.kind === 'external')), 'MichMesh: external backbone peer, not monitored, address m.test:1 (not checked), used by Front.');
+});
+
+test('layout: the box says up or down in a glyph and words, and a down line is slashed', () => {
+  const m = buildModel([dn(1, 'Front', true), dn(2, 'Back', false)]);
+  for (const width of [1000, 320]) {
+    const l = layout(m, width);
+    const box = l.nodes.find((n) => n.kind === 'external');
+    if (width === 1000) {
+      assert.equal(box.report, 'up');
+      assert.deepEqual([...box.lines.slice(1, 3).map((t) => t.text.slice(0, 6))], ['● Up', 'report']);
+      assert.equal(l.edges.filter((e) => e.ticks.length === 2 && e.report === 'down').length, 1);
+      assert.equal(l.edges.filter((e) => e.ticks.length).length, 1);
+    } else {
+      // The one-node view shows what the picked node itself says.
+      assert.equal(l.selected, 'h:1');
+      assert.equal(box.report, 'up');
+      const other = layout(m, width, 'h:2');
+      assert.equal(other.nodes.find((n) => n.kind === 'external').report, 'down');
+      assert.match(other.nodes.find((n) => n.kind === 'external').label, /reported down via Back/);
+      assert.equal(other.edges.find((e) => e.kind === 'upstream').ticks.length, 2);
+      assert.ok(other.nodes.find((n) => n.kind === 'external').lines.some((t) => t.text.startsWith('✕ Down')));
+    }
+    for (const n of l.nodes) for (const t of n.lines) assert.ok(t.text.length > 0);
+  }
+  // Without a report the box is as it was: an external peer, not checked.
+  const plain = layout(buildModel([dn(1, 'Front')]), 1000).nodes.find((n) => n.kind === 'external');
+  assert.equal(plain.report, null);
+  assert.deepEqual([...plain.lines.map((t) => t.text).slice(1, 3)], ['↗ External', 'not checked']);
+});
+
+test('the styles give a reported box a colour and the script draws the slashes', () => {
+  const css = fs.readFileSync(path.join(publicDir, 'site.css'), 'utf8');
+  assert.match(css, /\.nm-node\.external\.rep-down \.nm-state \{ fill: var\(--red\)/);
+  assert.match(css, /\.nm-node\.external\.rep-up \.nm-state \{ fill: var\(--green\)/);
 });
